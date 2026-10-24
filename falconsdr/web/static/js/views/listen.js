@@ -343,7 +343,9 @@ function spectrumPainter(canvas, axis) {
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(200, canvas.clientWidth) * dpr;
+    // Rounded: a canvas width is whole pixels - at 125% zoom an unrounded one never
+    // matched, so every frame "resized" and wiped the waterfall.
+    const w = Math.round(Math.max(200, canvas.clientWidth) * dpr);
     if (canvas.width !== w) {
       canvas.width = w; canvas.height = 260 * dpr;
       water.width = w; water.height = (260 - SPEC_H) * dpr;
