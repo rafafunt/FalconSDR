@@ -76,6 +76,14 @@ catalog loads; wrap them in a function called at point of use
   `memory_channel_bandwidth_hz` is the per-channel power-window width for
   Memory List channels (a band uses its own `step_hz` instead).
 - `falconsdr/storage.py` — CSV read/write for `channels.csv`/`blacklist.csv`.
+- `falconsdr/schedule.py` — time-of-day schedule (`ScheduleConfig`): which
+  bands and whether the Memory List are scanned now. Overlapping entries
+  scan the union; between entries `outside` = "off" (nothing) or "normal"
+  (the bands' own switches). An entry crossing midnight belongs to its start
+  day. Entries refer to bands by `VfoRangeConfig.id` - the browser creates
+  the id (`views/bands.js` `newBand`), so it is stable before any reload.
+  `ScannerEngine._maybe_follow_schedule()` rebuilds the windows when the
+  active set changes (checked every 5 s).
 - `falconsdr/channelizer.py` — `plan_windows()` groups channel frequencies
   into the fewest capture windows; `channel_powers_dbfs()`/
   `channel_powers_from_spectrum()` do one FFT per block and sum power per

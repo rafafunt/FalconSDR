@@ -1,13 +1,9 @@
 // "Listen": the live scanner - what's on air now, controls, spectrum, quick
 // settings, the scanned bands and the activity feed.
-import { api, carrierHz, confirmDialog, errorToast, fmtChannel, fmtMHz, formDialog, h, icon, modal, mount, select, seg, slider, t, toast, toggle } from '../core.js';
+import { api, confirmDialog, errorToast, fmtChannel, fmtMHz, h, icon, modal, mount, select, seg, slider, t, toast, toggle } from '../core.js';
 import { liveAudio } from '../live-audio.js';
 import { S, cfg, confirmRecording, on, patchConfig, setFastPolling } from '../state.js';
-
-const MODULATIONS = ['AM', 'NFM', 'WFM', 'SSB'];
-const OVERRIDES = ['trigger_level_dbfs', 'tuning_time_ms', 'linger_time_ms', 'gain_mode', 'gain_db', 'noise_reduction_enabled', 'noise_reduction_strength', 'squelch_enabled', 'squelch_offset_db'];
-const hasOverrides = (b) => OVERRIDES.some((k) => b[k] !== null && b[k] !== undefined);
-const clearOverrides = (b) => OVERRIDES.forEach((k) => { b[k] = null; });
+import { askCustomRange, askSingleFrequency, bandEditor, bandRange, clearOverrides, hasOverrides, presetPicker } from './bands.js';
 
 // Windows needs the WinUSB driver on the dongle (SDR++, SDR# and friends need the
 // same one, so most users already have it) - without it the device never opens.
@@ -208,7 +204,19 @@ export function listenView(root) {
       slider({ name: t('Hold after a transmission'), min: 0, max: 30000, step: 100, value: c.timing.linger_time_ms, format: (v) => `${(v / 1000).toFixed(1)} s`, oninput: (v) => patchConfig({ timing: { linger_time_ms: v } }) }),
       h('div.col', { style: { gap: '6px' } },
         toggle(t('Noise reduction'), c.noise_reduction.enabled, (v) => { patchConfig({ noise_reduction: { enabled: v } }); nr.input.disabled = !v; }, { hint: t('Adaptive filter for weak, noisy voice') }),
-        nr));
+        nr),
+      recencyBoost(c.recency_boost));
+  }
+
+  function recencyBoost(rb) {
+    const duration = slider({ name: t('For how long'), min: 0, max: 600, step: 5, value: rb.duration_s, format: (v) => `${v} s`, oninput: (v) => patchConfig({ recency_boost: { duration_s: v } }) });
+    const interval = slider({ name: t('Extra visit every'), min: 0.5, max: 60, step: 0.5, value: rb.interval_s, format: (v) => `${(+v).toFixed(1)} s`, oninput: (v) => patchConfig({ recency_boost: { interval_s: v } }) });
+    const lock = (on) => { duration.input.disabled = interval.input.disabled = !on; };
+    lock(rb.enabled);
+    return h('div.col', { style: { gap: '6px' } },
+      toggle(t('Recency boost'), rb.enabled, (v) => { patchConfig({ recency_boost: { enabled: v } }); lock(v); },
+        { hint: t('Come back sooner after a transmission') }),
+      duration, interval);
   }
 
   // ---------------------------------------------------------- device
@@ -241,18 +249,15 @@ export function listenView(root) {
   // ---------------------------------------------------------- bands
   function bandsSection() {
     const c = cfg();
-    const presets = S.settings.presets;
-    const presetSel = select([['', t('Add a band preset…')], ...presets.map((p) => [p.id, t(p.label)])], '', (id) => {
-      const p = presets.find((x) => x.id === id);
-      if (!p) return;
-      c.bands.push({ start_hz: p.start_hz, stop_hz: p.stop_hz, step_hz: p.step_hz, label: t(p.label), enabled: true, modulation: p.modulation, weight: 0,
-        trigger_level_dbfs: null, tuning_time_ms: null, linger_time_ms: null, gain_mode: null, gain_db: null, noise_reduction_enabled: null, noise_reduction_strength: null });
-      patchConfig({ bands: c.bands });
-      renderBands();
-    });
+    const scheduled = c.schedule.enabled;
+    const locked = scheduleLocked();
     const enabledChannels = S.settings.channels.filter((ch) => ch.enabled).length;
     const custom = c.bands.filter(hasOverrides).length;
     return [
+      scheduled ? h('div.notice', icon('clock'), h('span', { style: { flex: '1 1 220px' } }, locked
+        ? t('Schedule mode is on - the schedule decides what is scanned.')
+        : t('Schedule mode is on - these switches apply only outside its time ranges.')),
+        h('a', { href: '#/schedule' }, t('Open the schedule →'))) : null,
       custom ? h('div.row.wrap.small.muted',
         t('{n} of {total} bands use their own settings instead of the Receiver panel.', { n: custom, total: c.bands.length }),
         h('button.ghost.small', {
@@ -264,45 +269,26 @@ export function listenView(root) {
           },
         }, icon('refresh'), t('Use general settings in all bands'))) : null,
       c.bands.length ? c.bands.map((b, i) => bandRow(b, i)) : h('div.empty', t('Nothing to scan yet - add a band preset or a frequency below.')),
-      h('div.row.wrap', presetSel,
-        h('button', { onclick: addCustom }, icon('plus'), t('Custom range')),
-        h('button', { onclick: addSingle }, icon('plus'), t('Single frequency'))),
-      h('div.divider'),
+      h('div.row.wrap', presetPicker(addBand),
+        h('button', { onclick: async () => addBand(await askCustomRange()) }, icon('plus'), t('Custom range')),
+        h('button', { onclick: async () => addBand(await askSingleFrequency()) }, icon('plus'), t('Single frequency')),
+        h('a', { href: '#/settings/presets', style: { marginLeft: 'auto' } }, t('Edit band presets →'))),
       h('div.setting',
         h('div', toggle(t('Memory List'), c.memory_list_enabled, (v) => patchConfig({ memory_list_enabled: v }),
-          { hint: t('{n} enabled channels', { n: enabledChannels }) })),
+          { hint: t('{n} enabled channels', { n: enabledChannels }), disabled: locked })),
         h('a', { href: '#/channels' }, t('Edit channels →'))),
     ];
   }
 
-  function newBand(fields) {
-    return { enabled: true, modulation: 'AM', weight: 0, label: '', trigger_level_dbfs: null, tuning_time_ms: null, linger_time_ms: null,
-      gain_mode: null, gain_db: null, noise_reduction_enabled: null, noise_reduction_strength: null, ...fields };
+  // The switches only matter while the schedule can fall back to them.
+  function scheduleLocked() {
+    const s = cfg().schedule;
+    return s.enabled && s.outside !== 'normal';
   }
 
-  async function addCustom() {
-    const v = await formDialog(t('Custom range'), [
-      { key: 'label', label: t('Name'), value: '' },
-      { key: 'start', label: t('Start (MHz)'), type: 'number', value: 118 },
-      { key: 'stop', label: t('Stop (MHz)'), type: 'number', value: 137 },
-      { key: 'step', label: t('Step (kHz)'), type: 'number', value: 25 },
-      { key: 'mod', label: t('Modulation'), type: 'select', value: 'AM', options: MODULATIONS.map((m) => [m, m]) },
-    ], t('Add'));
-    if (!v || !(v.stop > v.start) || !(v.step > 0)) return;
-    cfg().bands.push(newBand({ label: v.label || t('Custom range'), start_hz: Math.round(v.start * 1e6), stop_hz: Math.round(v.stop * 1e6), step_hz: Math.round(v.step * 1e3), modulation: v.mod }));
-    patchConfig({ bands: cfg().bands });
-    renderBands();
-  }
-
-  async function addSingle() {
-    const v = await formDialog(t('Single frequency'), [
-      { key: 'freq', label: t('Frequency (MHz)'), type: 'number', value: 121.5, hint: t('Watched alongside the bands, e.g. 121.500 MHz guard') },
-      { key: 'label', label: t('Name'), value: '' },
-      { key: 'mod', label: t('Modulation'), type: 'select', value: 'AM', options: MODULATIONS.map((m) => [m, m]) },
-    ], t('Add'));
-    if (!v || !(v.freq > 0)) return;
-    const hz = carrierHz(v.freq);
-    cfg().bands.push(newBand({ label: v.label || `${fmtChannel(hz)} MHz`, start_hz: hz, stop_hz: hz, step_hz: 25000, modulation: v.mod }));
+  function addBand(b) {
+    if (!b) return;
+    cfg().bands.push(b);
     patchConfig({ bands: cfg().bands });
     renderBands();
   }
@@ -310,15 +296,18 @@ export function listenView(root) {
   const expanded = new Set();
   function bandRow(b, i) {
     const save = () => patchConfig({ bands: cfg().bands });
-    const single = b.start_hz === b.stop_hz;
     const solo = S.live && S.live.solo_band === i;
     const custom = hasOverrides(b);
     const row = h('div.band', { class: (b.enabled ? '' : 'disabled') + (solo ? ' solo' : '') },
       h('div.band-main',
-        h('label.switch', h('input', { type: 'checkbox', checked: b.enabled, title: t('Scan this band'), onchange: (e) => { b.enabled = e.target.checked; save(); row.classList.toggle('disabled', !b.enabled); } })),
+        h('label.switch', h('input', {
+          type: 'checkbox', checked: b.enabled, disabled: scheduleLocked(),
+          title: scheduleLocked() ? t('Schedule mode is on') : t('Scan this band'),
+          onchange: (e) => { b.enabled = e.target.checked; save(); row.classList.toggle('disabled', !b.enabled); },
+        })),
         h('div.grow',
           h('div.title.ellipsis', b.label || t('(unnamed)'), custom ? h('span.chip.accent', { style: { marginLeft: '8px' } }, t('own settings')) : null),
-          h('div.range', single ? `${fmtMHz(b.start_hz, 4)} MHz · ${b.modulation}` : `${fmtMHz(b.start_hz, 3)} – ${fmtMHz(b.stop_hz, 3)} MHz · ${(b.step_hz / 1000).toFixed(b.step_hz % 1000 ? 3 : 0)} kHz · ${b.modulation}${b.weight ? ` · W ${b.weight}` : ''}`)),
+          h('div.range', bandRange(b))),
         h('button.icon.ghost', { class: solo ? 'on' : '', title: solo ? t('Back to scanning everything') : t('Scan only this band for now'), onclick: () => api.post('/api/scanner/solo', { band: solo ? null : i }).catch(errorToast) }, icon('headphones')),
         h('button.icon.ghost', { title: t('Edit'), onclick: () => { expanded.has(i) ? expanded.delete(i) : expanded.add(i); renderBands(); } }, icon(expanded.has(i) ? 'chevron' : 'edit')),
         h('button.icon.ghost', {
@@ -327,67 +316,8 @@ export function listenView(root) {
             cfg().bands.splice(i, 1); expanded.clear(); save(); renderBands();
           },
         }, icon('trash'))));
-    if (expanded.has(i)) row.append(bandEditor(b, save));
+    if (expanded.has(i)) row.append(bandEditor(b, save, renderBands));
     return row;
-  }
-
-  function bandEditor(b, save) {
-    const single = b.start_hz === b.stop_hz;
-    const num = (label, value, onchange, attrs = {}) => h('label.field', label, h('input', { type: 'number', value, step: 'any', ...attrs, onchange: (e) => { onchange(+e.target.value); save(); } }));
-    const fields = h('div.band-edit',
-      h('label.field', t('Name'), h('input', { value: b.label, onchange: (e) => { b.label = e.target.value; save(); renderBands(); } })),
-      num(single ? t('Frequency (MHz)') : t('Start (MHz)'), (b.start_hz / 1e6).toFixed(4), (v) => { b.start_hz = Math.round(v * 1e6); if (single) b.stop_hz = b.start_hz; }),
-      single ? null : num(t('Stop (MHz)'), (b.stop_hz / 1e6).toFixed(4), (v) => { b.stop_hz = Math.round(v * 1e6); }),
-      single ? null : num(t('Step (kHz)'), b.step_hz / 1000, (v) => { b.step_hz = Math.round(v * 1000); }),
-      h('label.field', t('Modulation'), select(MODULATIONS.map((m) => [m, m]), b.modulation, (v) => { b.modulation = v; save(); })),
-      num(t('Priority weight'), b.weight, (v) => { b.weight = v; }, { min: 0, max: 20, step: 0.5, title: t('0 = normal. Higher = visited more often than other weighted bands (1 vs 2 = twice as often).') }));
-    // Per-band overrides: unticked = follow the global setting. Values that
-    // only make sense together (on/off + strength, mode + gain) share one tile.
-    const c = cfg();
-    const defaults = {
-      trigger_level_dbfs: c.trigger_level_dbfs, tuning_time_ms: c.timing.tuning_time_ms, linger_time_ms: c.timing.linger_time_ms,
-      gain_mode: c.device.gain_mode, gain_db: c.device.gain_db,
-      noise_reduction_enabled: c.noise_reduction.enabled, noise_reduction_strength: c.noise_reduction.strength,
-      squelch_enabled: c.squelch_enabled, squelch_offset_db: c.squelch_offset_db,
-    };
-    const ov = (keys, label, makeInput, globalValue) => {
-      const own = () => keys.some((k) => b[k] !== null && b[k] !== undefined);
-      const holder = h('div.col', { style: { gap: '8px' } });
-      const draw = () => mount(holder, own() ? makeInput(draw) : h('span.faint.small', t('Global: {v}', { v: globalValue })));
-      draw();
-      return h('div.override',
-        h('label.switch', h('input', {
-          type: 'checkbox', checked: own(), title: t('Own value for this band'),
-          onchange: (e) => { keys.forEach((k) => { b[k] = e.target.checked ? defaults[k] : null; }); save(); draw(); },
-        }), h('span.label', label)),
-        holder);
-    };
-    const rangeInput = (key, min, max, step, fmt, scale = 1) => slider({ name: '', min, max, step, value: (b[key] ?? defaults[key]) * scale, format: fmt, oninput: (v) => { b[key] = v / scale; save(); } });
-    const gainModes = [['manual', t('Manual')], ['auto', t('Auto (hardware)')], ['sw_auto', t('Auto (software)')]];
-    const overrides = h('div.overrides',
-      ov(['trigger_level_dbfs'], t('Trigger level'), () => rangeInput('trigger_level_dbfs', -90, 0, 1, (v) => `${v} dBFS`), `${c.trigger_level_dbfs} dBFS`),
-      ov(['squelch_enabled', 'squelch_offset_db'], t('Squelch'), (redraw) => {
-        const on = b.squelch_enabled ?? defaults.squelch_enabled;
-        const offset = rangeInput('squelch_offset_db', -40, 0, 1, (v) => `${v} dB`);
-        offset.input.disabled = !on;
-        return [toggle(t('On'), on, (v) => { b.squelch_enabled = v; save(); redraw(); }), offset];
-      }, c.squelch_enabled ? `${t('On')}, ${c.squelch_offset_db} dB` : t('Off')),
-      ov(['tuning_time_ms'], t('Tuning time'), () => rangeInput('tuning_time_ms', 0, 1000, 10, (v) => `${v} ms`), `${c.timing.tuning_time_ms} ms`),
-      ov(['linger_time_ms'], t('Hold after a transmission'), () => rangeInput('linger_time_ms', 0, 30000, 100, (v) => `${(v / 1000).toFixed(1)} s`), `${(c.timing.linger_time_ms / 1000).toFixed(1)} s`),
-      ov(['gain_mode', 'gain_db'], t('Gain'), (redraw) => [
-        select(gainModes, b.gain_mode ?? defaults.gain_mode, (v) => { b.gain_mode = v; save(); redraw(); }),
-        (b.gain_mode ?? defaults.gain_mode) === 'auto' ? null : rangeInput('gain_db', 0, 50, 0.1, (v) => `${(+v).toFixed(1)} dB`),
-      ], `${gainModes.find(([k]) => k === c.device.gain_mode)?.[1] ?? c.device.gain_mode}, ${c.device.gain_db} dB`),
-      ov(['noise_reduction_enabled', 'noise_reduction_strength'], t('Noise reduction'), (redraw) => {
-        const on = b.noise_reduction_enabled ?? defaults.noise_reduction_enabled;
-        const strength = rangeInput('noise_reduction_strength', 0, 100, 1, (v) => `${v}%`, 100);
-        strength.input.disabled = !on;
-        return [toggle(t('On'), on, (v) => { b.noise_reduction_enabled = v; save(); redraw(); }), strength];
-      }, c.noise_reduction.enabled ? `${t('On')}, ${Math.round(c.noise_reduction.strength * 100)}%` : t('Off')));
-    return h('div.col', fields,
-      h('div.row.wrap', h('h3', t('Own settings for this band')), h('span.spacer'),
-        hasOverrides(b) ? h('button.ghost.small', { onclick: () => { clearOverrides(b); save(); renderBands(); } }, icon('refresh'), t('Restore general settings')) : null),
-      overrides);
   }
 
   // ---------------------------------------------------------- wiring

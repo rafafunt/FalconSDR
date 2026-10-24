@@ -21,9 +21,9 @@ from typing import Any, Optional
 
 import numpy as np
 
-from . import __version__, autostart, i18n, military_presets, storage
+from . import __version__, autostart, i18n, military_presets, schedule, storage
 from .audio_transcode import ffmpeg_available
-from .config import DEFAULT_RECORDINGS_DIR, AppConfig, VfoRangeConfig, _from_dict
+from .config import DEFAULT_RECORDINGS_DIR, AppConfig, ScheduleEntry, VfoRangeConfig, _from_dict
 from .models import BlacklistEntry, Channel, Modulation, snap_airband_hz
 from .playback.index import Library
 from .playback.transcription_availability import is_transcription_installed
@@ -50,6 +50,10 @@ def _coerce(current: Any, value: Any) -> Any:
     return value
 
 
+# Lists of dataclasses sent whole: field name -> item type.
+_LIST_TYPES = {"bands": VfoRangeConfig, "entries": ScheduleEntry}
+
+
 def merge_patch(obj: Any, patch: dict) -> None:
     """Applies a partial JSON update to a (nested) config dataclass in place,
     coercing each value to the field's current type. Unknown keys are ignored."""
@@ -57,8 +61,8 @@ def merge_patch(obj: Any, patch: dict) -> None:
         if not hasattr(obj, key):
             continue
         current = getattr(obj, key)
-        if key == "bands" and isinstance(value, list):
-            setattr(obj, key, [_from_dict(VfoRangeConfig, b) for b in value if isinstance(b, dict)])
+        if key in _LIST_TYPES and isinstance(value, list):
+            setattr(obj, key, [_from_dict(_LIST_TYPES[key], b) for b in value if isinstance(b, dict)])
         elif is_dataclass(current) and isinstance(value, dict):
             merge_patch(current, value)
         elif current is None or value is None:
@@ -278,6 +282,8 @@ class Controller:
                 "running": self._engine is not None,
                 "stopping": self._engine is not None and self._engine._stop_evt.is_set(),
                 "solo_band": self._solo_band,
+                "schedule_active": schedule.active_indices(self.config),
+                "clock": time.strftime("%H:%M"),
                 "spectrum": self._spectrum,
                 "log": [e for e in self._log if e["id"] > since_log],
                 "audio_rate": AUDIO_RATE,

@@ -264,6 +264,43 @@ class SquelchTest(unittest.TestCase):
         self.assertEqual(ScannerEngine._effective_squelch_dbfs(fake, SimpleNamespace(band=VfoRangeConfig())), -54.0)
 
 
+class ScheduleTest(unittest.TestCase):
+    def test_active_entries_pick_bands_and_survive_a_config_patch(self) -> None:
+        import datetime as dt
+        from falconsdr import schedule
+        from falconsdr.config import ScheduleEntry, VfoRangeConfig
+        from falconsdr.controller import merge_patch
+        cfg = AppConfig()
+        day, night = VfoRangeConfig(label="day", enabled=False), VfoRangeConfig(label="night")
+        cfg.bands = [day, night]
+        cfg.memory_list_enabled = True
+        cfg.schedule.entries = [
+            ScheduleEntry(start="08:00", end="16:00", band_ids=[day.id]),
+            ScheduleEntry(start="22:00", end="06:00", band_ids=[night.id], memory_list=True),  # crosses midnight
+        ]
+        at = lambda hh, mm: dt.datetime(2026, 1, 1, hh, mm)
+        self.assertEqual(schedule.scan_selection(cfg, at(9, 0)), ([night], True))  # off: the bands' own switches
+        cfg.schedule.enabled = True
+        self.assertEqual(schedule.scan_selection(cfg, at(9, 0)), ([day], False))
+        self.assertEqual(schedule.scan_selection(cfg, at(16, 0)), ([], False))   # end is exclusive, gaps scan nothing
+        self.assertEqual(schedule.scan_selection(cfg, at(2, 30)), ([night], True))
+        cfg.schedule.entries[0].end = "08:00"                                     # start == end: all day
+        self.assertEqual(schedule.scan_selection(cfg, at(23, 0)), ([day, night], True))
+        # Weekdays (2026-01-02 is a Friday): a range crossing midnight belongs to its start day.
+        cfg.schedule.entries = [ScheduleEntry(start="22:00", end="06:00", days=[4], band_ids=[night.id])]
+        fri, sat, sun = (lambda hh, d=d: dt.datetime(2026, 1, d, hh) for d in (2, 3, 4))
+        self.assertEqual(schedule.scan_selection(cfg, fri(23))[0], [night])
+        self.assertEqual(schedule.scan_selection(cfg, sat(5))[0], [night])   # Friday's night, continued
+        self.assertEqual(schedule.scan_selection(cfg, sat(23))[0], [])
+        self.assertEqual(schedule.scan_selection(cfg, sun(5))[0], [])
+        cfg.schedule.outside = "normal"                                       # between ranges: the usual switches
+        self.assertEqual(schedule.scan_selection(cfg, sat(23)), ([night], True))
+        merge_patch(cfg, {"schedule": {"entries": [{"start": "07:00", "end": "09:00", "band_ids": [day.id]}]},
+                          "bands": [{"id": day.id, "label": "day"}]})
+        self.assertEqual(cfg.bands[0].id, day.id)
+        self.assertEqual(schedule.scan_selection(cfg, at(8, 0))[0][0].id, day.id)
+
+
 class WorkerMirrorTest(unittest.TestCase):
     def test_reports_only_size_verified_copies(self) -> None:
         from falconsdr.worker import Worker

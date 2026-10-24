@@ -1,4 +1,4 @@
-// "Settings": recording, recency boost, transcription & helper computers,
+// "Settings": recording, transcription & helper computers,
 // band presets, location, language/listening, disk & retention, server
 // connection, access password and advanced options.
 import {
@@ -8,7 +8,6 @@ import { S, cfg, confirmRecording, loadSettings, on, patchConfig } from '../stat
 
 const SECTIONS = [
   ['recording', () => t('Recording')],
-  ['scheduling', () => t('Recency boost')],
   ['transcription', () => t('Transcription & computers')],
   ['presets', () => t('Band presets')],
   ['location', () => t('Location')],
@@ -280,16 +279,6 @@ export function settingsView(root, hash) {
         }, icon('globe'), t('Use this device\'s location')) : null));
   }
 
-  // ---------------------------------------------------------- recency boost
-  function renderScheduling() {
-    const rb = cfg().recency_boost;
-    mount(body('scheduling'),
-      setting(t('Come back sooner after a transmission'), t('Replies usually follow within seconds, so a frequency that was just active gets extra visits for a while - without stopping the rest of the scan.'),
-        toggle('', rb.enabled, (v) => patchConfig({ recency_boost: { enabled: v } }))),
-      setting(t('For how long'), t('Seconds after the transmission ends.'), numberInput(rb.duration_s, (v) => patchConfig({ recency_boost: { duration_s: Math.max(0, v) } }), { min: 0 })),
-      setting(t('Extra visit every'), t('Seconds.'), numberInput(rb.interval_s, (v) => patchConfig({ recency_boost: { interval_s: Math.max(0.5, v) } }), { min: 0.5, step: 0.5 })));
-  }
-
   // ---------------------------------------------------------- presets
   function renderPresets() {
     const presets = S.settings.presets;
@@ -392,7 +381,7 @@ export function settingsView(root, hash) {
 
   function renderAll() {
     renderRecording(); renderStorage(); renderTranscription(); renderConnect(); renderAccess();
-    renderLocation(); renderScheduling(); renderPresets(); renderAppearance(); renderAdvanced();
+    renderLocation(); renderPresets(); renderAppearance(); renderAdvanced();
   }
   renderAll();
   timers.push(setInterval(loadWorkers, 3000));

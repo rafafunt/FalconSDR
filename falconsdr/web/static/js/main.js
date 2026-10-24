@@ -4,6 +4,7 @@ import { S, emit, loadSettings, maybeShowLaunchNotice, on, startPolling } from '
 import { channelsView } from './views/channels.js';
 import { listenView } from './views/listen.js';
 import { recordingsView } from './views/recordings.js';
+import { scheduleView } from './views/schedule.js';
 import { settingsView } from './views/settings.js';
 import { statsView } from './views/stats.js';
 
@@ -13,6 +14,7 @@ const ROUTES = {
   listen: { label: () => t('Listen'), icon: 'listen', view: listenView },
   recordings: { label: () => t('Recordings'), icon: 'library', view: recordingsView },
   channels: { label: () => t('Channels'), icon: 'channels', view: channelsView },
+  schedule: { label: () => t('Schedule'), icon: 'clock', view: scheduleView },
   stats: { label: () => t('Statistics'), icon: 'stats', view: statsView },
   settings: { label: () => t('Settings'), icon: 'settings', view: settingsView },
 };

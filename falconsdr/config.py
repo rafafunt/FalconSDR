@@ -5,6 +5,7 @@ Saved to ~/.config/FalconSDR/config.json.
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -65,6 +66,12 @@ def _from_dict(cls, raw: dict):
     return cls(**{k: v for k, v in raw.items() if k in known})
 
 
+def _schedule_from_dict(raw: dict) -> "ScheduleConfig":
+    sched = _from_dict(ScheduleConfig, raw)
+    sched.entries = [_from_dict(ScheduleEntry, e) for e in sched.entries if isinstance(e, dict)]
+    return sched
+
+
 @dataclass
 class DeviceConfig:
     driver: str = "auto"          # "auto", "rtlsdr", "simulated", or a SoapySDR driver key
@@ -79,6 +86,8 @@ class DeviceConfig:
 
 @dataclass
 class VfoRangeConfig:
+    # Stable id - schedule entries refer to bands by it.
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     start_hz: int = 118_000_000
     stop_hz: int = 136_000_000
     step_hz: int = 25_000
@@ -159,6 +168,30 @@ class RecencyBoostConfig:
 
 
 @dataclass
+class ScheduleEntry:
+    """A time range ("HH:MM", end < start crosses midnight, equal = all day)
+    on the given weekdays (0 = Monday) and what is scanned during it. A range
+    crossing midnight belongs to the day it starts on."""
+    start: str = "08:00"
+    end: str = "16:00"
+    days: list[int] = field(default_factory=lambda: list(range(7)))
+    name: str = ""
+    band_ids: list[str] = field(default_factory=list)
+    memory_list: bool = False
+
+
+@dataclass
+class ScheduleConfig:
+    """When enabled, the entries active right now decide what is scanned
+    instead of each band's and the Memory List's own switch (schedule.py).
+    Overlapping entries scan everything any of them selects. ``outside``:
+    "off" = nothing is scanned between entries, "normal" = the usual switches."""
+    enabled: bool = False
+    outside: str = "off"
+    entries: list[ScheduleEntry] = field(default_factory=list)
+
+
+@dataclass
 class NoiseReductionConfig:
     enabled: bool = False
     strength: float = 0.6        # 0..1, blend between dry (0) and fully gated (1) spectrum
@@ -211,6 +244,7 @@ class AppConfig:
     timing: TimingConfig = field(default_factory=TimingConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     recency_boost: RecencyBoostConfig = field(default_factory=RecencyBoostConfig)
+    schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     noise_reduction: NoiseReductionConfig = field(default_factory=NoiseReductionConfig)
     transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
     remote_receiver: RemoteReceiverConfig = field(default_factory=RemoteReceiverConfig)
@@ -263,6 +297,7 @@ class AppConfig:
             timing=_from_dict(TimingConfig, raw.get("timing", {})),
             recording=_from_dict(RecordingConfig, raw.get("recording", {})),
             recency_boost=_from_dict(RecencyBoostConfig, raw.get("recency_boost", {})),
+            schedule=_schedule_from_dict(raw.get("schedule", {})),
             noise_reduction=_from_dict(NoiseReductionConfig, raw.get("noise_reduction", {})),
             transcription=_from_dict(TranscriptionConfig, raw.get("transcription", {})),
             remote_receiver=_from_dict(RemoteReceiverConfig, raw.get("remote_receiver", {})),
@@ -281,6 +316,8 @@ class AppConfig:
             workers=dict(raw.get("workers", {})),
         )
         cfg.recording.output_dir = cfg.recording.output_dir.strip() or DEFAULT_RECORDINGS_DIR
+        if "bands" not in raw or any("id" not in b for b in raw["bands"]):
+            cfg.save()  # persist the new band ids, or they'd change on every start
         return cfg
 
     def save(self) -> None:

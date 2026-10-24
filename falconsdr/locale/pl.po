@@ -1981,20 +1981,14 @@ msgstr "Użyj lokalizacji tego urządzenia"
 msgid "Come back sooner after a transmission"
 msgstr "Wracaj szybciej po transmisji"
 
-msgid "Replies usually follow within seconds, so a frequency that was just active gets extra visits for a while - without stopping the rest of the scan."
-msgstr "Odpowiedzi zwykle padają w ciągu kilku sekund, więc częstotliwość, która właśnie była aktywna, przez chwilę dostaje dodatkowe wizyty - bez wstrzymywania reszty skanowania."
 
 msgid "For how long"
 msgstr "Jak długo"
 
-msgid "Seconds after the transmission ends."
-msgstr "Sekundy po zakończeniu transmisji."
 
 msgid "Extra visit every"
 msgstr "Dodatkowa wizyta co"
 
-msgid "Seconds."
-msgstr "Sekundy."
 
 msgid "Default blacklist margin"
 msgstr "Domyślny margines czarnej listy"
@@ -2376,3 +2370,108 @@ msgstr "Usuń też pobrane modele Whisper (kilka GB)"
 
 msgid "Other programs using the same models would download them again."
 msgstr "Inne programy korzystające z tych samych modeli pobiorą je ponownie."
+
+# --- schedule ---
+msgid "Schedule"
+msgstr "Harmonogram"
+
+msgid "Schedule mode is on - the schedule decides what is scanned."
+msgstr "Tryb harmonogramu jest włączony - o tym, co jest skanowane, decyduje harmonogram."
+
+msgid "Open the schedule →"
+msgstr "Otwórz harmonogram →"
+
+msgid "Edit band presets →"
+msgstr "Edytuj presety pasm →"
+
+msgid "Schedule mode is on"
+msgstr "Tryb harmonogramu jest włączony"
+
+msgid "Scan by schedule"
+msgstr "Skanuj według harmonogramu"
+
+
+msgid "Receiver time: {time}"
+msgstr "Czas odbiornika: {time}"
+
+msgid "Now: {names}"
+msgstr "Teraz: {names}"
+
+
+msgid "No time ranges yet."
+msgstr "Nie ma jeszcze żadnych przedziałów."
+
+msgid "Add time range"
+msgstr "Dodaj przedział godzin"
+
+msgid "From"
+msgstr "Od"
+
+msgid "To"
+msgstr "Do"
+
+msgid "Name (optional)"
+msgstr "Nazwa (opcjonalnie)"
+
+msgid "Now"
+msgstr "Teraz"
+
+msgid "Remove time range"
+msgstr "Usuń przedział"
+
+msgid "Remove “{name}” from the schedule?"
+msgstr "Usunąć „{name}” z harmonogramu?"
+
+msgid "Schedule: now {names}."
+msgstr "Harmonogram: teraz {names}."
+
+msgid "Schedule: nothing planned right now - scanning paused."
+msgstr "Harmonogram: teraz nic nie jest zaplanowane - skanowanie wstrzymane."
+
+msgid "When on, the time ranges below decide what is scanned instead of the switches in Listen → What to scan."
+msgstr "Gdy włączone, o tym, co jest skanowane, decydują przedziały godzin poniżej zamiast przełączników w Nasłuch → Co skanować."
+
+msgid "Outside the time ranges"
+msgstr "Poza przedziałami"
+
+msgid "Pause scanning"
+msgstr "Wstrzymaj skanowanie"
+
+msgid "Scan as usual"
+msgstr "Skanuj jak zwykle"
+
+msgid "Between the ranges the scanner scans what is switched on in Listen → What to scan."
+msgstr "Między przedziałami skaner skanuje to, co jest włączone w Nasłuch → Co skanować."
+
+msgid "Between the ranges the scanner waits and scans nothing."
+msgstr "Między przedziałami skaner czeka i nic nie skanuje."
+
+msgid "No time range right now - scanning as usual"
+msgstr "Teraz nie trwa żaden przedział - skanowanie jak zwykle"
+
+msgid "No time range right now - scanning paused"
+msgstr "Teraz nie trwa żaden przedział - skanowanie wstrzymane"
+
+msgid "Every day"
+msgstr "Codziennie"
+
+msgid "Weekdays"
+msgstr "Dni robocze"
+
+msgid "Weekend"
+msgstr "Weekend"
+
+msgid "No days selected - this time range never runs."
+msgstr "Nie wybrano żadnego dnia - ten przedział nigdy się nie włączy."
+
+msgid "Overlaps with {names} - while both run, everything selected in either is scanned."
+msgstr "Nakłada się z: {names} - gdy działają jednocześnie, skanowane jest wszystko, co zaznaczono w którymkolwiek z nich."
+
+msgid "Changes apply to this band everywhere, not only in this time range."
+msgstr "Zmiany dotyczą tego pasma wszędzie, nie tylko w tym przedziale."
+
+msgid "Schedule mode is on - these switches apply only outside its time ranges."
+msgstr "Tryb harmonogramu jest włączony - te przełączniki działają tylko poza jego przedziałami."
+
+msgid "Schedule: outside the time ranges - scanning as usual."
+msgstr "Harmonogram: poza przedziałami - skanowanie jak zwykle."

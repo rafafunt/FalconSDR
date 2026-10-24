@@ -32,6 +32,7 @@ from .channelizer import (
 from .config import AppConfig, CONFIG_DIR, RecordingConfig, VfoRangeConfig
 from .dsp import Demodulator, NoiseReducer
 from .i18n import tr
+from . import schedule
 from .iq_recorder import IQRecorder
 from .models import BlacklistEntry, Channel, Modulation, ScannerState, resolve_ssb_sideband
 from .recorder import Recorder
@@ -366,6 +367,10 @@ class ScannerEngine(threading.Thread):
         self._lock = threading.Lock()
         # Listen page's "scan only this band" (set_solo_band).
         self._solo_band: VfoRangeConfig | None = None
+        # schedule.signature() the windows were last built for, checked every few seconds.
+        self._schedule_sig: tuple | None = None
+        self._schedule_logged: tuple | None = None  # last state told to the Activity feed
+        self._schedule_check_at = 0.0
         self._priority_lanes: list[_Lane] = []
         self._default_lane = _Lane(weight=0.0, windows=[], is_range=False)
         self._scheduler: _WeightedScheduler | None = None
@@ -755,11 +760,12 @@ class ScannerEngine(threading.Thread):
             plain_channels: list[Channel] = []
             enabled_bands = [self._solo_band] if self._solo_band.enabled else []
         else:
-            channels = list(self.channels) if self.config.memory_list_enabled else []
+            enabled_bands, memory_on = schedule.scan_selection(self.config)
+            channels = list(self.channels) if memory_on else []
             enabled_channels = [c for c in channels if c.enabled]
             weighted_channels = [c for c in enabled_channels if c.weight > 0]
             plain_channels = [c for c in enabled_channels if c.weight <= 0]
-            enabled_bands = [b for b in self.config.bands if b.enabled]
+        self._schedule_sig = schedule.signature(self.config)
 
         weighted_bands = [b for b in enabled_bands if b.weight > 0]
         plain_bands = [b for b in enabled_bands if b.weight <= 0]
@@ -975,7 +981,29 @@ class ScannerEngine(threading.Thread):
                 # _detect_reflections() and got real signals discarded.
                 slot.level_history.clear()
 
+    def _maybe_follow_schedule(self) -> None:
+        """Rebuilds the windows when a schedule entry starts or ends."""
+        now = time.monotonic()
+        if now < self._schedule_check_at:
+            return
+        self._schedule_check_at = now + 5.0
+        sig = schedule.signature(self.config)
+        if sig != self._schedule_logged and self.config.schedule.enabled:
+            entries = self.config.schedule.entries
+            names = [entries[i].name or f"{entries[i].start}-{entries[i].end}" for i in sig[2]]
+            if names:
+                text = tr("Schedule: now {names}.").format(names=", ".join(names))
+            elif self.config.schedule.outside == "normal":
+                text = tr("Schedule: outside the time ranges - scanning as usual.")
+            else:
+                text = tr("Schedule: nothing planned right now - scanning paused.")
+            self.signals.log.emit(text)
+        self._schedule_logged = sig
+        if sig != self._schedule_sig:
+            self._rebuild_windows()
+
     def _next_window(self) -> ScanWindow | None:
+        self._maybe_follow_schedule()
         with self._lock:
             for _ in range(MAX_PICK_ATTEMPTS):
                 window = self._pick_next_locked()
