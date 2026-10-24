@@ -10,7 +10,7 @@ on:
       tag:
         description: Release tag to build and attach the app to
         required: true
-        default: v0.9.0
+        default: v1.0.0
 
 permissions:
   contents: write

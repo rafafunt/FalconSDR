@@ -1,5 +1,5 @@
 Name:           falconsdr
-Version:        0.9.0
+Version:        1.0.0
 Release:        1%{?dist}
 Summary:        Wideband SDR ATC/radio scanner (self-contained build)
 License:        GPL-3.0-or-later
@@ -113,5 +113,8 @@ fi
 %{_modprobedir}/blacklist-rtl-dvb.conf
 
 %changelog
+* Sat Oct 24 2026 rafafunt - 1.0.0-1
+- 1.0.0: scan schedule, recency boost in the Receiver panel.
+
 * Fri Oct 23 2026 9M2PJU <9m2pju@gmail.com> - 0.9.0-1
 - First RPM packaging (PyInstaller self-contained bundle, mirrors .deb).

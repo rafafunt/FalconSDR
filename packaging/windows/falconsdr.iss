@@ -31,7 +31,9 @@ PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-LicenseFile={#SourcePath}\..\..\LICENSE
+; Shown for information only (Next, nothing to accept): the GPL is not a
+; contract the user has to agree to in order to install or run the program.
+InfoBeforeFile={#SourcePath}\..\..\LICENSE
 SetupIconFile={#SourcePath}\..\icons\falconsdr.ico
 UninstallDisplayIcon={app}\falconsdr.exe
 UninstallDisplayName=FalconSDR
