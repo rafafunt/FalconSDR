@@ -1,6 +1,6 @@
-// "Settings": recording, disk & retention, transcription & helper computers,
-// server connection, access password, location, scheduling, band presets,
-// appearance/language and advanced options.
+// "Settings": recording, recency boost, transcription & helper computers,
+// band presets, location, language/listening, disk & retention, server
+// connection, access password and advanced options.
 import {
   api, confirmDialog, errorToast, fmtAgo, fmtBytes, fmtDate, fmtMHz, formDialog, h, icon, lang, modal, mount, qs, select, t, toast, toggle,
 } from '../core.js';
@@ -8,14 +8,14 @@ import { S, cfg, confirmRecording, loadSettings, on, patchConfig } from '../stat
 
 const SECTIONS = [
   ['recording', () => t('Recording')],
-  ['storage', () => t('Disk & retention')],
+  ['scheduling', () => t('Recency boost')],
   ['transcription', () => t('Transcription & computers')],
+  ['presets', () => t('Band presets')],
+  ['location', () => t('Location')],
+  ['appearance', () => t('Language & listening')],
+  ['storage', () => t('Disk & retention')],
   ['connect', () => t('Connect to a server')],
   ['access', () => t('Access')],
-  ['location', () => t('Location')],
-  ['scheduling', () => t('Scheduling')],
-  ['presets', () => t('Band presets')],
-  ['appearance', () => t('Language & listening')],
   ['advanced', () => t('Advanced')],
 ];
 
@@ -280,16 +280,14 @@ export function settingsView(root, hash) {
         }, icon('globe'), t('Use this device\'s location')) : null));
   }
 
-  // ---------------------------------------------------------- scheduling
+  // ---------------------------------------------------------- recency boost
   function renderScheduling() {
     const rb = cfg().recency_boost;
     mount(body('scheduling'),
       setting(t('Come back sooner after a transmission'), t('Replies usually follow within seconds, so a frequency that was just active gets extra visits for a while - without stopping the rest of the scan.'),
         toggle('', rb.enabled, (v) => patchConfig({ recency_boost: { enabled: v } }))),
       setting(t('For how long'), t('Seconds after the transmission ends.'), numberInput(rb.duration_s, (v) => patchConfig({ recency_boost: { duration_s: Math.max(0, v) } }), { min: 0 })),
-      setting(t('Extra visit every'), t('Seconds.'), numberInput(rb.interval_s, (v) => patchConfig({ recency_boost: { interval_s: Math.max(0.5, v) } }), { min: 0.5, step: 0.5 })),
-      setting(t('Default blacklist margin'), t('± kHz around a frequency added with “Skip + blacklist”.'),
-        numberInput(cfg().default_blacklist_margin_hz / 1000, (v) => patchConfig({ default_blacklist_margin_hz: Math.round(v * 1000) }), { min: 0, step: 0.5 })));
+      setting(t('Extra visit every'), t('Seconds.'), numberInput(rb.interval_s, (v) => patchConfig({ recency_boost: { interval_s: Math.max(0.5, v) } }), { min: 0.5, step: 0.5 })));
   }
 
   // ---------------------------------------------------------- presets

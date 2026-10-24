@@ -211,6 +211,8 @@ export function channelsView(root) {
     return h('section.card',
       h('div.row.wrap', h('div.grow', search), h('button.primary', { onclick: addBlacklist }, icon('plus'), t('Add'))),
       h('p.small.muted', { style: { margin: 0 } }, t('The scanner never stops on these frequencies. “Skip + blacklist” on the Listen page adds them here.')),
+      h('div.setting', h('div', h('b', t('Default blacklist margin')), h('p', t('± kHz around a frequency added with “Skip + blacklist”.'))),
+        h('input', { type: 'number', value: cfg().default_blacklist_margin_hz / 1000, min: 0, step: 0.5, style: { width: '110px' }, onchange: (e) => patchConfig({ default_blacklist_margin_hz: Math.round(Math.max(0, +e.target.value) * 1000) }) })),
       list.length
         ? h('div.table-wrap', h('table',
           h('thead', h('tr', h('th', t('MHz')), h('th', t('Margin')), h('th', t('Description')), h('th', t('Added')), h('th', ''))),

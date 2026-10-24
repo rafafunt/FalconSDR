@@ -1693,8 +1693,8 @@ msgstr "Połączenie z serwerem"
 msgid "Access"
 msgstr "Dostęp"
 
-msgid "Scheduling"
-msgstr "Harmonogram skanowania"
+msgid "Recency boost"
+msgstr "Recency boost"
 
 msgid "Appearance & language"
 msgstr "Wygląd i język"
