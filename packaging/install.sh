@@ -113,7 +113,7 @@ install_rpm() {
     "https://github.com/$REPO/releases/download/$tag/falconsdr-${ver}-1.${arch}.rpm" \
     "$tmp/falconsdr.rpm"
   if have_dnf; then sudo dnf install -y "$tmp/falconsdr.rpm"
-  elif have_zypper; then sudo zypper --no-confirm install "$tmp/falconsdr.rpm"
+  elif have_zypper; then sudo zypper --non-interactive install --allow-unsigned-rpm "$tmp/falconsdr.rpm"
   else sudo rpm -i "$tmp/falconsdr.rpm"; fi
 }
 
