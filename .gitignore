@@ -17,6 +17,12 @@ __pycache__/
 packaging/linux-deb/build-venv/
 packaging/linux-deb/build/
 packaging/linux-deb/out/
+packaging/rpm/build-venv/
+packaging/rpm/build/
+packaging/rpm/out/
+packaging/appimage/build-venv/
+packaging/appimage/build/
+packaging/appimage/out/
 packaging/windows/build-venv/
 packaging/windows/build/
 packaging/windows/out/

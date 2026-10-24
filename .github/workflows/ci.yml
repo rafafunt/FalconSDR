@@ -22,3 +22,16 @@ jobs:
       - run: python -m unittest tests/test_core.py -v
       - if: runner.os == 'Linux'
         run: for f in falconsdr/web/static/js/*.js falconsdr/web/static/js/views/*.js; do node --check "$f"; done
+      # New packaging must stay valid without building full bundles in CI:
+      # shell syntax + RPM spec parses. (.SRCINFO sync is verified by the
+      # AUR maintainer on release, not on every push - it needs the Arch
+      # mirrors.)
+      - if: runner.os == 'Linux'
+        run: |
+          bash -n packaging/install.sh
+          bash -n packaging/rpm/build.sh
+          bash -n packaging/appimage/build.sh
+          bash -n packaging/rpm/build-in-docker.sh
+          bash -n packaging/appimage/build-in-docker.sh
+      - if: runner.os == 'Linux'
+        run: python -c "import re; t=open('packaging/rpm/falconsdr.spec').read(); assert 'AutoReqProv' in t, 'spec must disable AutoReqProv (bundled /opt libs)'"

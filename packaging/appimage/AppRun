@@ -1,0 +1,12 @@
+#!/bin/sh
+# AppRun for the FalconSDR AppImage: launches the PyInstaller-frozen app
+# inside usr/bin, keeping the bundle's own libraries first for the app
+# itself while never leaking them into child *system* programs (a system
+# ffmpeg loading the bundle's libraries fails - AGENTS.md gotcha 35).
+# The app's own audio_transcode.system_env() already strips LD_LIBRARY_PATH
+# for those children; this wrapper only sets up the bundle side.
+set -e
+APPDIR="$(dirname "$(readlink -f "$0")")"
+export APPDIR
+# PyInstaller --onedir layout lives in usr/bin/falconsdr/*.
+exec "$APPDIR/usr/bin/falconsdr/falconsdr" "$@"
