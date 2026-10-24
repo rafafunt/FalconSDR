@@ -34,15 +34,8 @@ def _ch(freq_mhz: float, name: str, modulation: Modulation = Modulation.AM) -> C
 
 @dataclass(frozen=True)
 class BandPreset:
-    """One entry in the "Add preset" picker for the band-list editor.
-    ``label``/``tooltip`` here are the plain English source text - wrapped in
-    ``t()`` at the point of display (the web UI), not
-    here: presets are loaded once, at module-import time (or whenever
-    reload_presets()/save_user_presets() runs), which can happen before
-    ``i18n.set_language()`` ever runs (see main.py) - a tr() call made here
-    would always resolve to English regardless of the configured language.
-    Deliberately plain, JSON-serializable field types only (str/int) - see
-    to_dict()/from_dict()."""
+    """One band preset. ``label``/``tooltip`` are plain English, translated
+    by the UI - a tr() here could run before the language is set."""
     id: str
     label: str
     tooltip: str
@@ -69,21 +62,11 @@ class BandPreset:
         )
 
 
-# Built-in preset catalogue, shipped with the app as a plain, human-editable
-# JSON file (not hardcoded here) - punkt 9/finalization request: presets
-# should be easy for a user to inspect, tweak, back up and share, not
-# something only a code change can touch. Picked to be useful in most
-# countries by default (see AGENTS.md's own notes on this) - no country-
-# specific bands here; those live as opt-in *discrete channels*
-# (MILITARY_CHANNELS/FIRE_CHANNELS below) instead, loaded only on request.
+# Built-in presets (gotcha 21): an editable JSON file shipped with the app,
+# useful in any country - country-specific frequencies are the opt-in
+# channel lists below.
 _BUILTIN_PRESETS_PATH = Path(__file__).resolve().parent / "presets" / "band_presets.json"
-# User's own additions/edits/hides - never touched by an app update (that
-# only ever replaces _BUILTIN_PRESETS_PATH, which ships inside the package),
-# and never lost by one either. Absent entirely on a fresh install - see
-# load_user_data()'s own empty-defaults fallback. A user CAN edit or delete
-# a built-in preset (explicit request - "once someone renames it, it's
-# theirs from then on") - see get_all_presets()'s docstring for exactly how
-# that's represented without ever touching the built-in file itself.
+# The user's additions, edits and hidden built-ins; updates never touch it.
 USER_PRESETS_PATH = CONFIG_DIR / "band_presets.json"
 
 
@@ -93,8 +76,7 @@ def _load_user_data_raw(path: Path) -> tuple[list[BandPreset], set[str]]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(raw, list):
-            # Pre-"delete built-ins" format (this feature's own first cut) -
-            # just a plain list of presets, no hidden-ids concept yet.
+            # Older format: a plain list, no hidden ids.
             return [BandPreset.from_dict(d) for d in raw], set()
         presets = [BandPreset.from_dict(d) for d in raw.get("presets", [])]
         hidden = set(raw.get("hidden_builtin_ids", []))
@@ -133,49 +115,24 @@ def save_user_data(presets: list[BandPreset], hidden_builtin_ids: set[str]) -> N
 
 
 def save_user_presets(presets: list[BandPreset]) -> None:
-    """Convenience wrapper keeping the current hidden-ids set untouched -
-    every write from the presets editor that isn't a delete-a-built-in goes
-    through this one instead of building the tuple by hand each time."""
+    """save_user_data() keeping the hidden ids as they are."""
     save_user_data(presets, load_hidden_builtin_ids())
 
 
 def hide_builtin_preset(preset_id: str) -> None:
-    """"Deletes" a built-in preset - the built-in JSON file itself is never
-    touched (it's part of the installed package, restored by every update
-    regardless), so a deletion is recorded here instead and filtered out by
-    get_all_presets(). Restored by "Reset to defaults" (Controller.reset_to_defaults) clearing
-    this whole file, or by re-importing/re-adding a preset with the same id
-    (which shadows it back "visible" again via the same mechanism as an
-    edit - see get_all_presets())."""
+    """"Deletes" a built-in by recording its id - the shipped file is never
+    modified. "Reset to defaults" brings it back."""
     hidden = load_hidden_builtin_ids()
     hidden.add(preset_id)
     save_user_data(load_user_presets(), hidden)
 
 
 def get_all_presets() -> list[BandPreset]:
-    """Built-ins (minus any hidden or shadowed - see below) followed by the
-    user's own - called fresh at every point of use (the web UI's preset
-    picker and editor) rather than cached in a module-level
-    constant, so an edit made in the presets editor shows up immediately
-    without needing a restart - the exact same "function, not a frozen
-    constant" fix AGENTS.md already documents for the i18n footgun, applied
-    here for a different reason (live edits, not translation) but the same
-    underlying shape.
+    """Built-ins, minus hidden and shadowed ones, then the user's own.
+    Never cache it - edits must show up live (gotcha 21).
 
-    Editing or deleting a *built-in* preset (both explicitly requested -
-    "once someone renames it, it's theirs from then on") never touches
-    _BUILTIN_PRESETS_PATH (part of the installed package - every app update
-    would just restore it anyway). Both are represented purely in the
-    user's own file instead:
-    - **Edit**: upsert_preset() saves the edited version into the user
-      presets list *under the same id* the built-in had. A built-in whose
-      id also appears in the user list is excluded here - the user version
-      "shadows" it - so from that point on it's indistinguishable from (and
-      editable/deletable exactly like) a preset the user created from
-      scratch, matching the explicit request.
-    - **Delete**: the id goes into hidden_builtin_ids instead (see
-      hide_builtin_preset()) and is excluded here too, with no
-      corresponding user-list entry - "gone", not "shadowed by nothing"."""
+    An edited built-in is saved to the user file under the same id, which
+    shadows the built-in; a deleted one goes to hidden_builtin_ids."""
     user_presets = load_user_presets()
     hidden = load_hidden_builtin_ids()
     user_ids = {p.id for p in user_presets}
@@ -235,20 +192,15 @@ def import_presets(raw: list[dict]) -> int:
 
 
 def is_user_owned_preset(preset_id: str) -> bool:
-    """True once a preset (built-in-sourced originally or not) has a user-
-    file entry under this id - i.e. it's editable/deletable via
-    upsert_preset()/delete_preset(). A still-pure built-in (never edited) is False."""
+    """True when the user file has this id (a user preset or an edited
+    built-in); False for an untouched built-in."""
     return preset_id in {p.id for p in load_user_presets()}
 
 
 # Curated discrete channels (Memory List mode) ------------------------------
-# Highest hit-rate picks: guard/emergency, NATO/USAF air-to-air refueling
-# (tankers), Warsaw OAT military control sectors, and the eastern/northern
-# QRA and reinforcement bases most active during Baltic Air Policing and
-# eastern-flank exercises. Channel names are kept as their real, Poland-
-# specific facility/callsign names (e.g. "Malbork Wieza/Tower") rather than
-# translated - they're proper nouns, the actual identifiers heard on air, not
-# generic UI text.
+# Highest hit-rate picks: guard, tankers, Warsaw OAT sectors and the bases
+# most active in Baltic Air Policing. Names are the real facility names heard
+# on air - proper nouns, not translated.
 MILITARY_CHANNELS: list[Channel] = [
     # -- Guard / emergency (always worth a slot, near-constant monitoring) --
     _ch(243.000, "UHF Guard (MAD, emergency)"),
@@ -298,13 +250,9 @@ MILITARY_CHANNELS: list[Channel] = [
     _ch(264.875, "Miroslawiec Wieza/Tower (UHF)"),
 ]
 
-# Fire brigade (PSP/OSP) - nationwide rescue-firefighting channels (KRG) from
-# the VHF frequency plan (148.6625-149.3375 MHz, NFM, 12.5 kHz raster) plus
-# the OSP siren selective-alerting frequency pair. KRG 1-8 are the channels
-# used nationwide during rescue-firefighting operations (not local dispatch
-# desks), so they're the ones most likely to carry real traffic. Many OSP
-# units still operate on analog despite PSP's ongoing migration to DMR -
-# other/additional channels from the same band may be in local use.
+# Fire brigade (PSP/OSP): the nationwide KRG 1-8 rescue channels
+# (148.6625-149.3375 MHz, NFM) plus the OSP siren-alerting pair. Local
+# channels in the same band may also be in use; part of PSP is on DMR now.
 FIRE_CHANNELS: list[Channel] = [
     _ch(148.7000, "PSP KRG 1 (nationwide)", Modulation.NFM),
     _ch(149.0875, "PSP KRG 2 (nationwide)", Modulation.NFM),

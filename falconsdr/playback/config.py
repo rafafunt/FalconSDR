@@ -1,10 +1,7 @@
-"""Paths and constants used by the playback tab (formerly ATC Scanner Browser).
+"""Paths and constants of the recording library.
 
-The recordings directory isn't hardcoded here - the player is now part of
-FalconSDR, so it always uses the current ``AppConfig.recording.output_dir``
-(see ``index.Library``). The ``FALCONSDR_DIR`` constant below is only the
-default value used if something calls this module's functions without
-passing its own ``root``.
+The library uses AppConfig.recording.output_dir; ``FALCONSDR_DIR`` is only
+the default when a function gets no ``root``.
 """
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -31,29 +28,9 @@ FAVORITES_FILE = APP_DATA_DIR / "favorites.json"
 # Date subfolder name format: YYYY-MM-DD
 DATE_DIR_FORMAT = "%Y-%m-%d"
 
-# Filename pattern: 2026-07-23_19-31-01-123456_134474.wav
-# (date and time are LOCAL TIME; the optional -mmmmmm is microseconds - added
-# so two separate transmissions on the same frequency starting within the
-# same clock second never get an identical filename and overwrite each other
-# (microsecond, not millisecond, resolution - so this is mathematically
-# impossible, not just "very unlikely": two Python statements can't execute
-# within the same microsecond). Older recordings without this segment still
-# parse correctly, see parse_filename() in organizer.py - the last number is
-# the rounded frequency in kHz.
-#
-# Also matches recorder.py's "single" mode naming (manual recording, and the
-# global "Single File" option) - literally "..._session.wav", no frequency
-# at all, since that file isn't tied to one fixed channel - see
-# organizer.parse_filename()'s handling (models.MANUAL_FREQ_KHZ). Without
-# this alternative, every such file was silently invisible to the whole
-# recording library (organize() skipped it forever, scan_recordings()
-# dropped it) despite being a perfectly real, playable recording on disk -
-# a real bug a user hit (manual Record "did nothing" - it did, the file just
-# never showed up anywhere).
-#
-# Also matches .mp3 (audio_transcode.py, gotcha 14) - the extension carries
-# no meaning for parsing beyond "which player/decoder to use", so it's a
-# plain alternative here, not a separate capture group.
+# Filename: 2026-07-23_19-31-01-123456_134474.wav - local time, optional
+# microseconds (older files have none), frequency in kHz. A manual recording
+# ends in "_session" instead (gotcha 19). .wav or .mp3.
 FILENAME_REGEX = r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})(?:-(\d{6}))?_(?:(\d+)|session)\.(?:wav|mp3)$"
 
 APP_DATA_DIR.mkdir(parents=True, exist_ok=True)

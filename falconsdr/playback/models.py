@@ -8,15 +8,8 @@ from typing import Optional
 
 from ..i18n import tr
 
-# recorder.py's "single" mode (manual recording - see scanner_engine.py's
-# start_manual_recording - and the global Single/Split setting's "Single
-# File" option) never ties one file to one fixed frequency the way split
-# mode does (see _single_file_path() - literally "..._session.wav", no
-# frequency at all), since the recorded channel can change mid-file (manual
-# recording mirrors whatever's currently primary; "Single File" mode reuses
-# one file across multiple detections). 0 is never a real radio frequency,
-# so it's a safe, unambiguous sentinel - see organizer.parse_filename(),
-# which is the only place that ever produces this value.
+# Frequency of a manual "..._session" recording, which may span several
+# channels (gotcha 19). 0 is never a real frequency.
 MANUAL_FREQ_KHZ = 0
 
 

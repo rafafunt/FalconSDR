@@ -1,18 +1,8 @@
-"""Embeds a JSON blob of scanner diagnostics into each recorded WAV as a
-standard RIFF ``LIST``/``INFO``/``ICMT`` chunk - the same mechanism e.g.
-ffmpeg uses to write WAV comments. Any player/tool that doesn't know about it
-just skips it (RIFF readers are required to skip unrecognised chunks), but
-``ffprobe``, ``exiftool`` and some audio editors will show it. Purely
-informational - gain, trigger level, capture window details, weight, etc. at
-the moment a transmission started/ended recording - so a recording's
-metadata can later be compared against its actual audio quality.
+"""Embeds the scanner's settings at recording time (gain, trigger, window,
+...) as JSON in a standard RIFF ``LIST``/``INFO``/``ICMT`` chunk - players
+skip it, ffprobe/exiftool show it.
 
-Deliberately a separate, tiny hand-rolled writer instead of a dependency
-(mutagen et al.): the ``wave`` module in ``recorder.py`` has no concept of
-extra chunks, and pulling in a whole tagging library just for one small
-JSON blob isn't worth it. Must be called *after* ``wave.Wave_write.close()``
-has already finalised the file - the RIFF/``data`` chunk sizes it writes
-would otherwise be stale once we append after them.
+Call only after ``wave.Wave_write.close()``, or the chunk sizes are stale.
 """
 from __future__ import annotations
 

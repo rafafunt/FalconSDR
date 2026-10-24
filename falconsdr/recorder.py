@@ -1,5 +1,5 @@
-"""Smart recorder: writes audio to disk only for transmissions the scanner
-actually stops on (SIGNAL_DETECTED / LINGER), per spec section 4.3.
+"""WAV writer: audio of the transmissions the scanner stops on, one file
+each; also the continuous manual recording (``single_file``).
 """
 from __future__ import annotations
 
@@ -15,34 +15,18 @@ from .config import RecordingConfig
 
 class Recorder:
     def __init__(self, config: RecordingConfig, audio_rate: int, single_file: bool = False):
-        """``single_file`` is never set from ``config`` (which no longer has
-        a "mode" concept at all - see RecordingConfig's own comment) - it's
-        an explicit, separate flag only ScannerEngine.start_manual_recording()
-        ever passes ``True`` for. Every other caller (auto-recording's
-        per-slot Recorder, one per transmission - see gotcha 12) leaves it
-        ``False``, unconditionally split-mode: one file per transmission,
-        opened in begin_transmission(), never in start_session()."""
+        """``single_file`` is True only for the manual recording (gotcha 13);
+        otherwise each transmission gets its own file in begin_transmission()."""
         self.config = config
         self.audio_rate = audio_rate
         self._single_file = single_file
         self._wav: wave.Wave_write | None = None
         self._current_path: Path | None = None
         self._session_active = False
-        # True once *real* (non-silence-substituted - see write_audio()'s
-        # ``real`` param) audio has been written to the *current* file -
-        # see end_transmission()'s "phantom recording" cleanup below. Reset
-        # per-file in _open_file(), not per-session, since a session can span
-        # many split-mode files.
+        # Current file got real (not squelch-substituted) audio.
         self._has_real_audio = False
-        # Silence blocks (write_audio(..., real=False)) are held here rather
-        # than written immediately - see write_audio()'s docstring for why:
-        # a squelched stretch might turn out to be a genuine mid-conversation
-        # pause (more real audio still coming - flushed to disk then, in
-        # order) or the trailing tail of the whole transmission with nothing
-        # more coming - which the user explicitly wants trimmed, not kept as
-        # dead air at the end of the file. Only known which one it was in
-        # hindsight, so hold the audio (bounded - at most one LINGER
-        # period's worth, a handful of chunks) until either happens.
+        # Squelched silence waits here: written if real audio follows, dropped
+        # if the file closes first (gotcha 6).
         self._pending_silence: List[np.ndarray] = []
 
     @property
@@ -54,10 +38,7 @@ class Recorder:
         return self._wav is not None
 
     def start_session(self) -> None:
-        """Called when the scanner starts running (auto-recording) or a
-        manual recording starts. Only opens a file immediately for the
-        ``single_file=True`` case (manual recording) - auto-recording's own
-        per-transmission file opens later, in begin_transmission()."""
+        """Opens the file right away only for ``single_file``."""
         self._session_active = True
         Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
         if self._single_file:
@@ -69,27 +50,15 @@ class Recorder:
         self._session_active = False
 
     def begin_transmission(self, freq_hz: int) -> None:
-        """Opens a new per-transmission file - never called for a
-        ``single_file=True`` Recorder (manual recording writes straight to
-        the one file start_session() already opened, no per-transmission
-        concept at all)."""
+        """Opens a new per-transmission file (not used with ``single_file``)."""
         if not self._session_active:
             return
         self._open_file(self._split_file_path(freq_hz))
 
     def write_audio(self, audio: np.ndarray, real: bool = True) -> None:
-        """Writes ``audio`` (mono) to the current file - or, for
-        ``real=False`` (silence substituted for a squelched, below-threshold
-        stretch - see ScannerEngine._play_and_record_slot), holds it instead
-        of writing it immediately (see self._pending_silence). A genuine
-        mid-conversation pause should read as real silence when more speech
-        follows - so once *real* audio arrives, any pending silence is
-        flushed first, in order, ahead of it. But if the transmission ends
-        (see _close_file()) before real audio ever follows a silence block,
-        that pending silence is simply discarded, unwritten - the user
-        explicitly wants a squelched trailing tail trimmed, not kept as dead
-        air at the end of the file. Only the *middle* case should sound like
-        a real pause; the end should just end."""
+        """Writes mono ``audio``. ``real=False`` (squelched silence) is held
+        back: flushed before the next real audio - a pause in the middle -
+        or dropped when the file closes - no dead air at the end."""
         if self._wav is None:
             return
         if not real:
@@ -103,23 +72,9 @@ class Recorder:
         self._has_real_audio = True
 
     def end_transmission(self) -> Path | None:
-        """Closes the current per-transmission file. Returns the finished
-        file's path so the caller can hand it straight to the recording
-        library instead of waiting for a periodic rescan. Never called on a
-        ``single_file=True`` Recorder (manual recording uses stop_session()
-        directly instead - there's no per-transmission concept to end).
-
-        Deletes the file and returns None instead if it never received any
-        *real* audio (see write_audio()'s ``real`` param) - a real, observed
-        case since Squelch (see AppConfig.squelch_enabled) started gating
-        blocks below its threshold: a brief above-trigger spike can open a
-        slot, then fall back below the squelch threshold before this slot is
-        even serviced once (see ScannerEngine._service_active_slots/
-        _play_and_record_slot), leaving the slot "open" for the full LINGER
-        grace period with nothing but silence ever written. Without this,
-        that produced an all-silent WAV that still got catalogued into the
-        recording library as a genuine recording - pure clutter with
-        nothing to hear."""
+        """Closes the per-transmission file and returns its path - or deletes
+        it and returns None if it never got real audio (a short spike that
+        was squelched throughout would otherwise leave a silent WAV)."""
         path = self._current_path
         had_real_audio = self._has_real_audio
         self._close_file()
@@ -133,29 +88,16 @@ class Recorder:
 
     # -- internals ---------------------------------------------------
     def _single_file_path(self) -> Path:
-        # Straight into the date folder (like _split_file_path) - a loose
-        # file in the root would get moved by organize() on any Playback
-        # refresh while still open, breaking the rename/mp3 step on stop.
+        # Straight into the date folder - organize() would move a loose file
+        # while it's still open.
         now = dt.datetime.now()
         return Path(self.config.output_dir) / now.strftime("%Y-%m-%d") / f"{now.strftime('%Y-%m-%d_%H-%M-%S')}_session.wav"
 
     @staticmethod
     def rename_session_file_with_frequency(path: Path, freq_hz: int) -> Path | None:
-        """Renames an already-closed "..._session.<ext>" file (single/manual
-        mode - see _single_file_path()) to "..._<freq_khz>.<ext>", the same
-        naming split-mode auto-recordings use - see
-        ScannerEngine.stop_manual_recording(), the only caller: once a
-        manual recording is known to have actually captured a real
-        frequency (tracked separately - a closed file has no metadata of
-        its own to inspect), it should read as a normal frequency-tagged
-        recording in the recording library instead of the generic "Manual
-        recording" fallback (models.MANUAL_FREQ_KHZ) that name would
-        otherwise parse to. Renamed in place, inside its date folder (see
-        _single_file_path()).
-        Returns None (leaving the original "_session" name in place) if the
-        name doesn't actually contain that marker, or on any filesystem
-        error - a failed rename must never be treated as the recording
-        itself having failed."""
+        """Renames a closed manual "..._session" file to "..._<freq_khz>",
+        like auto-recordings (gotcha 13). Returns None, keeping the old name,
+        if there's no marker or the rename fails - never a recording failure."""
         khz = round(freq_hz / 1000)
         new_name = path.name.replace("_session", f"_{khz}")
         if new_name == path.name:
@@ -169,24 +111,11 @@ class Recorder:
 
     def _split_file_path(self, freq_hz: int) -> Path:
         now = dt.datetime.now()
-        # Microsecond precision, not just seconds: two separate transmissions
-        # on the *same* frequency starting within the same clock-second used
-        # to get an identical filename - the second begin_transmission()
-        # would silently overwrite the first's (still-open-elsewhere-in-the-
-        # library) file via wave.open(..., "wb"), leaving two library rows
-        # pointing at what's now one truncated file. Multi-channel scanning
-        # (a slot closing and immediately reopening for the same frequency
-        # within the same SCANNING pass, no window change needed) made this
-        # actually likely instead of a theoretical edge case. Microsecond (not
-        # millisecond) resolution makes a collision not just unlikely but
-        # actually impossible - no two Python statements execute within the
-        # same microsecond. See FILENAME_REGEX / parse_filename() in
-        # playback/ for the matching (backward-compatible) parser change.
+        # Microseconds: two transmissions on one frequency within the same
+        # second used to share a name, the second overwriting the first.
         stamp = now.strftime("%Y-%m-%d_%H-%M-%S-") + f"{now.microsecond:06d}"
         khz = round(freq_hz / 1000)
-        # Written straight into the date folder the recording library
-        # expects (see organizer.py) - no more loose files needing a later
-        # "organize" pass before they show up.
+        # Straight into the date folder the library expects (organizer.py).
         date_dir = Path(self.config.output_dir) / now.strftime("%Y-%m-%d")
         return date_dir / f"{stamp}_{khz}.wav"
 
@@ -210,10 +139,7 @@ class Recorder:
     def _close_file(self) -> None:
         if self._wav is None:
             return
-        # Any not-yet-flushed silence (write_audio(..., real=False)) is the
-        # trailing tail of this transmission, since nothing - see there -
-        # ever asked for it to be flushed by writing more real audio after
-        # it. Discard rather than write: the trim the user explicitly wants.
+        # Unflushed silence is the trailing tail - dropped.
         self._pending_silence = []
         self._wav.close()
         self._wav = None

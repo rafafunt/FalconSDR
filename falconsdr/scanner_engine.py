@@ -1,23 +1,11 @@
-"""The heart of FalconSDR: a background thread implementing the scanner
-state machine from spec section 5, tightly coupled to the recorder so audio
-is only ever written to disk in SIGNAL_DETECTED / LINGER.
+"""The scanner: a background thread running the state machine
+(CALCULATE_NEXT_FREQ -> TUNING -> SCANNING -> SIGNAL_DETECTED <-> LINGER) that
+writes audio only for transmissions it actually stops on.
 
-Wideband mode: the RTL-SDR (and most SoapySDR devices) can capture ~2.4 MHz
-in one shot, far wider than a single ATC channel. Instead of retuning the
-tuner to every channel in turn, we group the whole scan range/memory list
-into as few capture windows as will fit, and watch every channel inside a
-window simultaneously via one FFT per block (see channelizer.py). Often the
-entire configured range collapses into a single window, and the tuner never
-needs to move again once a scan starts.
-
-Since a window is already watching several channels at once for detection
-purposes, it can just as well *service* more than one active transmission at
-once too, instead of locking onto the single strongest one and ignoring the
-rest of the window until it's done - see _Slot. There's no cap on how many
-can be open at once (bounded only by how many channels a window actually
-groups together, which plan_windows already keeps sane) - each slot's DSP
-cost (a lightweight AM/NFM demod + optional noise reduction per ~30ms block)
-is cheap enough that even a handful running at once is a non-issue.
+Wideband: the channels are grouped into as few capture windows as fit the
+SDR's bandwidth (channelizer.plan_windows) and every channel in a window is
+measured from one FFT per block. Several active channels in a window are
+serviced at once, each in its own _Slot.
 """
 from __future__ import annotations
 
@@ -58,87 +46,36 @@ MAX_VFO_CHANNELS = 20_000
 # (a broadcast station is ~200 kHz wide; same-area stations sit >=200 kHz apart).
 _WFM_GUARD_HZ = 200_000
 
-# Reflection/splatter detection (see ScannerEngine._detect_reflections) - a
-# receiver-generated weaker copy of a much stronger simultaneously-active
-# channel (intermod/image/phase-noise splatter, not a real transmission).
-# Real, measured case: a strong signal on one channel produced a correlated,
-# 10-25dB-weaker "echo" on another channel in the same capture window,
-# timed within 0-3s, confirmed across dozens of real recordings.
-#
-# _REFLECTION_HISTORY_TICKS: ~30ms/tick, so 50 ticks = ~1.5s of rolling level
-# history kept per active slot.
-_REFLECTION_HISTORY_TICKS = 50
-# Never judge on a snap coincidence - two genuinely independent transmissions
-# can easily start in the same tick just because the scanner retuned to a
-# window where both happen to be active. Only once they've *both* been
-# active for this many ticks (~450ms) do their envelopes have enough shared
-# history to tell "moving together" apart from "just overlapping".
+# Reflection detection (_detect_reflections): a strong channel can produce a
+# correlated, 10-25 dB weaker copy on another channel of the same window
+# (intermod/image/splatter) - measured on real recordings.
+_REFLECTION_HISTORY_TICKS = 50  # ~1.5 s of level history per slot
+# Both slots must have been active this long (~450 ms): two real transmissions
+# can start in the same tick just because the scanner tuned onto both.
 _REFLECTION_MIN_OVERLAP_TICKS = 15
-# How tightly the two envelopes must track each other (Pearson correlation
-# of their last _REFLECTION_MIN_OVERLAP_TICKS+ levels) - high on purpose:
-# two unrelated real signals doing their own thing essentially never hit
-# this by chance, but a receiver-generated artifact (mechanically derived
-# from the same source) reliably does.
+# Pearson correlation of the two level histories - unrelated signals
+# practically never reach it, a receiver artifact does.
 _REFLECTION_CORR_THRESHOLD = 0.92
-# The weaker one must be substantially weaker on average - matches the
-# 10-25dB gaps actually measured, with margin. Guards against ever treating
-# two comparably-strong simultaneous real signals as one being a reflection
-# of the other, no matter how correlated they looked (e.g. two stations
-# keyed by the same net controller/repeater system).
+# Mean level gap, so two comparably strong real signals are never merged.
 _REFLECTION_MIN_GAP_DB = 8.0
-# Hard cap on how many simultaneously-active slots this check ever looks at
-# (checks are O(n^2) pairs) - this is cheap in the normal case (a handful of
-# slots at most), but must never be allowed to grow unbounded if something
-# else goes wrong and many channels trigger at once. Real-hardware lesson
-# from gotcha 30 (the spectrum-view GIL stall that caused genuinely dropped
-# IQ chunks): anything added to this per-tick path must stay provably cheap,
-# never "cheap in the common case" - above this many active slots, skip the
-# check entirely for this tick rather than let the pair count balloon.
+# The check is O(n^2) per tick: above this many slots it is skipped (gotcha 30).
 _REFLECTION_MAX_SLOTS_CHECKED = 8
-# Reuses FALCONSDR_DEBUG_LIVE_AUDIO (see live-audio debugging history) to
-# also gate a once-a-second scanner-loop timing summary: how many SCANNING
-# ticks in the last second took longer than CHUNK_SECONDS to process (demod
-# + noise reduction, per active slot) and the worst one - a
-# genuine CPU-throughput deficit (ticks consistently over budget) looks
-# different from real-time thread-priority starvation (which SCHED_FIFO,
-# see _maybe_boost_priority, would have already fixed) and needs a
-# different fix (less/faster work per tick, not a scheduling nudge).
+# FALCONSDR_DEBUG_LIVE_AUDIO=1: once a second, print how many SCANNING ticks
+# overran CHUNK_SECONDS - a CPU deficit, not the scheduling starvation
+# _maybe_boost_priority deals with.
 _DEBUG_TIMING = os.environ.get("FALCONSDR_DEBUG_LIVE_AUDIO") == "1"
-# A single backend.read() call this slow gets its own immediate log line
-# (not just folded into the once-a-second summary below) - found via
-# cross-checking WAV metadata's open->close wall-clock duration against the
-# actual recorded audio length on a real live session: 307/307 recent
-# recordings had *some* excess wall-clock time unaccounted for by audio
-# (median ~0.3s, tail up to 8s), uncorrelated with recording length
-# (correlation ~0.07 - a per-tick processing deficit would instead scale
-# *with* length). That signature points to rare, discrete stalls, not a
-# steady-state deficit - exactly what an averaged-per-second summary is
-# liable to wash out, and specifically outside what the tick-processing
-# timing below ever measured: tick_start there is captured *after*
-# backend.read() already returned, so the read call's own blocking time
-# (USB/driver waiting for the SDR to actually have `chunk` samples ready)
-# was invisible to it.
+# A single backend.read() this slow is logged on its own line: real stalls
+# were rare and discrete (up to 8 s), which the per-second summary washes out.
 _READ_STALL_LOG_THRESHOLD_S = 0.5
 
 _STARTUP_CHECKPOINT_PATH = CONFIG_DIR / "startup_checkpoints.log"
 
 
 def _checkpoint(msg: str) -> None:
-    """Always-on, best-effort breadcrumb trail through scanner startup -
-    truncated fresh at the start of every run() (see ScannerEngine.run())
-    so it only ever reflects the most recent attempt, not an ever-growing
-    history. Exists to chase a real, still-unexplained bug: the whole
-    process has been observed to vanish completely a few seconds after
-    Start is clicked - no Python traceback, no fatal-signal trace even with
-    faulthandler active (see main.py), no kernel OOM message, no
-    systemd-oomd kill logged - reproducibly when launched from the .desktop
-    file but seemingly never from a terminal. Generic system/journal logs
-    were checked exhaustively (environment variables, resource limits,
-    cgroup/oomd policy, kernel dmesg) without finding the mechanism. This
-    narrows a future recurrence down to "got past checkpoint X but not
-    X+1" from a file this app writes directly, instead of inferring from
-    OS-level logs that turned out not to capture whatever this actually
-    is."""
+    """Best-effort breadcrumb trail through scanner startup, truncated at
+    each run(). Kept for a still-unexplained case: the process vanished a few
+    seconds after Start (no traceback, no OOM kill, only when launched from
+    the .desktop file) - the file shows the last checkpoint reached."""
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         with _STARTUP_CHECKPOINT_PATH.open("a", encoding="utf-8") as f:
@@ -147,20 +84,11 @@ def _checkpoint(msg: str) -> None:
         pass
 
 
-# Reconnect attempts after the SDR drops out (flaky USB dongles, cable
-# issues, etc.) retry at a constant fast interval - never longer than 2s -
-# so a user can physically unplug/replug the dongle a few times in a row
-# and have the next attempt land quickly, instead of waiting out a
-# lengthening backoff.
+# Constant 2 s retry, so replugging the dongle reconnects quickly.
 RECONNECT_BACKOFF_S = [2]
-# _next_window()'s blacklist-skip retry bound: generous enough to cycle past
-# a handful of fully-blacklisted lanes/windows in a row without looping forever
-# when everything happens to be blacklisted.
+# _next_window() skips fully blacklisted windows; bounded in case all are.
 MAX_PICK_ATTEMPTS = 64
-# Minimum real time between "floor" calibration snapshots of the *same*
-# window (see CalibrationLogger) - it costs one extra full-window
-# channel_powers_dbfs() call, cheap occasionally but not worth paying every
-# tick just to get more samples than the calibration data will ever need.
+# Background-noise snapshots of one window (CalibrationLogger) at most this often.
 _FLOOR_LOG_INTERVAL_S = 30.0
 
 
@@ -289,19 +217,9 @@ def _wide_anchor_windows(freqs: list[int], band: VfoRangeConfig, sample_rate: fl
 
 
 class _SpectrumWorker:
-    """Runs spectrum_snapshot() (an FFT over the *whole* captured IQ block -
-    tens of thousands of samples, a much bigger FFT than anything in the
-    demod/noise-reduction path, which only ever sees the much shorter
-    per-channel *audio* output) on its own thread, decoupled from the
-    scanner thread - live audio has a real-time deadline and a slow
-    spectrum frame must never be allowed to delay it. This purely feeds the
-    GUI's spectrum widget from the raw IQ - it never touches demodulated
-    audio or the recorder, so recording is completely unaffected by this.
-
-    Only ever keeps the *latest* submitted job: if the worker is still busy
-    when a newer one arrives, the older one is simply dropped instead of
-    queueing up and falling behind - fine for a refresh-rate visual display
-    (a skipped frame is imperceptible), never fine for audio.
+    """Runs spectrum_snapshot() - a large FFT over the whole IQ block - on its
+    own thread, so a slow frame never delays live audio. Keeps only the
+    latest job: a dropped spectrum frame is invisible, dropped audio isn't.
     """
 
     def __init__(self, signals: "ScannerSignals"):
@@ -345,16 +263,10 @@ class _SpectrumWorker:
 
 
 class _Slot:
-    """One in-progress transmission being demodulated/recorded. Unlike the
-    scheduling data above (shared, rebuilt wholesale by _rebuild_windows),
-    each slot owns its *own* Demodulator/NoiseReducer/Recorder, created when
-    it opens and discarded when it closes - so two channels active at once
-    never share filter state, and there's no fixed cap on how many slots can
-    exist (see module docstring). ``linger_deadline`` is None while the
-    channel is genuinely above the trigger level right now; once it dips
-    below, it holds the monotonic time the slot should actually close if the
-    level doesn't come back up before then (mirrors the old LINGER state,
-    just tracked per-slot instead of as a single shared engine state)."""
+    """One transmission being demodulated/recorded. Each slot owns its own
+    Demodulator/NoiseReducer/Recorder, so simultaneous channels never share
+    filter state. ``linger_deadline`` is None while the level is above the
+    trigger, else the monotonic time the slot closes unless it comes back."""
 
     def __init__(
         self, freq_hz: int, name: str, modulation: Modulation, offset_hz: float,
@@ -368,30 +280,20 @@ class _Slot:
         self.noise_reducer = noise_reducer
         self.recorder = recorder
         self.linger_deadline: float | None = None
-        # True while the previous tick's block was dropped by squelch (see
-        # _effective_squelch_dbfs) - lets _play_and_record_slot() detect the
-        # exact tick audio resumes after a squelched gap, to reset
-        # noise_reducer's state right then (see its own comment there).
+        # Previous block was squelched: the noise reducer is reset when audio resumes.
         self.was_squelched = False
-        # Everything worth remembering about this transmission for the WAV
-        # metadata chunk (see wav_metadata.py) - filled in at open time in
-        # _open_slot(), topped up with the closing details in _close_slot().
+        # WAV metadata (wav_metadata.py): filled in _open_slot(), completed in _close_slot().
         self.meta: dict = {}
         self.opened_at = time.monotonic()
-        # Set by _open_slot() right after construction - which window (and
-        # therefore which band's "advanced" overrides, if any) this slot was
-        # opened from. See _effective_* / _apply_noise_reduction.
+        # Window it was opened from - selects the band's own overrides, if any.
         self.window: ScanWindow | None = None
-        # Rolling per-tick level history (dBFS) - see
-        # ScannerEngine._detect_reflections(). Every slot active at the same
-        # time gets one level appended per tick in lockstep (same loop, same
-        # call), so the last N entries of any two slots' deques are already
-        # time-aligned with each other - no timestamps needed.
+        # Per-tick levels for _detect_reflections(); every slot appends in the
+        # same tick, so the histories are time-aligned without timestamps.
         self.level_history: deque[float] = deque(maxlen=_REFLECTION_HISTORY_TICKS)
 
 
 class Signal:
-    """Minimal stand-in for a Qt signal: handlers run synchronously on the
+    """Plain synchronous callbacks (gotcha 36): handlers run on the
     emitting thread (engine loop, slot pool, spectrum worker), so every
     handler must be thread-safe and quick. A failing handler is logged,
     never allowed to kill the engine thread."""
@@ -420,14 +322,8 @@ class ScannerSignals:
         self.freq_changed = Signal()
         self.recording_changed = Signal()  # (active, path)
         self.recording_finished = Signal()  # path of a just-closed per-transmission file
-        # Manual, trigger-independent continuous recording (see
-        # start_manual_recording()) - (active, path). Separate from
-        # recording_changed, which reflects only the automatic, per-transmission
-        # recording driven by the trigger/signal-detection state machine.
-        self.manual_recording_changed = Signal()
-        # Raw wideband IQ recording (see start_raw_iq_recording()) - (active,
-        # path). Not audio at all, so its finished file never goes through
-        # recording_finished (the library only expects playable WAV/MP3 there).
+        self.manual_recording_changed = Signal()  # (active, path)
+        # (active, path); never goes through recording_finished - not audio.
         self.raw_iq_recording_changed = Signal()
         self.blacklisted = Signal()        # freq_hz
         # freqs_hz, db, trigger_dbfs, custom (True = this window's band has its
@@ -436,11 +332,7 @@ class ScannerSignals:
         # Mono float32 audio (AUDIO_RATE) of the primary slot - what the
         # browser's live player streams (see controller.Controller).
         self.live_audio_ready = Signal()
-        # Real, *measured* seconds since this same window (by center_hz) was
-        # last tuned to - not a theoretical estimate (weighted scheduling makes
-        # that dishonest - different windows get visited at very different real
-        # rates). Only emitted from the second visit onward (nothing to compare
-        # the first time).
+        # Measured seconds since this window was last tuned (from the second visit on).
         self.cycle_time_changed = Signal()
         self.gain_range_changed = Signal()  # (lo_db, hi_db)
         self.log = Signal()                # str
@@ -469,16 +361,10 @@ class ScannerEngine(threading.Thread):
         self._edge_compensation: EdgeCompensation | None = None
         self._logged_checkpoints: set[str] = set()  # see _checkpoint_once()
 
-        # Guards the scheduling state below, which _rebuild_windows() replaces
-        # wholesale (from the GUI thread) while _next_window() reads/advances
-        # it (from this thread) - see request_rebuild().
+        # Guards the scheduling state below: _rebuild_windows() replaces it
+        # from the API thread while _next_window() reads it on this thread.
         self._lock = threading.Lock()
-        # Set while the Scanner tab has a band open in "advanced" edit mode -
-        # see set_solo_band() (the Listen page's per-band "scan only this band"). Restricts _rebuild_windows() to
-        # that one band alone (ignoring every other band and the whole
-        # Memory List) so tuning a band's own trigger/timing/gain/noise
-        # settings can be heard/seen in isolation, live, without the rest of
-        # the configured scan competing for turns.
+        # Listen page's "scan only this band" (set_solo_band).
         self._solo_band: VfoRangeConfig | None = None
         self._priority_lanes: list[_Lane] = []
         self._default_lane = _Lane(weight=0.0, windows=[], is_range=False)
@@ -492,82 +378,42 @@ class ScannerEngine(threading.Thread):
         self._channel_weight_map: dict[int, float] = {}
 
         self._cur_window: ScanWindow | None = None
-        # Keyed by window center_hz - real monotonic() timestamp of the last
-        # time we tuned to this window, for cycle_time_changed - see
-        # _pick_next_locked's caller in _main_loop.
+        # center_hz -> monotonic time of the last tune, for cycle_time_changed.
         self._window_last_visit: dict[int, float] = {}
-        # Last center_hz actually pushed to the SDR - lets _main_loop skip a
-        # pointless retune (and the TUNING settle wait that goes with it)
-        # when the round-robin picks the exact same window it's already
-        # parked on, e.g. a narrow band that fits entirely in one window
-        # (nothing else to rotate to) or being "solo"'d via the Scanner
-        # tab's "advanced" edit mode - see _main_loop's CALCULATE_NEXT_FREQ.
+        # Lets _main_loop skip retuning to the window it's already on.
         self._last_tuned_center_hz: float | None = None
-        # Keyed by freq_hz - naturally unique among *active* transmissions
-        # (a frequency can only be in one slot at a time), no fixed size.
         self._slots: dict[int, _Slot] = {}
         self._primary_freq: int | None = None  # which slot's audio is on the live speaker
         self._primary_weight = -1.0
 
         self._applied_gain_mode = ""
         self._applied_gain_db = None
-        # Non-None only while "auto" gain is actually in effect - see
-        # _maybe_apply_gain()/_maybe_run_software_agc() and agc.py. Discarded
-        # (set back to None) the moment effective mode moves to "manual" for
-        # any reason (global toggle, or a band's own advanced override).
+        # Only while the effective gain mode is "sw_auto" (agc.py).
         self._software_agc: SoftwareAgc | None = None
         self._had_real_hardware = False
 
-        # Manual, trigger-independent continuous recording - see
-        # start_manual_recording()/stop_manual_recording(). None while
-        # inactive. Guarded by its own lock (not self._lock, which is about
-        # scheduling state) since it's written from the GUI thread
-        # (start/stop) and read/written from both the main loop thread
-        # (idle-tick silence) and slot-processing worker threads (mirroring
-        # the primary slot's audio) - see _feed_manual_recording().
+        # Manual recording: used from the API thread, this loop and the slot
+        # pool, hence its own lock.
         self._manual_recorder: Recorder | None = None
         self._manual_recorder_lock = threading.Lock()
-        # First real (non-idle-silence) frequency captured during the
-        # current manual recording, if any - "first-wins" latch, reset only
-        # when a new manual recording starts. Used to rename the file from
-        # its generic "..._session.wav" name to the same "..._<freq_khz>.wav"
-        # naming auto-recordings use, once we actually know what it was -
-        # see start_manual_recording()/stop_manual_recording().
+        # First frequency heard during a manual recording; the file is renamed
+        # to it when the recording stops (gotcha 13).
         self._manual_recording_first_freq: int | None = None
 
-        # Raw wideband IQ recording (see start_raw_iq_recording()) - only
-        # ever touched by the GUI thread (start/stop) and the main loop
-        # thread (feeding it each SCANNING-state read), never the slot pool
-        # (it captures the whole window, not any one demodulated channel) -
-        # but still locked for the same GUI-thread-vs-engine-thread safety
-        # as the manual audio recorder above.
         self._iq_recorder: IQRecorder | None = None
         self._iq_recorder_lock = threading.Lock()
 
-        # Demod/noise-reduction/file-write for every simultaneously active
-        # slot runs on this pool instead of one after another on this
-        # thread - see _service_active_slots/AGENTS.md gotcha 12. Sized
-        # generously (Python's own ThreadPoolExecutor default heuristic,
-        # cpu_count()+4 capped at 32) since idle worker threads cost
-        # nothing and the whole point is to never be the bottleneck itself;
-        # measured 3-4.6x real wall-clock speedup for this workload
-        # (resample_poly/FFT-heavy - releases the GIL enough to matter).
+        # Parallel per-slot demod/noise reduction/writes (gotcha 12) - measured
+        # 3-4.6x faster, resample_poly/FFT release the GIL.
         self._slot_pool = ThreadPoolExecutor(
             max_workers=min(32, (os.cpu_count() or 4) + 4), thread_name_prefix="slot-demod",
         )
 
         self._calibration_log = CalibrationLogger()
-        # Keyed by window center_hz - throttles "floor" snapshots, see
-        # _FLOOR_LOG_INTERVAL_S.
         self._last_floor_log: dict[int, float] = {}
         # freq_hz -> monotonic time of the last "recording limit reached" log line
         self._capacity_logged: dict[int, float] = {}
-        # Keyed by window center_hz - see _register_recency_boost /
-        # _due_recency_boost_locked. Only ever touched from this thread (both
-        # registration in _close_slot and reads in _pick_next_locked happen
-        # here), so unlike _priority_lanes/_scheduler it doesn't need
-        # self._lock for correctness - it's just held under it incidentally
-        # since the read site is inside an already-locked method.
+        # center_hz -> boost state (_register_recency_boost); this thread only.
         self._recency_boosts: dict[int, dict] = {}
 
         # FALCONSDR_DEBUG_LIVE_AUDIO-gated timing stats - see _DEBUG_TIMING.
@@ -575,50 +421,29 @@ class ScannerEngine(threading.Thread):
         self._tick_over_budget = 0
         self._tick_max_s = 0.0
         self._tick_report_at = 0.0
-        # backend.read()'s own blocking time, separate from tick processing
-        # time above - see _READ_STALL_LOG_THRESHOLD_S.
         self._read_n = 0
         self._read_over_budget = 0
         self._read_max_s = 0.0
 
-        # Last state actually handed to signals.state_changed - see _emit_state().
         self._last_emitted_state: ScannerState | None = None
 
-    # -- public control (safe to call from the GUI thread) -----------
+    # -- public control (safe to call from other threads) -----------
     def request_stop(self) -> None:
         self._stop_evt.set()
 
     def request_skip(self) -> None:
-        """Abandon the current channel(s)/transmission(s) and move on
-        immediately, without touching the blacklist - for when something on
-        one of these frequencies is worth leaving alone for a future pass,
-        you just don't want to wait it out right now."""
+        """Leave the current transmission(s) now, without blacklisting."""
         self._skip_evt.set()
 
     def request_skip_and_blacklist(self) -> None:
-        """Same as request_skip(), but also permanently blacklists every
-        frequency currently active. Deliberately no confirmation dialog -
-        this needs to be fast, and undoing it is just a Delete in the
-        Blacklist tab."""
+        """request_skip() that also blacklists every active frequency. No
+        confirmation on purpose: it must be fast, and undoing it is one click."""
         self._skip_lockout_evt.set()
 
-    # -- manual, trigger-independent continuous recording -----------------
-    # A completely separate mechanism from the automatic per-transmission
-    # recording above (config.recording.enabled + each _Slot's own
-    # Recorder): this one is user-initiated, records continuously for as
-    # long as it's on (silence included), and is fed from two places -
-    # _play_and_record_slot() (mirrors the primary slot's actual audio,
-    # squelched blocks included as silence, independent of mute) and
-    # _main_loop()'s SCANNING branch (feeds silence on a tick where nothing
-    # was active at all) - see _feed_manual_recording(). Always writes one
-    # continuous file (forced "single" mode, regardless of the global
-    # Single/Split setting, which only applies to the automatic recording -
-    # "continuous" wouldn't mean anything split across files), and never
-    # trims a trailing tail the way squelch-aware auto-recording does
-    # (Recorder.write_audio(..., real=True) unconditionally) - the whole
-    # point of this mode is to capture literally everything that elapsed
-    # while it was on, not to make an editorial judgment about what's worth
-    # keeping.
+    # -- manual continuous recording (gotcha 13) -------------------------
+    # Independent of auto-recording: one continuous file for as long as it's
+    # on, silence included and never trimmed. Fed with the primary slot's
+    # audio (_play_and_record_slot) and with silence on idle ticks.
     def start_manual_recording(self) -> None:
         with self._manual_recorder_lock:
             if self._manual_recorder is not None:
@@ -662,12 +487,8 @@ class ScannerEngine(threading.Thread):
         return {Path(r.current_path) for r in recorders if r.current_path}
 
     def _feed_manual_recording(self, audio: np.ndarray, freq_hz: int | None = None) -> None:
-        """Mirrors ``audio`` (AUDIO_RATE-domain, mono) into an in-progress
-        manual recording, if any - a cheap no-op (one lock check) otherwise,
-        safe to call unconditionally from every tick. ``freq_hz`` (only ever
-        passed by _play_and_record_slot()'s real-audio path, never the idle-
-        silence tick) records the *first* one seen this recording - see
-        stop_manual_recording(), which renames the file to it once known."""
+        """Writes ``audio`` to the manual recording, if one is running.
+        ``freq_hz`` (real audio only) names the file on stop."""
         with self._manual_recorder_lock:
             recorder = self._manual_recorder
             if recorder is not None and freq_hz is not None and self._manual_recording_first_freq is None:
@@ -675,12 +496,8 @@ class ScannerEngine(threading.Thread):
         if recorder is not None:
             recorder.write_audio(audio, real=True)
 
-    # -- raw wideband IQ recording (technical) -----------------------------
-    # See iq_recorder.py's module docstring for the format (SigMF) and why
-    # this is a third, independent recording mechanism from both the
-    # per-transmission auto-recording above and manual audio recording. Fed
-    # only from _main_loop()'s SCANNING-state read (never TUNING, which is
-    # deliberately muted garbage while the tuner settles).
+    # -- raw wideband IQ recording (gotcha 15) ---------------------------
+    # Fed only by SCANNING reads, never by TUNING (the tuner is settling).
     def start_raw_iq_recording(self) -> None:
         with self._iq_recorder_lock:
             if self._iq_recorder is not None:
@@ -717,27 +534,10 @@ class ScannerEngine(threading.Thread):
         self._rebuild_blacklist_arrays()
 
     def _rebuild_blacklist_arrays(self) -> None:
-        """Vectorized mirror of self.blacklist, rebuilt only here and in
-        __init__ - i.e. only when the blacklist itself actually changes,
-        never per-tick. See _blacklist_mask() for why this exists: checking
-        every candidate frequency against every BlacklistEntry with a
-        Python-level any()-over-a-generator call (one Python function call +
-        one dataclass attribute access per comparison) is fine for the
-        occasional single-frequency check (_next_window(), which short-
-        circuits on the first non-blacklisted frequency anyway - most
-        windows have far more clean channels than blacklisted ones) but was
-        being paid in full, with no short-circuit, for *every* frequency in
-        the window on *every* SCANNING tick (~30ms) via the candidate_freqs
-        list comprehension in _main_loop() - O(freqs x blacklist) Python-
-        level work, repeatedly, for as long as a window has any non-active
-        channel left to check (i.e. most of the time). A blacklist can grow
-        to dozens/hundreds of entries over a long session (every "Skip +
-        Blacklist" adds one), so that cost only ever grows the longer the
-        program keeps running - exactly backwards from "shouldn't slow down
-        the longer it runs". Doing the same comparisons as one vectorized
-        numpy broadcast instead keeps the same O(freqs x blacklist) count of
-        individual comparisons but runs them at C speed with no per-
-        comparison Python call/attribute-access overhead.
+        """Numpy copy of self.blacklist for _blacklist_mask(), rebuilt only
+        when the blacklist changes. The per-tick check compares every window
+        frequency against a blacklist that grows with each "Skip + blacklist";
+        done in Python it slowed the loop down the longer the app ran.
         """
         if self.blacklist:
             self._bl_freqs = np.array([e.freq_hz for e in self.blacklist], dtype=np.float64)
@@ -747,47 +547,29 @@ class ScannerEngine(threading.Thread):
             self._bl_margins = np.empty(0, dtype=np.float64)
 
     def _blacklist_mask(self, freqs: list[int]) -> np.ndarray:
-        """Vectorized equivalent of [self._is_blacklisted(f) for f in freqs] -
-        see _rebuild_blacklist_arrays() for why this exists alongside (not
-        instead of) _is_blacklisted(), which remains the right tool for a
-        single-frequency, short-circuiting check."""
+        """Vectorized [self._is_blacklisted(f) for f in freqs]."""
         if not freqs or self._bl_freqs.size == 0:
             return np.zeros(len(freqs), dtype=bool)
         arr = np.asarray(freqs, dtype=np.float64)[:, None]
         return np.any(np.abs(arr - self._bl_freqs[None, :]) <= self._bl_margins[None, :], axis=1)
 
     def request_rebuild(self) -> None:
-        """Called from the GUI after any change that affects what gets
-        scanned - bands, channels, weights, the Memory List master toggle,
-        step/modulation edits, ... - so it takes effect immediately on a
-        running scan, without needing to Stop/Start."""
+        """Called after any change to what gets scanned, so a running scan
+        picks it up without Stop/Start."""
         self._rebuild_windows()
 
     def set_solo_band(self, band: VfoRangeConfig | None) -> None:
-        """Restricts scanning to just this one band (None = back to normal,
-        every configured band + Memory List) - see self._solo_band and
-        the Listen page's "scan only this band" button. Safe to call before the
-        engine thread has even started (e.g. right after construction, to
-        pick up an edit already in progress when Start is pressed)."""
+        """Scan only this band (None = everything again). Safe to call
+        before the thread starts."""
         self._solo_band = band
         self._rebuild_windows()
 
     # -- thread body ---------------------------------------------------
     def _maybe_boost_priority(self) -> None:
-        """Best-effort: ask the OS to schedule this thread with real-time
-        priority (SCHED_FIFO), the same technique real-time audio servers
-        (JACK, PipeWire's own RT thread) use, so it gets CPU time promptly
-        and predictably instead of waiting its turn behind whatever else the
-        desktop happens to be doing right now - directly attacking the
-        "momentarily too slow to keep up with real time" root cause behind
-        live-audio dropouts. Linux-only, and needs
-        either root or a system-granted rtprio allowance (commonly already
-        set up for the "audio" group on desktop distros via
-        /etc/security/limits.d - PipeWire itself relies on the same thing).
-        Silently does nothing if neither is available: this is purely a
-        "nice to have if the system allows it" improvement, deliberately
-        never a hard requirement - scanning and recording work identically
-        either way, only live-audio smoothness benefits."""
+        """Best-effort SCHED_FIFO for this thread (like JACK/PipeWire), so
+        desktop load doesn't cause live-audio dropouts. Linux only; needs root
+        or an rtprio limit (often granted to the "audio" group), silently
+        skipped otherwise."""
         if not hasattr(os, "sched_setscheduler"):
             return  # not Linux
         try:
@@ -797,9 +579,7 @@ class ScannerEngine(threading.Thread):
             pass
 
     def _checkpoint_once(self, msg: str) -> None:
-        """Like _checkpoint(), but only the first time this exact message is
-        reached per run() - for state-machine transitions inside the
-        per-tick loop that would otherwise write on every single tick."""
+        """_checkpoint() once per run() - for points inside the per-tick loop."""
         if msg not in self._logged_checkpoints:
             self._logged_checkpoints.add(msg)
             _checkpoint(msg)
@@ -840,9 +620,7 @@ class ScannerEngine(threading.Thread):
                 if connected and self._backend.label != "simulated":
                     self._had_real_hardware = True
 
-        # Covers Stop being pressed while we were still (re)connecting, where
-        # _main_loop() (and its own IDLE emission) never ran at all - without
-        # this the GUI could get stuck showing RECONNECTING forever.
+        # Stop during (re)connecting: _main_loop() never ran to emit IDLE.
         self._emit_state(ScannerState.IDLE)
         self._teardown()
         self.signals.finished.emit()
@@ -851,10 +629,7 @@ class ScannerEngine(threading.Thread):
         """Everything that doesn't depend on the SDR hardware being present."""
         self._spectrum_worker = _SpectrumWorker(self.signals)
         _checkpoint("_SpectrumWorker thread started")
-        # Read once per engine start (not re-read mid-session) - roll-off is
-        # a stable physical property of the tuner, so there's no need to
-        # keep re-loading the (potentially large) calibration log while
-        # scanning. See edge_compensation.py.
+        # Loaded once per start - the tuner's roll-off doesn't change.
         self._edge_compensation = EdgeCompensation(self.config.device.gain_mode)
         _checkpoint(f"EdgeCompensation loaded, buckets={self._edge_compensation.bucket_count}")
         if self._edge_compensation.has_data:
@@ -875,21 +650,11 @@ class ScannerEngine(threading.Thread):
                 debug_mode=self.config.debug_mode,
             )
         else:
-            # Bypass create_backend()'s friendly auto-simulate fallback: this
-            # is a reconnect after real hardware was already proven present,
-            # so a failure here must keep raising, never quietly substitute
-            # fake data (that's exactly the bug that confused a user before).
+            # Reconnect after real hardware was seen: keep failing, never fall
+            # back to simulation (gotcha 8/10).
             raw_backend = open_real_backend(dev.driver, dev.device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db)
-        # Wrapped in a dedicated acquisition thread (see AcquisitionThread's
-        # docstring) so nothing this loop does between two backend.read()
-        # calls - demod/noise-reduction/file I/O for however many slots are
-        # simultaneously active, or CPU contention from elsewhere - can ever
-        # delay the *actual* hardware read and risk the driver silently
-        # dropping/splicing samples (measured: this was happening for real,
-        # unrelated to squelch - see its docstring). Every other use of
-        # self._backend below is unaffected - AcquisitionThread proxies
-        # label/gain_range_db/stream_mtu/set_frequency/set_gain/read/close
-        # with the same contract a raw SdrBackend has.
+        # Hardware reads happen on their own thread (gotcha 11), so nothing in
+        # this loop can delay them; it proxies the backend's interface.
         self._backend = AcquisitionThread(raw_backend, self._chunk_size(), debug=self.config.debug_mode)
         self._dropped_reported, self._dropped_reported_at = 0, 0.0
         _checkpoint(f"_open_backend: constructed (label={self._backend.label})")
@@ -897,12 +662,7 @@ class ScannerEngine(threading.Thread):
         self.signals.gain_range_changed.emit(*self._backend.gain_range_db)
         if self._backend.label == "simulated" and dev.driver != "simulated":
             self.signals.log.emit(tr("SoapySDR not found/configured - running in SIMULATION mode."))
-        # Direct readout of what the driver actually hands back on one
-        # readStream() call (see SoapyBackend.__init__ and its comment on
-        # bufflen) - instead of continuing to guess from statistics alone,
-        # this number states outright whether one tick's worth (chunk_size
-        # samples) fits in a single call, or whether the driver hands back
-        # less regardless of how big a buffer we give it.
+        # Whether one tick's worth of samples fits in a single readStream() call.
         mtu = getattr(self._backend, "stream_mtu", None)
         if mtu is not None:
             chunk = self._chunk_size()
@@ -914,8 +674,8 @@ class ScannerEngine(threading.Thread):
             )
 
     def _open_backend_with_retry(self, allow_simulated_fallback: bool) -> bool:
-        """Keep (re)trying to open the SDR with escalating backoff until it
-        succeeds or the user presses Stop. Returns False only on Stop."""
+        """Keep (re)trying to open the SDR until it works or Stop is pressed.
+        Returns False only on Stop."""
         attempt = 0
         while True:
             try:
@@ -953,14 +713,7 @@ class ScannerEngine(threading.Thread):
             self._dropped_reported, self._dropped_reported_at = dropped, now
 
     def _teardown(self) -> None:
-        # Neither the manual audio recording nor the raw IQ recording makes
-        # sense outliving the engine that feeds them - stop both here so a
-        # Stop click always finalizes whatever's still open instead of
-        # leaving a file handle (or, for the manual recording, the WAV
-        # header) dangling. The manual recording's file also still needs to
-        # reach the recording library via recording_finished (see
-        # stop_manual_recording()); raw IQ never does (see
-        # ScannerSignals.raw_iq_recording_changed).
+        # Manual and raw IQ recordings can't outlive the engine that feeds them.
         self.stop_manual_recording()
         self.stop_raw_iq_recording()
         for freq_hz in list(self._slots.keys()):
@@ -969,10 +722,7 @@ class ScannerEngine(threading.Thread):
             self._spectrum_worker.stop()
         if self._backend is not None:
             self._backend.close()
-        # wait=True: every slot was already closed above (nothing left
-        # queued), this just makes sure no worker thread is still mid-write
-        # to a WAV file this same process might touch again right after
-        # (e.g. a quick Stop/Start) before actually returning.
+        # Wait for in-flight writes/transcodes before a quick Stop/Start.
         self._slot_pool.shutdown(wait=True)
 
     def _rebuild_windows(self) -> None:
@@ -980,8 +730,7 @@ class ScannerEngine(threading.Thread):
         window.
 
         Bands and Memory List channels with weight 0 (the default) are
-        pooled into one flat "default lane", scanned in the usual
-        round-robin order exactly like before weights existed. Anything with
+        pooled into one flat "default lane", scanned round-robin. Anything with
         weight > 0 becomes its own _Lane - either a "range lane" (a band,
         sweeping through its own windows turn by turn) or a "point lane" (one
         or more nearby weighted Memory List frequencies captured together in
@@ -999,10 +748,7 @@ class ScannerEngine(threading.Thread):
         mem_bw = float(self.config.memory_channel_bandwidth_hz)
 
         if self._solo_band is not None:
-            # "Advanced" per-band edit mode (see set_solo_band) - everything
-            # else (other bands, the whole Memory List) sits out until this
-            # ends, so the band being tuned is the only thing competing for
-            # airtime while its own settings are being dialled in live.
+            # Solo band (set_solo_band): nothing else competes for airtime.
             channels = []
             enabled_channels: list[Channel] = []
             weighted_channels: list[Channel] = []
@@ -1027,62 +773,21 @@ class ScannerEngine(threading.Thread):
 
         def _claim(freq: int, bw: float, mod: Modulation, name: str = "", weight: float = 0.0) -> None:
             bw_map[freq] = bw
-            # Modulation.SSB only ever means "auto USB/LSB" to the user - the
-            # rest of the engine (and Demodulator) only ever sees a concrete
-            # USB or LSB from here on, resolved from this exact frequency.
+            # SSB means "auto" to the user - resolved to USB/LSB per frequency.
             mod_map[freq] = resolve_ssb_sideband(mod, freq)
             weight_map[freq] = weight
             if name:
                 name_map[freq] = name
 
         def _extend_edges(windows: list[ScanWindow], step_hz: float, band_freqs: set[int] | None = None) -> None:
-            """Widens a lane's own lowest- and highest-frequency window with
-            a few opportunistic probe frequencies just past its true edge -
-            "wyjdz na poprzednie/nastepne [okno]" - so a signal sitting right
-            at the boundary of a configured band/range is more likely to get
-            caught instead of silently falling in the dead zone the 90%
-            USABLE_FRACTION margin already leaves unwatched today. See
-            channelizer.extend_boundary_window() for why this never needs an
-            extra retune or changes the window's own schedule identity
-            (center_hz, and therefore _window_last_visit bookkeeping, is
-            untouched - this only ever widens what a window watches).
-            New probe frequencies inherit the modulation/weight of whichever
-            real channel currently sits at that edge.
+            """Adds probe frequencies just past the lowest/highest window's
+            edge, so a signal right at a band's boundary isn't lost in the
+            unwatched margin (channelizer.extend_boundary_window - no extra
+            retune). Probes inherit the edge channel's modulation/weight.
 
-            ``band_freqs``, when given, restricts this to an edge that's
-            genuinely part of a swept band's own grid - never a standalone
-            Memory List point channel. Real user-reported bug: a *single*
-            plain Memory List channel (no band at all) still forms its own
-            one-channel window, whose "edge" is that exact frequency on both
-            sides - extend_boundary_window() then had no way to tell that
-            apart from a real band's edge, and happily proposed up to
-            ``_MAX_EXTEND_FRACTION`` (15%) of the *entire capture bandwidth*
-            worth of extra probe frequencies spaced at the channel's own
-            listen bandwidth (e.g. 28 fake candidates on *each* side at the
-            default 12.5 kHz memory-channel bandwidth) around a channel the
-            user picked *specifically and only* to watch that one exact
-            frequency - confirmed exactly reproducing both parts of the
-            report: a single 88.000 MHz channel also "detecting" 87.800 MHz
-            (16 x 12.5 kHz away, i.e. one of these fabricated probes, not
-            real adjacent-channel spectral leakage - AGENTS.md's channel-
-            spacing gotcha is a real, separate phenomenon but doesn't reach
-            200 kHz away), and a single 121.500 MHz channel with the trigger
-            deliberately dropped into the noise floor "detecting" 20
-            simultaneous transmissions at once - a band swept that low is
-            expected to trip many real grid channels (the user's own
-            expectation, stated explicitly), but a lone point channel has no
-            "grid" to sweep at all, so every single one of those 20 was a
-            fabricated probe frequency, not a real neighbouring channel the
-            user ever asked to watch. A standalone point channel has no
-            "edge of a range" concept in the first place - it *is* the whole
-            range, a single point - so there is nothing legitimate for this
-            to extend past for one, unlike a real band/VfoRangeConfig sweep
-            where "just past the configured start/stop" is a meaningful,
-            requested concept. Only the two call sites building windows
-            entirely out of one real band's own grid (weighted-band lanes,
-            and the tagged-band portion of the default-lane pool) ever pass
-            this; the default lane's ``plain_channels`` contribution never
-            does."""
+            ``band_freqs`` limits this to edges of a real swept band: a lone
+            channel's "edge" is the channel itself, and extending it
+            fabricated dozens of fake detections (gotcha 31)."""
             if not windows:
                 return
             lowest = min(windows, key=lambda w: min(w.freqs))
@@ -1104,10 +809,8 @@ class ScannerEngine(threading.Thread):
 
         priority_lanes: list[_Lane] = []
 
-        # -- priority point-lanes: weighted Memory List channels, merged
-        # whenever nearby ones can be captured together in a single retune
-        # (decision: shared visits benefit both, so there's no downside to
-        # combining them; the combined lane's weight is the higher one). ---
+        # -- priority point-lanes: weighted Memory List channels; nearby ones
+        # share one window and the higher weight. ---------------------------
         if weighted_channels:
             weight_by_freq = {c.freq_hz: c.weight for c in weighted_channels}
             mod_by_freq = {c.freq_hz: c.modulation for c in weighted_channels}
@@ -1117,9 +820,7 @@ class ScannerEngine(threading.Thread):
                 lane_weight = max(weight_by_freq[f] for f in group.freqs)
                 owning_band = _overlapping_band(group.freqs, enabled_bands)
                 if owning_band is not None:
-                    # Inside an actively-scanned band: go wide so a priority
-                    # visit doubles as free coverage of the neighbours too
-                    # (still a scanner - detections nearby still work).
+                    # Inside a scanned band: go wide, so the visit also covers its neighbours.
                     windows = _wide_anchor_windows(group.freqs, owning_band, sample_rate)
                     band_mod = (Modulation(owning_band.modulation)
                                 if owning_band.modulation in Modulation._value2member_map_ else Modulation.AM)
@@ -1152,38 +853,20 @@ class ScannerEngine(threading.Thread):
                 if f not in bw_map:
                     _claim(f, float(max(1, vr.step_hz)), band_mod, weight=vr.weight)
             windows = plan_windows(freqs, sample_rate, max(1, vr.step_hz))
-            # A "band" with start_hz == stop_hz (e.g. the Listen page's
-            # "Single frequency" button - see listen.js addSingle(),
-            # which really does create a VfoRangeConfig this way) is a
-            # single point wearing a band's clothing - it has no real sweep
-            # grid/edge of its own any more than a standalone Memory List
-            # channel does (gotcha 31's own bug, just reachable through the
-            # *other* config list this time - real, reproduced report: a
-            # single "Quick-add"ed 100.1 MHz frequency also "detecting" a
-            # neighbour every 25 kHz - step_hz's own default here - out to
-            # roughly 14 fabricated probes per side). Skip edge-extension
-            # for it exactly like gotcha 31 does for a plain channel.
+            # start == stop ("Single frequency" on Listen) is a point, not a
+            # range - no edge to extend (gotcha 31).
             if vr.start_hz != vr.stop_hz:
                 _extend_edges(windows, float(max(1, vr.step_hz)))
             for w in windows:
                 w.band = vr  # unambiguous: this whole lane is one band's own grid
             priority_lanes.append(_Lane(weight=vr.weight, windows=windows, is_range=True))
 
-        # -- default lane: everything with weight 0, pooled together exactly
-        # like the original (pre-weights) implementation. -------------------
+        # -- default lane: everything with weight 0, pooled together. -------
         default_freqs: list[int] = []
-        # Which single plain band (if any) each pooled frequency came from -
-        # a window built from this pool only gets tagged with a band (see
-        # below) if *every* one of its frequencies traces back to that same
-        # band; a window straddling two bands' channels (only possible if
-        # their ranges are close enough to share one capture) stays
-        # band=None; safe default (global settings), rather than guessing
-        # which of the two "advanced" overrides should apply.
+        # A pooled window gets a band's overrides only if all its frequencies
+        # come from that band; a window spanning two bands uses global settings.
         freq_to_band: dict[int, VfoRangeConfig] = {}
-        # Frequencies that genuinely belong to a swept band's own grid - see
-        # _extend_edges()'s own docstring for why this matters: only these
-        # (never a standalone Memory List point channel) are legitimate
-        # candidates for the edge-extension it does.
+        # Real swept-band frequencies - the only edges _extend_edges() may extend.
         band_freqs: set[int] = set()
         for c in plain_channels:
             if c.freq_hz not in bw_map:
@@ -1204,11 +887,7 @@ class ScannerEngine(threading.Thread):
                     _claim(f, float(max(1, vr.step_hz)), band_mod, weight=vr.weight)
                 default_freqs.append(f)
                 freq_to_band[f] = vr
-                # Same exclusion as the weighted-band lane above: a
-                # start_hz == stop_hz "band" (the Listen page's "Single
-                # frequency") is a single point, not a real swept range - no
-                # legitimate edge to extend past, exactly like a plain
-                # Memory List channel (gotcha 31).
+                # Single-point "band": no edge to extend (gotcha 31).
                 if vr.start_hz != vr.stop_hz:
                     band_freqs.add(f)
 
@@ -1222,31 +901,10 @@ class ScannerEngine(threading.Thread):
             if owners and all(b is owners[0] for b in owners):
                 w.band = owners[0]
 
-        # Display-only name lookup for _open_slot(), built from *every* named
-        # channel regardless of its own enabled state, and matched by
-        # rounded kHz rather than exact Hz. Two reasons this has to be
-        # separate from bw_map/mod_map/weight_map above (which correctly do
-        # respect .enabled - a disabled channel must never affect what gets
-        # scanned or how):
-        #  1. A disabled channel can still get incidentally caught by a wide
-        #     band sweep it happens to fall inside - the Recordings page shows that
-        #     channel's name for its recordings regardless of whether it's
-        #     currently enabled (name lookup there has no notion of
-        #     "enabled" at all - see Controller.freq_names),
-        #     so live display should be consistent with that instead of
-        #     showing nothing just because the channel happens to be toggled
-        #     off right now.
-        #  2. A Memory List channel's exact freq_hz rarely lands precisely
-        #     on a wide band's own step grid (e.g. an 8.33 kHz-spaced band
-        #     and a channel someone typed in as "121.500" won't generally
-        #     coincide to the exact Hz) - so a named channel and an unnamed
-        #     nearby band-grid point can end up as two distinct candidate
-        #     frequencies watching the same real transmission, and whichever
-        #     one wins the (near-tie) power comparison decides whether a
-        #     name shows up live if matched by exact Hz. the Recordings page never
-        #     has this problem because it matches by rounded kHz (same
-        #     rounding recording filenames already use) - this mirrors that
-        #     same tolerance.
+        # Display names from all channels, enabled or not, matched by rounded
+        # kHz - like the Recordings page: a disabled channel can still be
+        # caught by a band sweep, and a typed-in frequency rarely hits a
+        # band's grid to the Hz.
         name_by_khz: dict[int, str] = {}
         for c in self.channels:
             if c.name:
@@ -1282,20 +940,10 @@ class ScannerEngine(threading.Thread):
         return any(e.contains(freq_hz) for e in self.blacklist)
 
     def _maybe_apply_gain(self, window: ScanWindow | None) -> None:
-        """Applies a live Gain-slider/mode change mid-scan (see AGENTS.md) -
-        polled once per loop iteration. Three modes: "manual" (fixed gain),
-        "auto" (the tuner's own onboard AGC hardware - passed straight
-        through to the backend), and "sw_auto" (a software-driven control
-        loop - see agc.py's own module docstring for why this exists
-        alongside hardware AGC, not instead of it). Entering "sw_auto" here
-        just establishes a starting manual gain (this band/global's own
-        configured ``db`` - same starting point Manual mode would use, so
-        switching modes doesn't jump gain around for no reason) and creates
-        a SoftwareAgc, which _maybe_run_software_agc() then drives every
-        SCANNING tick from the real captured IQ's own peak. Leaving
-        "sw_auto" discards it - the next real gain change goes back to a
-        plain, one-shot backend.set_gain() call (which is also exactly what
-        "auto" itself always was and still is - real hardware AGC)."""
+        """Applies the effective gain mode, polled every iteration (gotcha
+        27): "manual" and "auto" (hardware AGC) go straight to the backend;
+        entering "sw_auto" starts a SoftwareAgc at the configured gain, which
+        _maybe_run_software_agc() then steps every tick."""
         mode, db = self._effective_gain(window)
         if mode == "sw_auto":
             if self._applied_gain_mode != "sw_auto" or self._software_agc is None:
@@ -1309,12 +957,7 @@ class ScannerEngine(threading.Thread):
             self._applied_gain_mode, self._applied_gain_db = mode, db
 
     def _maybe_run_software_agc(self, iq: np.ndarray) -> None:
-        """Called once per SCANNING tick with that tick's raw captured IQ -
-        a no-op whenever "sw_auto" gain isn't actually active (see
-        _maybe_apply_gain). Most calls do nothing even while active (see
-        SoftwareAgc.step's rate limit/dead zone) - this is deliberately cheap
-        (one np.abs().max() over a block already read this tick, no extra
-        capture) to run unconditionally rather than only every so often."""
+        """Steps the SoftwareAgc from this tick's IQ peak; no-op unless "sw_auto"."""
         if self._software_agc is None or iq.size == 0:
             return
         peak = float(np.max(np.abs(iq)))
@@ -1323,11 +966,7 @@ class ScannerEngine(threading.Thread):
         if new_gain is not None:
             self._backend.set_gain("manual", new_gain)
             self._applied_gain_db = new_gain
-            # Telegraph the step to every currently active slot's own
-            # output-loudness AGC *before* it ever sees audio at the new RF
-            # level - see Demodulator.notify_rf_gain_change()'s own
-            # docstring for the real, user-reported "sounds like a
-            # different transmission" symptom this avoids.
+            # Pre-scale each slot's output AGC so the step isn't heard.
             factor = 10.0 ** ((new_gain - old_gain_db) / 20.0)
             for slot in self._slots.values():
                 slot.demod.notify_rf_gain_change(factor)
@@ -1347,14 +986,8 @@ class ScannerEngine(threading.Thread):
             return None
 
     def _due_recency_boost_locked(self) -> ScanWindow | None:
-        """A boosted window whose next extra visit has come due, if any -
-        see RecencyBoostConfig/_register_recency_boost. Checked first, ahead
-        of the normal weighted rotation, so a boost actually delivers the
-        "visit more often than the schedule alone would give it" it
-        promises - but it's still just one extra pick slotted in among the
-        normal ones, never a takeover: the very next pick goes right back to
-        the regular scheduler, so nothing else waits any longer because of
-        this."""
+        """A boosted window whose extra visit is due, if any. Checked before
+        the normal rotation, but only ever one extra pick in between."""
         if not self._recency_boosts:
             return None
         now = time.monotonic()
@@ -1370,8 +1003,7 @@ class ScannerEngine(threading.Thread):
         return None
 
     def _pick_next_locked(self) -> ScanWindow | None:
-        """Must be called with self._lock held - see _rebuild_windows()'s
-        docstring for the scheduling rules this implements."""
+        """Call with self._lock held; rules in _rebuild_windows()."""
         boosted = self._due_recency_boost_locked()
         if boosted is not None:
             return boosted
@@ -1397,62 +1029,29 @@ class ScannerEngine(threading.Thread):
         return self._default_lane.advance()
 
     def _emit_state(self, state: ScannerState) -> None:
-        """Deduplicated: the SCANNING-tick caller (_main_loop) re-derives and
-        re-emits this every ~30ms regardless of whether it actually changed
-        (_display_state() only changes when a slot opens/closes/lingers),
-        so without this a queued cross-thread Qt signal was being posted to
-        the GUI thread - and a QLabel.setStyleSheet() re-polish paid there,
-        noticeably pricier than a plain setText() - roughly 30x more often
-        than the displayed value could possibly change. Safe: the only
-        consumer (the browser, via Controller's live snapshot) just
-        displays the current state, nothing here relies on a steady stream
-        of identical events as a heartbeat."""
+        """Emits only actual changes - SCANNING re-derives it every tick."""
         if state == self._last_emitted_state:
             return
         self._last_emitted_state = state
         self.signals.state_changed.emit(state.value)
 
     def _display_state(self) -> ScannerState:
-        """Coarse status text for the GUI, derived from the slots - purely
-        cosmetic, doesn't drive the loop's own control flow (see
-        _main_loop, which only ever needs CALCULATE_NEXT_FREQ/TUNING/
-        SCANNING for that)."""
+        """Status shown in the UI, derived from the slots; doesn't drive the loop."""
         if not self._slots:
             return ScannerState.SCANNING
         if any(s.linger_deadline is None for s in self._slots.values()):
             return ScannerState.SIGNAL_DETECTED
         return ScannerState.LINGER
 
-    # Real-hardware finding (the former Qt desktop UI, real X11 display, not
-    # a headless test): submitting a new spectrum frame on *every* SCANNING
-    # tick (~33/s) meant the GUI's mini-spectrum widget was also updating at
-    # ~33/s - and each of those updates (SpectrumView.update_spectrum() -
-    # pyqtgraph curve setData + an explicit setYRange() call every single
-    # time) turned out to be real, substantial Python/Qt-level work holding
-    # the GIL, at almost the exact same cadence the scanner thread itself
-    # needs the GIL for its own tick processing. Measured directly: tick-
-    # processing time (the same work that was ~15ms with no GUI attached at
-    # all, even with several active slots) jumped to 50-60ms with a real
-    # window showing this widget and only *one* slot active - a 3-4x
-    # slowdown from GUI-thread GIL contention alone, severe enough to
-    # overflow AcquisitionThread's own queue (127 chunks genuinely dropped
-    # in a single ~90s session - the first time this investigation found
-    # real, permanent sample loss rather than just a live-monitoring
-    # buffering artifact). A visual preview has no business updating faster
-    # than a human can perceive anyway - throttling it to _SPECTRUM_FPS
-    # costs nothing visually and removes most of that GIL pressure.
+    # A spectrum frame every tick (~33/s) once caused enough GIL contention
+    # to overflow AcquisitionThread's queue (gotcha 30).
     _SPECTRUM_FPS = 10.0
 
     def _submit_spectrum(
         self, iq: np.ndarray, sample_rate: float, center_hz: float, trigger_dbfs: float, custom: bool = False,
     ) -> None:
-        """Hands the raw IQ block to _SpectrumWorker's own thread - never
-        computes the FFT here, on the same thread that also has to keep
-        live audio flowing in real time (see _SpectrumWorker's docstring).
-        Throttled to _SPECTRUM_FPS (see its own docstring) - skipping a
-        tick here only means the GUI's spectrum preview updates a little
-        less often, nothing downstream of this (detection, recording,
-        audio) is affected at all."""
+        """Hands the IQ block to _SpectrumWorker, at most _SPECTRUM_FPS times
+        a second - a skipped frame only affects the display."""
         now = time.monotonic()
         if now - self._last_spectrum_submit_at < 1.0 / self._SPECTRUM_FPS:
             return
@@ -1460,7 +1059,7 @@ class ScannerEngine(threading.Thread):
         self._spectrum_worker.submit(iq, sample_rate, center_hz, trigger_dbfs, custom)
 
     def _emit_freqs(self) -> None:
-        """Tells the GUI what to show in the frequency display: every
+        """What the frequency display shows: every
         currently active channel (primary - the audible one - first, the
         rest by descending weight), or a placeholder describing the tuned
         window while nothing's active yet."""
@@ -1498,12 +1097,8 @@ class ScannerEngine(threading.Thread):
                 self._cur_window = window
                 self._emit_freqs()  # no slots active here (guaranteed - see below) -> shows the window placeholder
                 if window.center_hz == self._last_tuned_center_hz:
-                    # Already parked here (e.g. a band narrow enough to fit
-                    # in a single window, or a solo'd band) - retuning would
-                    # just be a no-op hardware call followed by a pointless
-                    # tuning-settle wait, and would misleadingly report a
-                    # "return to this window" cycle time for a window we
-                    # never actually left. Skip straight to SCANNING.
+                    # Already tuned here (narrow or solo band): skip the
+                    # retune, the settle wait and a bogus cycle time.
                     scanning_deadline = time.monotonic() + self.config.timing.scanning_dwell_ms / 1000.0
                     state = ScannerState.SCANNING
                     self._emit_state(state)
@@ -1544,10 +1139,7 @@ class ScannerEngine(threading.Thread):
                 self._feed_raw_iq(iq, window.center_hz)
                 self._maybe_run_software_agc(iq)
 
-                # One FFT/PSD/cumsum for the whole captured block, shared by
-                # both steps below (already-active slots + new-detection
-                # candidates) instead of each independently recomputing its
-                # own - see channelizer.spectrum_cumsum()'s docstring.
+                # One FFT, shared by both steps below.
                 spectrum = spectrum_cumsum(iq, sample_rate)
 
                 # 1. Advance whatever's already active (demod/play/record,
@@ -1555,24 +1147,13 @@ class ScannerEngine(threading.Thread):
                 primary_level = self._service_active_slots(iq, spectrum, sample_rate, window)
                 any_active = bool(self._slots)
                 if not any_active:
-                    # Nothing was serviced this tick at all, so
-                    # _play_and_record_slot() (the other place manual
-                    # recording gets fed) never ran - keep a manual
-                    # recording's timeline continuous through pure idle
-                    # scanning by feeding it one tick's worth of silence
-                    # directly. A no-op (one lock check) if no manual
-                    # recording is running.
+                    # Idle tick: keep a manual recording continuous with silence.
                     self._feed_manual_recording(
                         np.zeros(max(1, round(AUDIO_RATE * CHUNK_SECONDS)), dtype=np.float32)
                     )
 
-                # 2. Look for new activity - either the very first detection
-                # in this window, or an *additional* channel while something
-                # else is already active. No cap on how many can open.
-                # Vectorized blacklist check (see _blacklist_mask) - a plain
-                # per-frequency any()-over-blacklist call here would re-scan
-                # the whole blacklist for every one of window.freqs, every
-                # tick, with no short-circuit (list comprehensions can't).
+                # 2. New activity - a first detection in this window, or one
+                # more channel next to those already active.
                 not_blacklisted = ~self._blacklist_mask(window.freqs)
                 # A broadcast FM station fills ~±100 kHz, so the channels
                 # next to an active WFM slot only see its sidebands - never
@@ -1592,9 +1173,7 @@ class ScannerEngine(threading.Thread):
                     raw_powers = channel_powers_from_spectrum(
                         spectrum, window.center_hz, candidate_freqs, self._channel_bw_map,
                     )
-                    # Corrected only for picking/triggering - see
-                    # _apply_edge_compensation. raw_powers (uncorrected)
-                    # stays around for calibration logging/WAV metadata.
+                    # Edge-corrected for triggering only; raw_powers go to logs/metadata.
                     corrected = self._apply_edge_compensation(raw_powers, window.center_hz)
                     best_freq, best_level = _strongest(corrected)
 
@@ -1646,9 +1225,7 @@ class ScannerEngine(threading.Thread):
                     )
                     self._open_slot(best_freq, window, raw_level)
                 elif not any_active and time.monotonic() >= scanning_deadline:
-                    # Nothing active (never started, or just ended this
-                    # tick) and the window's had its dwell - move on, same
-                    # as always: the round-robin will circle back to it.
+                    # Nothing active and the dwell is over - move on.
                     self._maybe_log_floor(iq, sample_rate, window)
                     state = ScannerState.CALCULATE_NEXT_FREQ
                     self._emit_state(state)
@@ -1662,12 +1239,7 @@ class ScannerEngine(threading.Thread):
         self._emit_state(ScannerState.IDLE)
 
     def _record_read_timing(self, elapsed: float) -> None:
-        """FALCONSDR_DEBUG_LIVE_AUDIO-gated: tracks how long backend.read()
-        itself blocks (separate from the tick-processing time below - see
-        _READ_STALL_LOG_THRESHOLD_S for why this is measured at all). Folded
-        into _record_tick_timing's once-a-second summary; a single call this
-        slow also gets an immediate line of its own so a rare multi-second
-        stall isn't averaged away in the aggregate."""
+        """Debug: how long backend.read() blocks; a stall gets its own line."""
         self._read_n += 1
         if elapsed > CHUNK_SECONDS:
             self._read_over_budget += 1
@@ -1680,19 +1252,9 @@ class ScannerEngine(threading.Thread):
             )
 
     def _record_tick_timing(self, elapsed: float) -> None:
-        """FALCONSDR_DEBUG_LIVE_AUDIO-gated: once a second, prints how many
-        SCANNING ticks took longer than CHUNK_SECONDS to process (i.e. the
-        real work - demod, noise reduction, per active slot - didn't fit in
-        the time its own chunk represents, a genuine throughput deficit),
-        the worst one, and the live-audio ring buffer's current fill level.
-        A fill level that's climbing tick over tick (not just hovering near
-        the ~0.2s priming cushion) confirms production is outrunning
-        real-time playback rather than the reverse (underrunning). Also
-        reports the same stats for backend.read()'s own blocking time (see
-        _record_read_timing) - a *processing* deficit here means "too much
-        work per tick", but a *read* deficit means the SDR/USB itself isn't
-        delivering samples in real time, a completely different problem with
-        a completely different fix."""
+        """Debug: once a second, ticks and reads that overran CHUNK_SECONDS.
+        Slow processing = too much work per tick; slow reads = the SDR/USB
+        isn't delivering in real time."""
         self._tick_n += 1
         if elapsed > CHUNK_SECONDS:
             self._tick_over_budget += 1
@@ -1714,31 +1276,21 @@ class ScannerEngine(threading.Thread):
         self._tick_report_at = now
 
     def _correction_db(self, offset_hz: float) -> float:
-        """0 dB until _setup_static() has actually built the curve (or if
-        there's no calibration data yet to build one from) - see
-        edge_compensation.py."""
+        """0 dB until there is a correction curve (edge_compensation.py)."""
         if self._edge_compensation is None:
             return 0.0
         return self._edge_compensation.correction_db(offset_hz)
 
     def _apply_edge_compensation(self, powers: dict[int, float], center_hz: float) -> dict[int, float]:
-        """Corrected copy of a channel_powers_dbfs() result, used only for
-        the trigger/level-meter decision - never for what gets logged to
-        CalibrationLogger or stored in a recording's own WAV metadata (those
-        stay raw, since correcting them would feed the correction back into
-        its own source data - see edge_compensation.py's module docstring)."""
+        """Edge-corrected powers for triggering/the level meter only - logs and
+        metadata stay raw, or the correction would feed back into its own data."""
         if self._edge_compensation is None or not self._edge_compensation.has_data:
             return powers
         return {f: v + self._correction_db(f - center_hz) for f, v in powers.items()}
 
-    # -- per-band "advanced" overrides (Scanner tab) --------------------
-    # A window tagged with a band (see ScanWindow.band / _rebuild_windows)
-    # can carry its own trigger level/timing/gain/noise-reduction, set apart
-    # from every other band's - e.g. a noisier civil-aviation band running a
-    # less sensitive trigger than a quieter fire-brigade band would need.
-    # None on the band's own field (the default - "no override yet") always
-    # falls back to the ordinary global Scanner-tab setting, so an
-    # unconfigured band behaves exactly as it always has.
+    # -- per-band overrides ---------------------------------------------
+    # A window tagged with a band uses that band's own trigger/timing/gain/
+    # noise reduction where set; None falls back to the global setting.
     def _effective_trigger_dbfs(self, window: ScanWindow | None) -> float:
         band = window.band if window is not None else None
         if band is not None and band.trigger_level_dbfs is not None:
@@ -1765,20 +1317,9 @@ class ScannerEngine(threading.Thread):
         return mode, db
 
     def _effective_squelch_dbfs(self, window: ScanWindow | None) -> float | None:
-        """None when squelch is off (the default - see AppConfig.squelch_enabled),
-        otherwise the absolute dBFS level below which both the live speaker
-        AND the recording drop this block (see _play_and_record_slot) -
-        never the LINGER timer/slot-close decision, which stays keyed to
-        trigger_dbfs alone regardless of squelch. Deliberately computed as
-        this window's *effective trigger* (respecting any per-band override
-        - see _effective_trigger_dbfs) plus squelch_offset_db, never as an
-        independent absolute number - squelch_offset_db is clamped to <= 0
-        here too (belt and suspenders; the Scanner tab's slider already
-        can't go positive) so this can never sit above trigger and
-        therefore can never mute anything while the state machine is still
-        in SIGNAL_DETECTED (level >= trigger) - see AGENTS.md gotcha 6 for
-        why that invariant (not whether recording is also squelched) is
-        what actually keeps this safe."""
+        """None when squelch is off, else effective trigger + offset (offset
+        clamped <= 0, so it can never mute during SIGNAL_DETECTED - gotcha 6).
+        Mutes live audio and writes silence; never affects LINGER/closing."""
         band = window.band if window is not None else None
         enabled = band.squelch_enabled if band is not None and band.squelch_enabled is not None else self.config.squelch_enabled
         if not enabled:
@@ -1800,11 +1341,8 @@ class ScannerEngine(threading.Thread):
         return enabled, strength
 
     def _maybe_log_floor(self, iq: np.ndarray, sample_rate: float, window: ScanWindow) -> None:
-        """See CalibrationLogger - a background-noise snapshot of this whole
-        window, throttled to once every _FLOOR_LOG_INTERVAL_S per window
-        (center_hz) so the extra full-window channel_powers_dbfs() call
-        (cheap once in a while, not worth paying every tick) never competes
-        with the real-time audio path."""
+        """Background-noise snapshot of the window for CalibrationLogger,
+        at most every _FLOOR_LOG_INTERVAL_S."""
         now = time.monotonic()
         if now - self._last_floor_log.get(window.center_hz, 0.0) < _FLOOR_LOG_INTERVAL_S:
             return
@@ -1816,12 +1354,8 @@ class ScannerEngine(threading.Thread):
 
     # -- slot management -----------------------------------------------
     def _service_active_slots(self, iq, spectrum, sample_rate: float, window: ScanWindow) -> float | None:
-        """Advances every currently-open slot by one IQ block. Returns the
-        primary slot's current level (for the level meter), or None if
-        nothing is active. ``spectrum`` is this tick's (bin_freqs, cumsum)
-        pair from channelizer.spectrum_cumsum(iq, sample_rate) - computed
-        once by the caller and reused here instead of each recomputing its
-        own FFT over the same iq (see _main_loop's SCANNING branch)."""
+        """Advances every open slot by one IQ block. Returns the primary
+        slot's level (for the level meter), or None if nothing is active."""
         if not self._slots:
             return None
         active_freqs = list(self._slots.keys())
@@ -1831,50 +1365,16 @@ class ScannerEngine(threading.Thread):
         linger_time_ms = self._effective_linger_time_ms(window)
         primary_level = None
 
-        # Demod/noise-reduction/file-write for every *non-primary* slot is
-        # dispatched to self._slot_pool, run in parallel with each other -
-        # see AGENTS.md gotcha 12 for the real-hardware measurements that
-        # led to this (many simultaneously active slots alone was enough to
-        # blow the per-tick real-time budget several times over, backing up
-        # the acquisition queue - see AcquisitionThread - until it started
-        # dropping chunks). Safe to parallelize: each slot owns its own
-        # Demodulator/NoiseReducer/Recorder (see _Slot's docstring), so
-        # there's no shared *mutable* state between these tasks - only
-        # ``iq`` itself is shared, but every task only ever reads it.
-        #
-        # The *primary* slot (the one and only one that ever reaches the
-        # live speaker - see _open_slot's weight logic) is handled
-        # differently: processed synchronously, first, directly on this
-        # thread, *before* any non-primary slot is even submitted to the
-        # pool - see AGENTS.md gotcha 28 for the real-hardware/real-user
-        # finding that motivated splitting this out. A recording-only
-        # slot's own processing landing a tick late is inaudible and
-        # harmless; the primary slot's is the one truly real-time-critical
-        # path in this whole tick (a live-audio glitch is instantly
-        # audible), and the old design gave it no priority at all - it was
-        # just one more task in the same pool batch as everything else, so
-        # more simultaneously-recording (non-primary) slots directly added
-        # GIL/CPU contention to the one slot a listener actually hears, even
-        # though those other slots have no real-time deadline of their own.
-        # Doing primary's own work before any pool task even starts means
-        # nothing else in this tick is yet competing for the GIL while it
-        # runs.
+        # Non-primary slots run in parallel on _slot_pool (gotcha 12) - each
+        # owns its DSP state and only reads the shared iq. The primary slot,
+        # the only one heard live, runs first on this thread, so recording-
+        # only slots never compete with it (gotcha 28).
         tasks = []
         for freq_hz, slot in list(self._slots.items()):
-            # Corrected for the linger/level-meter decision (see
-            # _apply_edge_compensation) - a slot near the window's edge
-            # shouldn't have to cling to a lower real level than one near
-            # the center just to avoid lingering out.
+            # Edge-corrected, so a slot near the window edge doesn't linger out early.
             level = raw_powers.get(freq_hz, -120.0) + self._correction_db(slot.offset_hz)
             slot.level_history.append(level)
-            # Squelch (see _effective_squelch_dbfs) mutes the live speaker
-            # AND skips writing this block to the recording (see
-            # _play_and_record_slot) - but never the LINGER timer/slot-close
-            # decision below, which still depends only on trigger_dbfs.
-            # squelch_dbfs is always <= trigger_dbfs (see
-            # _effective_squelch_dbfs), so this can never fire while level
-            # is still >= trigger - i.e. never while the state machine
-            # itself says SIGNAL_DETECTED.
+            # Squelch only mutes audio; LINGER below depends on the trigger alone.
             squelched = squelch_dbfs is not None and level < squelch_dbfs
             if freq_hz == self._primary_freq:
                 primary_level = level
@@ -1886,7 +1386,7 @@ class ScannerEngine(threading.Thread):
 
         for freq_hz, slot, level, future in tasks:
             if future is not None:
-                future.result()  # re-raises whatever that slot's own processing raised, same as the old sequential call would have
+                future.result()  # re-raises the slot's own exception
             if level >= trigger_dbfs:
                 slot.linger_deadline = None
             elif slot.linger_deadline is None:
@@ -1897,31 +1397,13 @@ class ScannerEngine(threading.Thread):
         return primary_level
 
     def _detect_reflections(self, tasks: list[tuple[int, "_Slot", float, object]]) -> None:
-        """Closes (and discards the recording of) any active slot whose
-        level has been tracking another, much stronger active slot's too
-        closely for too long to be coincidence - see the _REFLECTION_*
-        constants above for the exact thresholds and why each exists.
-        Deliberately conservative: two real transmissions merely starting
-        in the same tick (the scanner just retuned to a window where both
-        happen to be active) must never get flagged on that alone - only
-        sustained, tight tracking of *both* slots' own level histories does.
-
-        Cheap by construction - bails out immediately if there are more
-        than _REFLECTION_MAX_SLOTS_CHECKED active slots, and otherwise does
-        nothing heavier than a handful of small numpy correlations (tens of
-        floats each). This runs on the main scanning-loop thread every tick,
-        same budget as everything else in _service_active_slots - see
-        AGENTS.md gotcha 30 for exactly how expensive "looks cheap" can
-        actually get here if that's not kept true by construction, not just
-        checked after the fact."""
+        """Closes and discards a slot whose level has tracked a much stronger
+        active slot too closely, for too long, to be coincidence (thresholds:
+        _REFLECTION_*). Runs every tick, so it is kept cheap by construction."""
         slots = [slot for _freq, slot, _level, _future in tasks]
         if len(slots) < 2 or len(slots) > _REFLECTION_MAX_SLOTS_CHECKED:
             return
-        # Each slot's history array/mean/std is the same input to every pair
-        # it appears in - with up to _REFLECTION_MAX_SLOTS_CHECKED slots that's
-        # up to _REFLECTION_MAX_SLOTS_CHECKED-1 pairs per slot, so computing
-        # these once per slot instead of once per *pair* matters here, not
-        # just in principle (measured ~3x fewer numpy calls at the slot cap).
+        # Per-slot stats computed once, not once per pair.
         prepared: dict[int, tuple[np.ndarray, float, float]] = {}
         for slot in slots:
             if len(slot.level_history) < _REFLECTION_MIN_OVERLAP_TICKS:
@@ -1958,25 +1440,15 @@ class ScannerEngine(threading.Thread):
                 self._close_slot(weak_freq, reason="reflection")
 
     def _process_one_slot(self, slot: _Slot, iq: np.ndarray, squelched: bool) -> None:
-        """Runs on self._slot_pool's worker threads - see
-        _service_active_slots(). Demodulates this one slot's own channel
-        out of the shared ``iq`` block and hands it to
-        _play_and_record_slot(). Reading the same ``iq`` array from several
-        threads at once is safe (nothing anywhere writes back into it,
-        numpy reads don't mutate); each call only ever touches this one
-        slot's own Demodulator/NoiseReducer/Recorder."""
+        """Demodulates one slot from the shared, read-only ``iq`` (may run on
+        the slot pool)."""
         audio = slot.demod.demod(iq, slot.modulation, slot.offset_hz)
         self._play_and_record_slot(slot, audio, squelched=squelched)
 
     def _at_recording_capacity(self) -> bool:
-        """True if opening one more slot would exceed
-        ``config.recording.max_concurrent_recordings`` (0 = unlimited, the
-        default - always returns False then). Only gates auto-recording:
-        irrelevant while auto-recording itself is off, since every open
-        slot's own ``Recorder`` only actually writes anything when
-        ``config.recording.enabled`` is True (see _open_slot) - a capped
-        scan with auto-recording off would otherwise stop *watching*
-        channels live for no reason, not just stop recording them."""
+        """True when one more slot would exceed max_concurrent_recordings
+        (0 = unlimited, gotcha 24). Only while auto-recording is on -
+        otherwise it would limit live listening too."""
         limit = self.config.recording.max_concurrent_recordings
         if not self.config.recording.enabled or limit <= 0:
             return False
@@ -2004,15 +1476,8 @@ class ScannerEngine(threading.Thread):
 
         timing = self.config.timing
         nr_enabled, nr_strength = self._effective_noise_reduction(window)
-        # Everything the app can gather about this transmission at open
-        # time, for the WAV metadata chunk (see wav_metadata.py) - lets a
-        # recording later be cross-checked against the exact settings/RF
-        # conditions it was captured under (gain, trigger, offset from the
-        # window's center, ...). Written to the file once it closes (see
-        # _close_slot), since wave.Wave_write finalises its header on close.
-        # Trigger/timing/noise-reduction fields reflect this window's *own*
-        # effective settings (a band's "advanced" override, if it has one -
-        # see _effective_*), not necessarily the global Scanner-tab values.
+        # WAV metadata (wav_metadata.py): the settings and RF conditions this
+        # was captured with, per the window's effective settings. Written on close.
         slot.meta = {
             "app": "FalconSDR",
             "freq_hz": freq_hz,
@@ -2052,33 +1517,22 @@ class ScannerEngine(threading.Thread):
             finished_path = slot.recorder.end_transmission()
             slot.recorder.stop_session()
             if finished_path is None and reason == "linger":
-                # Recorder dropped it: not one block above the squelch level.
-                # Said out loud - silently losing a detected channel is
-                # indistinguishable from a bug otherwise.
+                # Recorder dropped it - say so, a silent loss looks like a bug.
                 self.signals.log.emit(
                     tr("{freq:.4f} MHz: nothing above the squelch level - recording discarded").format(freq=freq_hz / 1e6)
                 )
             if finished_path is not None and reason == "reflection":
-                # A receiver-generated reflection/splatter of another, much
-                # stronger simultaneously-active channel (see
-                # _detect_reflections) - never a real transmission, so the
-                # recording is actively wrong to keep, not just skippable -
-                # discard it outright rather than filing it with metadata.
-                # Renamed, not deleted: a false positive stays recoverable
-                # (strip ".rejected"), and the extra suffix keeps it out of
-                # every .wav/.mp3 glob (Playback library, remote sync).
+                # A reflection is never a real transmission. Renamed, not
+                # deleted, so a false positive is recoverable; the suffix
+                # keeps it out of the library.
                 try:
                     Path(finished_path).rename(f"{finished_path}.rejected")
                 except OSError:
                     pass
                 finished_path = None
             elif finished_path is not None:
-                # Metadata is a bonus on top of an already-successfully-
-                # written recording - never let a problem here (disk full,
-                # weird path, ...) take down the scanner or be mistaken for
-                # a recording failure. Must run before any mp3 transcode:
-                # this project's WAV metadata chunk (wav_metadata.py) is a
-                # RIFF/LIST chunk, which an mp3 container has no room for.
+                # Metadata is optional - never let it fail the recording.
+                # Must precede the mp3 transcode (gotcha 14).
                 try:
                     slot.meta["close_reason"] = reason
                     slot.meta["closed_at_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -2089,10 +1543,7 @@ class ScannerEngine(threading.Thread):
         if finished_path is not None:
             self._finish_recording(Path(finished_path))
         if reason == "linger":
-            # Only a natural end-of-transmission earns a boost - a manual
-            # Skip means the user actively wants to move on, and
-            # blacklist_skip/stopped/connection_lost aren't "might come
-            # back any second" situations at all.
+            # Only a natural end earns a boost - not a Skip, Stop or lost device.
             self._register_recency_boost(slot.window)
         if self._primary_freq == freq_hz:
             self._reassign_primary()
@@ -2100,12 +1551,8 @@ class ScannerEngine(threading.Thread):
         self._emit_freqs()
 
     def _finish_recording(self, path: Path) -> None:
-        """Emits recording_finished for a closed (and metadata-tagged) file -
-        after the mp3 transcode when that format is on (gotcha 14). The
-        transcode runs on self._slot_pool, never on this scan-loop thread:
-        ffmpeg can take longer than AcquisitionThread's ~1.9s queue, which
-        dropped IQ for every other still-open slot. run()'s final
-        _slot_pool.shutdown(wait=True) waits for any still in flight."""
+        """Emits recording_finished for a closed file - after the mp3
+        transcode, which runs on the slot pool, never on this thread (gotcha 14)."""
         if self.config.recording.output_format != "mp3":
             self.signals.recording_finished.emit(str(path))
             return
@@ -2119,12 +1566,9 @@ class ScannerEngine(threading.Thread):
             _transcode()
 
     def _register_recency_boost(self, window: ScanWindow) -> None:
-        """See RecencyBoostConfig - starts (or refreshes) a limited-time
-        "visit this window more often" boost after a transmission on it
-        ends naturally. Deliberately reads config.recency_boost live (not
-        cached at rebuild time) so toggling it in Opcje takes effect on the
-        very next transmission, no rebuild/restart needed - same as
-        trigger_level_dbfs."""
+        """Starts (or refreshes) extra visits to this window after a
+        transmission ends (RecencyBoostConfig). Reads the config live, so a
+        settings change applies to the next transmission."""
         cfg = self.config.recency_boost
         if not cfg.enabled:
             return
@@ -2152,9 +1596,7 @@ class ScannerEngine(threading.Thread):
         self.signals.recording_changed.emit(bool(path), path)
 
     def _active_recording_path(self) -> str:
-        """Path shown by the single REC indicator in the GUI - the primary
-        slot's, falling back to any active one if the primary somehow has
-        none (shouldn't normally happen)."""
+        """Path for the REC indicator: the primary slot's, else any active one."""
         if self._primary_freq is not None and self._primary_freq in self._slots:
             return self._slots[self._primary_freq].recorder.current_path
         if self._slots:
@@ -2168,73 +1610,30 @@ class ScannerEngine(threading.Thread):
                 self.signals.blacklisted.emit(freq_hz)
 
     def _play_and_record_slot(self, slot: _Slot, audio: np.ndarray, squelched: bool = False) -> None:
-        # ``squelched`` (see _effective_squelch_dbfs) always skips the live
-        # speaker - no one wants the loud FM-discriminator noise burst that
-        # follows a transmitter releasing PTT in their ears. The recording
-        # gets SILENCE for this block instead - explicit user request/
-        # design decision: skipping the block outright (an earlier version
-        # of this) made a single, still-open recording jump-cut mid-file
-        # with no way to tell, on playback, whether a message was genuinely
-        # continuous or just a signal caught in bursts with real gaps
-        # edited out. A *mid*-transmission gap should sound like a real
-        # pause; recorder.write_audio()'s own ``real=False`` handling is
-        # what then decides, in hindsight, whether this particular silence
-        # turns out to be that (more real audio follows - written as real
-        # silence, in order) or the trailing tail of the whole transmission
-        # (nothing follows - trimmed, unwritten, per a later explicit
-        # follow-up request: the end should just end, not trail into dead
-        # air). A real, audible gap belongs *between* recordings - once
-        # LINGER fully expires and a later, genuinely new detection starts a
-        # separate file, two recordings existing is exactly right - never
-        # *inside* one. Since squelch_dbfs is always <= trigger_dbfs (see
-        # _effective_squelch_dbfs), this never fires while the state
-        # machine still considers the channel SIGNAL_DETECTED - only during
-        # the LINGER tail, once level has already dropped below trigger.
+        # Squelched: mute live audio and record silence - a pause inside a
+        # transmission stays a pause, not a jump cut. The Recorder drops it
+        # if nothing real follows (gotcha 6).
         if squelched:
             slot.was_squelched = True
             if slot.freq_hz == self._primary_freq:
-                # Mirrors what a live listener would have heard (nothing -
-                # squelch mutes it) into a manual recording, if one is
-                # running - see start_manual_recording().
+                # Manual recording gets what a listener hears: silence.
                 self._feed_manual_recording(np.zeros(audio.shape[0], dtype=np.float32))
             if self.config.recording.enabled:
-                # real=False: silence substituted for a squelched block
-                # doesn't count as "this transmission had anything worth
-                # hearing" - see Recorder.end_transmission()'s phantom-
-                # recording cleanup, which would otherwise never trigger
-                # again now that *something* always gets written.
+                # real=False: silence alone doesn't make a recording worth keeping.
                 silence = np.zeros(audio.shape[0], dtype=np.float32)
                 slot.recorder.write_audio(silence, real=False)
             return
         if slot.was_squelched:
-            # Resuming right after a squelched gap: noise_reducer (see
-            # _apply_noise_reduction) is a stateful STFT processor (input
-            # buffer, overlap-add reconstruction buffer, minimum-statistics
-            # noise-floor tracker - see dsp.py's NoiseReducer) that was
-            # never called during the gap, since it only ever runs below
-            # this point. Left un-reset, its first call after resuming
-            # would silently splice whatever partial frame was buffered
-            # from *before* the gap onto this genuinely new, non-adjacent
-            # audio as if no time had passed - a real, reported glitch/
-            # click right at the resume point. Resetting means losing at
-            # most one FRAME_SIZE-worth (~40ms) of noise-reduction "warm-
-            # up" on resume, a far smaller cost than a stitched artifact.
-            # The demodulator needs no such reset: it runs every tick
-            # regardless of squelch (see _service_active_slots), so its
-            # own state (phase, DC estimate) was never interrupted.
+            # The noise reducer is stateful and was skipped during the gap -
+            # reset it, or it splices the pre-gap frame onto new audio (an
+            # audible click). The demodulator ran every tick and needs no reset.
             slot.noise_reducer.reset()
             slot.was_squelched = False
         mono = self._apply_noise_reduction(slot, audio)
         if slot.freq_hz == self._primary_freq:
             self.signals.live_audio_ready.emit(mono)
         if slot.freq_hz == self._primary_freq:
-            # Manual recording mirrors the primary slot's real audio
-            # regardless of mute - like the automatic recording below, it's
-            # meant to capture what's actually happening, not just what's
-            # currently being listened to live. freq_hz here is real
-            # content (unlike the squelched branch above, which mirrors
-            # silence) - this is what stop_manual_recording() renames the
-            # file to, once the recording ends.
+            # Manual recording follows the primary slot regardless of mute.
             self._feed_manual_recording(mono, freq_hz=slot.freq_hz)
         if self.config.recording.enabled:
             slot.recorder.write_audio(mono)

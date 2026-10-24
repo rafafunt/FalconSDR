@@ -4,23 +4,11 @@ whichever computer was asked to (Settings → Transcription & computers).
 pip installing this can take a while (ctranslate2/av/tokenizers are
 sizeable downloads).
 
-Two-tier strategy, in order:
-1. Try a plain ``pip install`` straight into whatever interpreter is running
-   the app right now. Works, and needs no restart at all, on any install
-   that isn't PEP 668 "externally managed" - which in practice is most
-   Windows/macOS installs of this app, and any Linux one already running
-   inside a venv.
-2. Only if that specifically fails with pip's own
-   "externally-managed-environment" error (Ubuntu and other distros that
-   lock down the system Python) does this fall back to creating
-   ``falconsdr/venv_paths.VENV_DIR`` (``--system-site-packages``, so it
-   still sees this app's own already-installed numpy/etc.) and
-   installing there instead - the same venv main.py's own startup check
-   already knows how to transparently re-exec into. That case does need a
-   restart (a *different* interpreter process has to start seeing it).
-A genuine failure (network down, disk full, ...) at either step is reported
-as-is - falling back to a venv wouldn't fix an unrelated error, so this only
-takes the venv branch on the specific error it's a workaround for.
+1. ``pip install`` into the running interpreter - no restart needed.
+2. Only on pip's "externally-managed-environment" error (PEP 668): install
+   into ``venv_paths.VENV_DIR`` (``--system-site-packages``), which main.py
+   re-execs into - this needs a restart.
+Any other error is reported as-is.
 
 A packaged (PyInstaller) build has no Python of its own to pip into, but it
 carries pip: ``falconsdr.exe --pip ...`` (main.py) runs it, installing
@@ -66,13 +54,8 @@ def enable_addons() -> None:
     if str(ADDONS_DIR) not in sys.path:
         sys.path.append(str(ADDONS_DIR))
 
-# faster-whisper 1.2.1 still calls av.open(..., metadata_errors=...), an
-# argument PyAV removed outright in 19.0.0 - faster-whisper itself only
-# declares "av>=11" with no upper bound, so an unpinned install grabs the
-# newest av and every transcription fails at decode_audio() with
-# "TypeError: open() got an unexpected keyword argument 'metadata_errors'".
-# Pinning <19 here is what actually avoids it; PyAV's manylinux wheels are
-# abi3 (cp311+), so this doesn't force a source build on a newer Python.
+# av<19: faster-whisper 1.2.1 passes av.open(metadata_errors=...), which PyAV
+# 19 removed - every transcription failed. The wheels are abi3, no source build.
 _PACKAGES = ["faster-whisper>=1.2", "av<19"]
 _GPU_PACKAGES = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12"]
 _EXTERNALLY_MANAGED_MARKER = "externally-managed-environment"

@@ -31,17 +31,9 @@ SHORT_RECORDING_PENALTY = 15.0
 
 
 def _mp3_to_wav_bytes(path: Path) -> bytes:
-    """Decodes an mp3 to an in-memory WAV via a system `ffmpeg` - the stdlib
-    `wave` module used below can't read mp3 at all. Reuses the exact same
-    ffmpeg dependency this project already requires for *writing* mp3
-    (audio_transcode.py, gotcha 14) rather than pulling in a decoder
-    library (e.g. PyAV) into this core, non-optional playback path - PyAV
-    is only ever installed as part of the *optional* transcription extra
-    (gotcha 18), and this module must work without it. Raises on any
-    failure (no ffmpeg, corrupt file, ...) - the caller
-    (_read_samples(), always reached through analyze_wav()'s/
-    compute_waveform_peaks()'s own try/except) treats that exactly like any
-    other unreadable file, same as a truncated/corrupt WAV would."""
+    """Decodes an mp3 to an in-memory WAV with ffmpeg (``wave`` can't read
+    mp3; PyAV is only part of the optional transcription extra). Raises on
+    any failure - callers treat it as an unreadable file."""
     ffmpeg = ffmpeg_exe()
     if ffmpeg is None:
         raise RuntimeError("ffmpeg not found")
@@ -53,10 +45,7 @@ def _mp3_to_wav_bytes(path: Path) -> bytes:
 
 
 def _read_samples(path: Path) -> tuple[np.ndarray, int, float]:
-    # ffmpeg's WAV muxer writes a normal RIFF header (correct sample rate/
-    # channels/bit depth) - decoding to an in-memory WAV and handing it to
-    # the exact same `wave` parsing below means mp3 needs no separate
-    # sample-width/channel-averaging logic of its own.
+    # mp3 is decoded to an in-memory WAV, so one parser handles both.
     source = io.BytesIO(_mp3_to_wav_bytes(path)) if path.suffix.lower() == ".mp3" else str(path)
     with wave.open(source, "rb") as wf:
         n_channels = wf.getnchannels()
@@ -65,15 +54,8 @@ def _read_samples(path: Path) -> tuple[np.ndarray, int, float]:
         n_frames = wf.getnframes()
         raw = wf.readframes(n_frames)
 
-    # Duration from the *actual* bytes read, not the header's declared frame
-    # count: ffmpeg's WAV muxer can't know the final size in advance when
-    # writing to a non-seekable pipe (the mp3-decode path above) and writes
-    # a sentinel placeholder (observed: 0x7FFFFFFF) for it instead - taken
-    # literally, that gave a "recording" tens of thousands of seconds long.
-    # readframes() itself is correctly bounded by the real data actually
-    # available regardless, so deriving duration from len(raw) is accurate
-    # for both a real WAV file (matches its true frame count exactly) and a
-    # piped one (the only case where the two would ever disagree).
+    # Duration from the bytes actually read: ffmpeg writing to a pipe puts a
+    # placeholder (0x7FFFFFFF) in the header's frame count (gotcha 19).
     actual_n_frames = len(raw) // max(1, sampwidth * n_channels)
     duration_sec = actual_n_frames / framerate
 
@@ -97,25 +79,9 @@ def _read_samples(path: Path) -> tuple[np.ndarray, int, float]:
 
 
 def compute_waveform_peaks(path: Path, n_buckets: int = 400) -> np.ndarray | None:
-    """Peak amplitude (0..1) per time bucket, for WaveformView's visual
-    overview on the Recordings page (recordings.js drawWave) - lets a listener see at a
-    glance where a recording is quiet/silent (e.g. a squelched gap - see
-    ScannerEngine._play_and_record_slot, which writes silence rather than
-    cutting the block so the file's timeline stays real) versus genuinely
-    loud/quiet content, without having to play it first.
-
-    Reuses _read_samples() (same WAV-format handling as analyze_wav()) -
-    reading and reducing even a several-minutes-long recording this way is
-    a handful of vectorized numpy calls, fast enough to run synchronously
-    on the GUI thread right as playback starts (see
-    the /api/recording/peaks request when a recording is opened) rather than needing a background
-    worker thread like the library-wide quality scan does.
-
-    Returns None (not an all-zero array) for an unreadable/corrupt file or
-    one with no samples at all, so the caller/widget can tell "no data" (->
-    draws a flat placeholder line) apart from "genuinely silent throughout"
-    (-> draws a flat line too, but that's a real, meaningful measurement,
-    not a fallback)."""
+    """Peak amplitude (0..1) per time bucket for the Recordings page's
+    waveform, normalized to the recording's own loudest bucket (gotcha 34).
+    None for an unreadable or empty file - "no data", unlike real silence."""
     try:
         data, full_scale, _ = _read_samples(path)
     except Exception:
@@ -154,26 +120,11 @@ def analyze_wav(path: Path) -> QualityMetrics:
     frames = trimmed.reshape(n_windows, window)
     rms = np.sqrt(np.mean(frames ** 2, axis=1))
 
-    # Windows of EXACT digital silence (RMS == 0.0) are squelch-substituted
-    # gaps (see ScannerEngine._play_and_record_slot / Recorder.write_audio's
-    # ``real=False`` silence, written so a recording's timeline stays real
-    # instead of jump-cutting - see AGENTS.md gotcha 6), not real receiver
-    # noise, however quiet - genuine ADC noise/thermal/quantization dither
-    # essentially never makes an entire ~50ms window land on exactly 0.
-    # Left in, a recording with enough squelched gaps (a real, common case -
-    # any transmission with a mid-conversation pause) pushes the 15th-
-    # percentile "noise floor" straight to 0.0, and dividing by that below
-    # blows the SNR up to nonsense (100+ dB, quality pinned at 100) for a
-    # recording that's often genuinely quiet/marginal - measure quality from
-    # the real content only, exactly like a listener skipping the silent
-    # parts would judge it.
+    # Exact-zero windows are squelch gaps (gotcha 6), not receiver noise -
+    # left in, they pull the noise floor to 0 and the SNR to nonsense.
     real_mask = rms > 0.0
     if not real_mask.any():
-        # Every window is exact silence - only possible for genuinely
-        # unreadable/all-zero data at this point (an all-squelched
-        # transmission never gets this far - see Recorder's own phantom-
-        # recording cleanup) - fall back to the original, unfiltered arrays
-        # rather than dividing by an empty selection.
+        # All zeros: use everything rather than an empty selection.
         real_mask = np.ones_like(rms, dtype=bool)
     real_rms = rms[real_mask]
     real_data = frames[real_mask].reshape(-1)

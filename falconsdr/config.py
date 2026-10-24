@@ -1,7 +1,6 @@
 """Persistent configuration for FalconSDR.
 
-Everything is dumped to ~/.config/FalconSDR/config.json so the app never
-needs to be reconfigured after a restart, per spec section 4.5.
+Saved to ~/.config/FalconSDR/config.json.
 """
 from __future__ import annotations
 
@@ -71,11 +70,8 @@ class DeviceConfig:
     driver: str = "auto"          # "auto", "rtlsdr", "simulated", or a SoapySDR driver key
     device_args: str = ""         # extra SoapySDR device args, e.g. "serial=00000001"
     sample_rate_hz: float = 2_400_000.0  # capture bandwidth; RTL-SDR handles ~2.4 MSPS
-    # "manual" (fixed gain_db), "auto" (the tuner's own onboard hardware AGC),
-    # or "sw_auto" (SoftwareAgc control loop - see agc.py, the default).
-    # Hardware AGC can overdrive on a strong station (confirmed: +0.7dBFS,
-    # past full scale, spurious detections on adjacent channels - AGENTS.md
-    # gotcha 27); the owner's real-world use settled on software AGC.
+    # "manual" (gain_db), "auto" (hardware AGC) or "sw_auto" (agc.py) - the
+    # default, since hardware AGC overdrives on strong stations (gotcha 27).
     gain_mode: str = "sw_auto"
 
     gain_db: float = 30.0
@@ -89,17 +85,10 @@ class VfoRangeConfig:
     label: str = ""       # display name in the band list (preset name or user-entered)
     enabled: bool = True  # unchecked bands stay in the list but are skipped while scanning
     modulation: str = "AM"  # Modulation.value used to demod this band's channels
-    # Scan priority weight - 0 (default) means "scan in the usual round-robin
-    # order, no special treatment", same as Channel.weight (see
-    # scanner_engine._WeightedScheduler for how bands and channels compete).
+    # Scan priority, as Channel.weight; 0 = plain round-robin.
     weight: float = 0.0
-    # "Zaawansowane" per-band overrides (Scanner tab, _BandRow's advanced
-    # button) - None means "use the global slider's value", same as every
-    # other band without an override. Motivating case: civil aviation VHF
-    # runs noisier than a fire-brigade band, so one global trigger level is
-    # always a compromise between "too sensitive on the noisy band" and "too
-    # deaf on the quiet one" - this lets each band carry its own. See
-    # ScannerEngine._effective_* for how these get resolved per window.
+    # Per-band overrides of the global settings (None = use the global one) -
+    # e.g. a noisy airband needs a different trigger than a quiet one.
     trigger_level_dbfs: float | None = None
     tuning_time_ms: int | None = None
     linger_time_ms: int | None = None
@@ -112,11 +101,8 @@ class VfoRangeConfig:
 
     @property
     def has_advanced_overrides(self) -> bool:
-        """True once at least one "zaawansowane" field above has actually
-        been saved (the Listen page's per-band settings) - distinguishes a band
-        that's merely *tagged* on a window (see ScanWindow.band) from one
-        that's genuinely diverging from the global settings, e.g. for the
-        spectrum view's trigger-line accent color."""
+        """True when any override is set - the spectrum then draws the
+        trigger line in an accent color."""
         return any((
             self.trigger_level_dbfs is not None, self.tuning_time_ms is not None,
             self.linger_time_ms is not None, self.gain_mode is not None,
@@ -135,44 +121,14 @@ class TimingConfig:
 
 @dataclass
 class RecordingConfig:
-    # Off by default: a fresh install shouldn't start writing audio to disk
-    # before the user has deliberately opted in - see the "Auto-record"
-    # toggles on the Listen and Settings pages (both control this field).
+    # Off until the user opts in - nothing is written to disk before that.
     enabled: bool = False
-    # Auto-recording is always one file per transmission now - the old
-    # "Single File (one continuous file)" mode never actually did that (see
-    # git history: every new transmission opened a fresh Recorder/file
-    # regardless of this setting, since each _Slot owns its own Recorder -
-    # gotcha 12 - so it behaved like Split with a worse filename, no
-    # metadata, and a pointless marker tone at the start of every file) -
-    # removed rather than fixed, since manual recording (ScannerEngine.
-    # start_manual_recording(), forced single-file internally via
-    # Recorder's own single_file=True constructor flag, nothing to do with
-    # this config) already covers the genuine "one continuous file"
-    # use case correctly. `output_dir` below still applies to both.
     output_dir: str = DEFAULT_RECORDINGS_DIR
-    # "wav" (default, always available) or "mp3" (requires ffmpeg on PATH -
-    # see audio_transcode.py; falls back to keeping the WAV silently if
-    # ffmpeg isn't installed, never loses the recording). WAV is still always
-    # the real-time write target - transcoding only ever runs once a file is
-    # fully closed (scanner_engine.py's _close_slot/stop_manual_recording),
-    # never on the per-chunk recording path.
+    # "wav" or "mp3" - a transcode after the WAV closes; without ffmpeg the
+    # WAV is kept (gotcha 14).
     output_format: str = "wav"
-    # 0 = unlimited. When >0, ScannerEngine won't open a *new* auto-recording
-    # slot once this many are already active simultaneously - the candidate
-    # is simply reconsidered on a later tick once one of the existing ones
-    # closes (LINGER expiry) and frees capacity again. Added as a safety
-    # valve against a busy band (or one strong transmission's own spectral
-    # leakage into tightly-spaced neighbour channels - see channelizer.py's
-    # per-channel power window having no guard band) fragmenting into many
-    # simultaneous slots/files at once. Only gates *recording* - has no
-    # effect when `enabled` is False, and never caps how many channels can
-    # be scanned/demodulated live (only one of them ever reaches the
-    # speaker anyway - see ScannerEngine._open_slot's primary/weight logic).
-    # Defaulted to 3 (not unlimited) - a sane out-of-the-box ceiling for a
-    # fresh install, since unlimited is exactly what let the spectral-
-    # leakage/fabricated-candidate bugs (see AGENTS.md gotcha 31/32) balloon
-    # into a dozen-plus simultaneous recordings before those were found.
+    # Simultaneous auto-recordings, 0 = unlimited (gotcha 24). A capped
+    # channel opens on a later tick once a slot frees up.
     max_concurrent_recordings: int = 3
     # Disk retention (see playback/index.py's Library.apply_retention) - 0 = off.
     retention_days: int = 0
@@ -185,32 +141,21 @@ class RecordingConfig:
 
 @dataclass
 class LocationConfig:
-    """Receiver location - used only to build the FlightRadar24/ADSBExchange
-    playback links on the Recordings page (an approximate location is plenty precise
-    for a ~9-zoom flight-tracker map, not exact GPS coordinates). None means
-    "not set yet" - see recordings.js (openMap),
-    which redirect to Options with an explanatory message instead of opening
-    a link built from nothing. Deliberately no baked-in default location:
-    this used to default to the original developer's own home coordinates,
-    which has no business being anyone else's default in a published app."""
+    """Receiver location, only for the FlightRadar24/ADSBExchange links on
+    the Recordings page - approximate is enough. None = not set; no default
+    on purpose."""
     home_lat: float | None = None
     home_lon: float | None = None
 
 
 @dataclass
 class RecencyBoostConfig:
-    """After a transmission ends *naturally* (linger expires, not a manual
-    Skip) its window gets temporarily revisited more often than the normal
-    weighted rotation would give it - a follow-up transmission on the same
-    frequency often lands within the next several/dozens of seconds (typical
-    ATC back-and-forth). Unlike just raising linger_time_ms, this never
-    blocks the scanner from noticing the conversation move to a *different*
-    frequency in the meantime - it keeps circling the rest of the schedule
-    as normal, just with this one window's turn coming up more often for a
-    while (see ScannerEngine._due_recency_boost_locked)."""
+    """After a transmission ends naturally its window is revisited more
+    often for a while - replies (ATC back-and-forth) follow within seconds.
+    Unlike a longer linger, the rest of the scan keeps running."""
     enabled: bool = True
-    duration_s: float = 90.0   # how long after the transmission ends to keep boosting
-    interval_s: float = 8.0    # how often (real seconds) to sneak in an extra visit during the boost
+    duration_s: float = 90.0   # after the transmission ends
+    interval_s: float = 8.0    # one extra visit this often
 
 
 @dataclass
@@ -226,10 +171,8 @@ class TranscriptionConfig:
     english_atc_model: str = "jacktol/whisper-medium.en-fine-tuned-for-ATC-faster-whisper"
     device: str = "auto"         # "auto" | "cuda" | "cpu"
     compute_type: str = "auto"   # "auto" -> int8_float16 on GPU, int8 on CPU
-    # Languages we bet the detection result on in uncertain cases (see
-    # transcription_engine._resolve_language) - in this kind of listening,
-    # only English and Polish realistically matter, so radio noise doesn't
-    # get to confuse detection with exotic languages.
+    # Languages an uncertain detection is limited to, so radio noise can't
+    # pick an exotic one (transcription_engine._resolve_language).
     candidate_languages: list[str] = field(default_factory=lambda: _default_candidate_languages())
     min_duration_sec: float = 0.6  # shorter recordings (e.g. just a squelch crackle) are skipped
 
@@ -246,11 +189,8 @@ class RemoteReceiverConfig:
 
 @dataclass
 class LegalDisclaimerConfig:
-    """Which UI languages (see i18n.current_language()) have already seen
-    each disclaimer - not a single "seen ever" flag, since dismissing it in
-    one language doesn't mean it was actually read/understood in another
-    the user (or a different person using the same install) later switches
-    to. See gui/legal_disclaimer.py."""
+    """UI languages each legal notice has been shown in (gotcha 20) -
+    switching language shows them again."""
     launch_seen_languages: list[str] = field(default_factory=list)
     recording_seen_languages: list[str] = field(default_factory=list)
 
@@ -258,12 +198,8 @@ class LegalDisclaimerConfig:
 @dataclass
 class AppConfig:
     device: DeviceConfig = field(default_factory=DeviceConfig)
-    # Bands/ranges swept together in one scan session - presets, custom ranges
-    # and single frequencies (start_hz == stop_hz) all live in this one list so
-    # they can be freely added/removed/edited from the Scanner tab (see
-    # military_presets.BAND_PRESETS for the built-in preset catalogue). The
-    # scanner always watches these AND every enabled Memory List channel in
-    # the same session - there is no separate "mode" to switch between.
+    # Bands scanned together with the Memory List: presets, custom ranges and
+    # single frequencies (start_hz == stop_hz).
     bands: list[VfoRangeConfig] = field(
         default_factory=lambda: [
             VfoRangeConfig(
@@ -280,49 +216,22 @@ class AppConfig:
     remote_receiver: RemoteReceiverConfig = field(default_factory=RemoteReceiverConfig)
     location: LocationConfig = field(default_factory=LocationConfig)
     trigger_level_dbfs: float = -30.0
-    # Extra cutoff for BOTH the live speaker and the recording, expressed as
-    # a dB *offset from trigger_level_dbfs* (always <= 0), never as an
-    # independent absolute value - see ScannerEngine._effective_squelch_dbfs()
-    # and AGENTS.md gotcha 6 for why that distinction matters. Muting only
-    # ever kicks in during LINGER (level already < trigger, slot still open
-    # on the timeout grace period) to cut the loud FM-discriminator noise
-    # burst right after a transmitter releases PTT (see dsp.py's demod() -
-    # phase-derivative FM discrimination on pure noise produces loud
-    # broadband output despite low real RF power once the actual carrier is
-    # gone - the "FM threshold effect") from both live monitoring AND the
-    # recorded file, so a recording ends where the real signal actually did
-    # rather than trailing off into that noise. The gap between this and
-    # trigger stays audible/recorded, since genuine content can briefly dip
-    # below trigger during LINGER without being noise. Off by default -
-    # purely opt-in, never changes anyone's existing listening/recording
-    # behaviour unprompted.
+    # Squelch: an offset (<= 0) from trigger_level_dbfs, never an absolute
+    # level (gotcha 6). Acts only during LINGER, cutting the noise burst after
+    # PTT release from live audio and the recording.
     squelch_enabled: bool = False
     squelch_offset_db: float = -6.0
     default_blacklist_margin_hz: int = 5000
     memory_channel_bandwidth_hz: int = 12_500  # per-channel power window used to watch Memory List channels
-    # Master on/off for the whole Memory List, independent of each channel's
-    # own enabled flag - mirrors a band's own enabled checkbox. If off, no
-    # Memory List channel is scanned even if individually enabled.
+    # Master switch for the whole Memory List, above each channel's own flag.
     memory_list_enabled: bool = True
-    # Known Memory List folder names - includes empty folders created via
-    # "Nowy folder" that have no channels filed under them yet, so they don't
-    # disappear from the tree; folders that do have channels are re-derived
-    # from Channel.folder on load regardless of what's in this list.
+    # Memory List folders, kept so empty ones don't disappear.
     channel_folders: list[str] = field(default_factory=list)
-    # UI language - a code with a matching falconsdr/locale/<code>.po file,
-    # "en" (the source language, built into every string, needs no file), or
-    # "auto" (default for a fresh install - follow the OS's own language,
-    # falling back to English if we have no translation for it). See
-    # falconsdr/i18n.py's resolve_system_language()/set_language(). Applying
-    # a change applies on the next page load (server log lines: right away).
+    # "auto" (the browser's/OS's language), "en" or a code with a
+    # falconsdr/locale/<code>.po file.
     language: str = "auto"
     legal_disclaimer: LegalDisclaimerConfig = field(default_factory=LegalDisclaimerConfig)
-    # Off by default - a real user shouldn't stumble into "Simulation (no
-    # hardware)" in the device dropdown and wonder why the scanner is
-    # hearing fake bursts instead of their actual RTL-SDR. Gates only the
-    # device list's own "Simulation" entry (see Controller.devices()/
-    # refresh_device_list()) - purely a UI visibility toggle, not a behavior
-    # flag anything else in the app reads.
+    # Offers the simulated device and enables diagnostics (gotcha 8/32).
     debug_mode: bool = False
     # Optional password for the web UI and workers (Settings → Access).
     # Empty = anyone who can reach the server can use it.

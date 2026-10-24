@@ -59,11 +59,7 @@ def counts_per_hour(recordings: List[Recording], use_utc: bool = False) -> List[
 
 
 def _weekday_labels() -> list[str]:
-    # A function, not a module-level constant: the active language (see
-    # falconsdr/i18n.py) is only known once set_language() runs, which
-    # happens after this module is first imported - a constant evaluated at
-    # import time would freeze in whatever language happened to be active
-    # then (i.e. always English, since i18n.set_language() hasn't run yet).
+    # A function, not a constant: tr() must run after the language is set.
     return [tr("Mon"), tr("Tue"), tr("Wed"), tr("Thu"), tr("Fri"), tr("Sat"), tr("Sun")]
 
 

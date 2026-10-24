@@ -1,48 +1,18 @@
-"""Always-on, low-overhead diagnostics for SoapyBackend.read() - written
-straight to a JSONL file (never stdout/print), so it can be inspected after
-the fact with no FALCONSDR_DEBUG_LIVE_AUDIO env var and no shell redirection
-needed - just restart the app and read the file back whenever.
+"""Always-on, low-overhead diagnostics of SDR reads, written to a JSONL file.
 
-Exists to chase two things at once:
+Tracks reads that needed more than one readStream() call and driver
+overflows - a late read lets the driver overflow, and the spliced samples
+look like a broadband signal to the FFT (false detections under CPU load).
 
-  1. The ~14% audio-vs-wall-clock gap found by cross-checking WAV metadata
-     (duration_sec) against actual recorded sample count - "multi_call_reads"
-     in the summary record below is a direct regression check on the
-     buffer-size fix for that (readStream() needing 2 calls per read()
-     instead of 1 when the scratch buffer was smaller than the requested
-     chunk) - should sit near 0 now; if it creeps back up, the fix isn't
-     holding for some chunk size.
+Records, one JSON object per line:
 
-  2. A user-reported hunch: signals look artificially stronger (more false
-     positives) when the CPU is busier (e.g. Whisper transcription running).
-     Plausible mechanism: a delayed readStream() call risks the driver's own
-     buffer overflowing (SOAPY_SDR_OVERFLOW and friends - all negative
-     return codes), and our read() loop currently has no way to tell the
-     caller "these samples aren't necessarily time-contiguous with the
-     previous ones" - splicing across a silent gap looks like a phase
-     discontinuity to the FFT, which spreads energy across many bins as if
-     it were a real broadband signal. "overflow_count"/"overflow" records
-     below exist to first confirm whether this actually happens, and how it
-     correlates with system load, before deciding what (if anything) to do
-     about it - measure first.
+  "overflow" - one per negative readStream() return code, with how many
+  samples the read already had (a splice is only possible once got > 0).
 
-Two kinds of records, one JSON object per line:
+  "summary" - every _SUMMARY_INTERVAL_S: multi-call reads, overflows,
+  median/max read time and the 1-minute load average.
 
-  "overflow" - immediate, one per negative return code from readStream()
-  (SOAPY_SDR_OVERFLOW=-4 is the one of interest, but any negative code is
-  logged) - includes how many samples were already collected for the
-  in-progress read() call, since a splice risk only exists once got > 0.
-
-  "summary" - once every _SUMMARY_INTERVAL_S, aggregate stats for that
-  window: how many read() calls needed >1 readStream() round-trip, how many
-  overflow events happened, median/max read() latency, and the 1-minute
-  load average as a cheap, dependency-free proxy for "how busy was the
-  machine" (no psutil - this is diagnostic-only, not worth a new
-  dependency) to eyeball against the other two.
-
-Deliberately never touches the read()/scanning path itself beyond a few
-float appends and an occasional file write - any failure to write is caught
-and ignored here, same policy as calibration_log.py.
+Write failures are ignored - this must never affect scanning.
 """
 from __future__ import annotations
 

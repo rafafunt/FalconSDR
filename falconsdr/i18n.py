@@ -5,15 +5,8 @@ through ``tr()``. Translations live as plain-text ``.po`` files (the standard
 GNU gettext format - the same one tools like Poedit, Weblate or Crowdin
 already understand) under ``falconsdr/locale/<lang>.po``.
 
-Deliberately NOT using Python's ``gettext`` module directly: that requires a
-compiled binary ``.mo`` file (built from the ``.po`` source via the external
-``msgfmt`` tool), which is one more technical step between "someone writes a
-translation" and "the app can use it" - exactly the kind of friction that
-turns away a translator who doesn't already have a C toolchain / gettext
-utilities installed (this matters a lot on Windows/macOS, where ``msgfmt``
-isn't preinstalled). Instead, ``.po`` is parsed directly, at runtime, by the
-small parser below. Anyone can add a new language by writing one text file
-and nothing else - no build step, no compiler, no extra dependency.
+No ``gettext``/``.mo``: the ``.po`` file is parsed directly, so a new
+language is one text file - no ``msgfmt`` build step.
 
 To add a new language (e.g. Slovak):
   1. Copy ``falconsdr/locale/pl.po`` to ``falconsdr/locale/sk.po``.
@@ -39,15 +32,10 @@ from pathlib import Path
 
 LOCALE_DIR = Path(__file__).resolve().parent / "locale"
 
-# Sentinel config value (see AppConfig.language) meaning "no explicit choice
-# yet - follow the system's own language". Resolved once, at startup, by
-# resolve_system_language() - never stored back into the catalog lookup
-# itself, so tr()/current_language() never see "auto" directly.
+# AppConfig.language value meaning "follow the system/browser language".
 AUTO = "auto"
 
-# Display names for the Options language dropdown - a language whose .po
-# file exists but isn't listed here still works, it just shows its raw code
-# (e.g. "sk") instead of a nice name until someone adds an entry here.
+# Names in the language picker; an unlisted .po still works, shown by its code.
 LANGUAGE_NAMES: dict[str, str] = {
     "en": "English",
     "pl": "Polski",
@@ -74,14 +62,9 @@ _STRING_LINE = re.compile(r'^\s*"((?:[^"\\]|\\.)*)"\s*$')
 
 
 def parse_po(text: str) -> dict[str, str]:
-    """Parses the subset of the .po format this project actually produces:
-    ``msgid``/``msgstr`` pairs, each value possibly continued across several
-    quoted-string lines (gettext's convention for long strings), ``#``
-    comment lines ignored, blank lines separating entries. Good enough for
-    hand-written or Poedit-exported files without needing a real gettext
-    library - this is a translation *catalog* reader, not a validator; a
-    malformed line is skipped rather than raising, so one bad entry in a
-    community-contributed file can't break the whole language.
+    """Parses ``msgid``/``msgstr`` pairs (values may continue over several
+    quoted lines). A malformed line is skipped, so one bad entry can't break
+    the whole language.
     """
     catalog: dict[str, str] = {}
     msgid: list[str] | None = None

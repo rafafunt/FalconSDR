@@ -1,26 +1,14 @@
-"""Background logging of raw power-vs-offset data, meant purely as future
-input for smoothing the trigger threshold across a capture window (edge
-roll-off means the same absolute trigger_level_dbfs is effectively stricter
-near a window's edges than near its center - see the brainstorming this
-followed). Nothing in the scanner reads this data back yet; it just
-accumulates it so a compensation curve can be *measured* later instead of
-guessed at. Two kinds of JSONL records, one per line:
+"""Background log of power vs. offset in the capture window - the data
+edge_compensation.py builds its roll-off curve from. JSONL records:
 
-  "floor" - a snapshot of a whole window's per-channel power, bucketed by
-  offset from the window's own center, taken only when that window's dwell
-  ended with nothing having triggered (so it's genuinely background noise,
-  not a live transmission skewing it). Bucket values are averaged in the
-  linear power domain then converted back to dB (dB values themselves don't
-  average correctly). Throttled to at most once per _FLOOR_LOG_INTERVAL_S
-  per window (see ScannerEngine) - it costs one extra full-window
-  channel_powers_dbfs() call, which is fine occasionally but not worth
-  paying every ~30-45ms tick.
+  "floor" - a window's per-channel power bucketed by offset from its center,
+  taken only when the dwell ended with nothing triggered (pure background),
+  averaged as linear power. At most every _FLOOR_LOG_INTERVAL_S per window.
 
-  "detect" - one per opened slot: what tripped the trigger, exactly where in
-  the window it sat, and the gain/threshold in effect at the time.
+  "detect" - one per opened slot: what triggered, where in the window, and
+  the gain/threshold in effect.
 
-Deliberately never touches recording/demod/scheduling - any failure to
-append is caught and ignored here, never allowed to affect scanning.
+Write failures are ignored - this must never affect scanning.
 """
 from __future__ import annotations
 

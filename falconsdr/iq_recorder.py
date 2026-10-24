@@ -1,19 +1,8 @@
-"""Raw wideband IQ recording for technical users - a completely separate
-mechanism from both automatic and manual demodulated-audio recording
-(recorder.py). Writes the actual complex baseband samples this project's own
-channelizer/demodulator works from, in the widely-supported SigMF format
-(https://sigmf.org - readable by GNU Radio, Inspectrum, SDR++, and others),
-so someone who wants their own demod/decoding pipeline isn't limited to
-whatever channels/modulations this app itself understands.
+"""Raw wideband IQ recording (gotcha 15) in SigMF (https://sigmf.org - GNU
+Radio, Inspectrum, SDR++...), for users with their own decoding.
 
-Only ever fed from ScannerEngine's SCANNING-state reads (see
-_feed_raw_iq()) - never the TUNING-state read, which is deliberately muted
-garbage while the tuner settles (same "never the retuning noise" rule this
-project already applies to audio). A capture can span several retunes (the
-scanner hopping between capture windows) - SigMF's "captures" list records
-each frequency segment's starting sample offset, so a single continuous file
-still carries an accurate frequency-vs-time record instead of falsely
-implying one fixed center frequency throughout.
+Fed only by SCANNING reads, never by TUNING. One file can span several
+retunes: SigMF's "captures" list records where each frequency starts.
 """
 from __future__ import annotations
 

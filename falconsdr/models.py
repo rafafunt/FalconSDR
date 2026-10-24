@@ -24,13 +24,7 @@ class Modulation(str, Enum):
     LSB = "LSB"
 
 
-# Amateur-radio sideband convention: LSB below 10 MHz, USB at/above - except
-# 60m (5.3305-5.4035 MHz in most countries), which is USB by international
-# agreement despite being below 10 MHz. Not configurable per band on purpose
-# (this is what "SSB" picks for you - gotcha: a few administrations/older
-# band plans use LSB on parts of 60m instead; if that ever matters here, add
-# an explicit USB/LSB override on the band rather than special-casing this
-# table further).
+# Amateur convention: LSB below 10 MHz, USB above - except 60 m, which is USB.
 _SSB_60M_USB_RANGE_HZ = (5_330_500, 5_403_500)
 
 

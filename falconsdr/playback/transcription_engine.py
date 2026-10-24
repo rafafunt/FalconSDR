@@ -25,16 +25,9 @@ from falconsdr.playback.models import Recording, TranscriptionResult
 logger = logging.getLogger(__name__)
 
 # -- loading CUDA libraries -------------------------------------------------
-# ctranslate2 (faster-whisper's engine) no longer bundles cuBLAS/cuDNN in its
-# pip wheel as of version 4.x - they need to be installed separately as the
-# nvidia-cublas-cu12 / nvidia-cudnn-cu12 packages and "handed" to it before
-# using the GPU. Setting LD_LIBRARY_PATH from Python while the process is
-# already running is unreliable (depends on whether the dynamic linker reads
-# the variable before a dlopen that happens later, long after startup), so
-# instead we explicitly load the .so files via ctypes with RTLD_GLOBAL - by
-# the time ctranslate2 calls dlopen("libcublas.so.12"), the library is
-# already in the process. Verified working on an RTX 2070 / CUDA 13 driver /
-# CUDA 12 wheels.
+# ctranslate2 4.x doesn't bundle cuBLAS/cuDNN; they come from the nvidia-*-cu12
+# wheels. Setting LD_LIBRARY_PATH at runtime is unreliable, so the .so files
+# are preloaded with RTLD_GLOBAL before ctranslate2 dlopen()s them.
 _cuda_preloaded = False
 
 
@@ -66,25 +59,11 @@ def _preload_cuda_libs() -> None:
                 logger.debug("Failed to load %s: %s", so, exc)
 
 
-# Deliberately NOT using Whisper's initial_prompt with sample aviation
-# phraseology here. It looked like a good idea (steering the vocabulary),
-# but turned out dangerous on real recordings from this project: on
-# uncertain/noisy audio the model could literally copy fragments of the
-# prompt as the "transcription" (reproducible on
-# 2026-07-26_05-41-12_131575.wav - the result was an almost exact quote of
-# the prompt), and even a shorter version (just a keyword list) sometimes
-# made good recordings worse instead of helping. Fabricating plausible-
-# sounding but made-up text is worse than no transcription, so we stick with
-# plain decoding.
+# No initial_prompt with aviation phraseology on purpose: on noisy audio
+# Whisper copied the prompt into the "transcription".
 
-# Only these two languages actually occur in this kind of listening - almost
-# everything else is a language-detection error on a noisy VHF signal (see
-# _resolve_language).
-
-# Thresholds picked empirically on real recordings from this project: the
-# raw numbers (avg_logprob, no_speech_prob) alone poorly separate a good
-# transcription from hallucination on noise, so we treat "low_confidence" as
-# a warning ("uncertain"), not a reason to hide the text.
+# Picked on real recordings. They separate good text from hallucination
+# poorly, so "low_confidence" is a warning, not a reason to hide the text.
 _LOW_LANG_PROBABILITY = 0.4
 _LOW_AVG_LOGPROB = -0.9
 _HIGH_NO_SPEECH_PROB = 0.5
@@ -94,67 +73,29 @@ _lock = threading.Lock()
 _generic_model = None
 _english_atc_model = None
 _active_config: Optional[TranscriptionConfig] = None
-# ``WhisperModel(..., device="cuda")`` can succeed and only fail on the first
-# inference, because ctranslate2 does some allocation lazily. We don't jump
-# straight to CPU though: on cards with limited VRAM (e.g. 8 GB),
-# ``int8_float16`` usually keeps the GPU usable with a small quality cost.
-# CPU is only the last fallback - but not a permanent one: see
-# _force_cpu_since/_GPU_RETRY_COOLDOWN_S, because "permanent for the rest of
-# the session" turned out in practice to mean "almost every session", not an
-# isolated case (a log from the last 4 days: 7 out of 7 sessions ended up on
-# CPU, always with "CUDA failed with error out of memory") - the GPU
-# genuinely has 6+ GB free at rest, so this is more of a momentary spike/
-# fragmentation of VRAM (e.g. after one exceptionally long recording) than a
-# durable lack of resources, and would usually have a chance to recover if
-# given one.
+# A GPU model can load fine and fail on the first inference (lazy allocation).
+# Fallback order: int8_float16 on the GPU, then CPU - temporarily: VRAM
+# shortages were brief spikes, not a lasting lack of memory.
 _force_cpu = False
 _force_cpu_since: Optional[float] = None
 _gpu_compute_type: Optional[str] = None
-# After this many seconds on CPU, try GPU again from scratch (self-limiting:
-# if it fails again, _force_cpu and _force_cpu_since simply get set again,
-# pushing the next attempt out by the same amount - zero risk of hammering
-# the GPU on every file, unlike the original, even more stubborn approach
-# this replaced). 1800s (30 min) was itself too stubborn in the other
-# direction - real, reported case: one transient OOM (other GPU-using apps
-# briefly spiking VRAM - Firefox/Steam/the desktop compositor, not this
-# process) forced CPU transcription for the next half hour, visibly
-# bogging down the whole machine the entire time. Measured directly: VRAM
-# that momentarily squeezed out the models recovered within seconds, not
-# minutes - a 1800s wait was paying for a problem that was already gone.
+# After this long on CPU, try the GPU again (a failure restarts the wait).
+# 30 min kept a busy CPU for half an hour after a VRAM spike that was gone
+# in seconds.
 _GPU_RETRY_COOLDOWN_S = 120.0
-# CPU transcription (once it gets there) tries to claim ALL cores by
-# default - and those are exactly what the scanner/audio thread needs in
-# real time. Actually observed (see the session that added this): a busy CPU
-# raises the real noise floor in listening (delayed readStream() -> spliced
-# non-contiguous samples -> a broadband artifact in the FFT), which at a low
-# trigger_level can flood detection with false positives - and each one
-# lands in this same transcription queue, loading the CPU even further. We
-# leave a real margin of cores free instead of letting Whisper take
-# everything, so we don't close that vicious circle ourselves.
+# Cores left to the scanner: a saturated CPU delayed reads, spliced IQ
+# showed up as false detections - which then queued more transcriptions.
 _CPU_RESERVED_CORES = 4
 
 
-# Default starting point for "auto" on GPU. Used to be "float16", but real
-# logs (journalctl from this card, 8GB) showed that's reliably too tight:
-# both models (large-v3 + medium ATC) in float16 is ~4.5GB of weights alone,
-# and even though it works for a while (observed: e.g. 37 files with no
-# problem), sooner or later - a longer recording, or plain CUDA allocator
-# fragmentation after many calls in a row - it fails with "CUDA failed with
-# error out of memory" anyway, after which we ended up in the same place
-# (int8_float16) regardless, just after losing time to the attempt and
-# error. Starting here directly doesn't guarantee zero failures (a long
-# enough recording can overload any variant), but it genuinely leaves much
-# more margin, so it should make them rare instead of routine.
+# "auto" on the GPU: both models in float16 (~4.5 GB) ran an 8 GB card out
+# of memory sooner or later; int8_float16 leaves real margin.
 _DEFAULT_AUTO_GPU_COMPUTE_TYPE = "int8_float16"
 
 
 def _gpu_compute_type_for(config: TranscriptionConfig) -> str:
-    """Returns the current GPU variant for this session.
-
-    ``int8_float16`` keeps the model weights as int8, but still runs
-    computation on the GPU in float16. So it's the right plan B for
-    ``auto``, instead of giving up on the GPU after a single allocation error.
-    """
+    """The GPU compute type in use this session (int8 weights, float16 math
+    for "auto")."""
     if _gpu_compute_type is not None:
         return _gpu_compute_type
     return _DEFAULT_AUTO_GPU_COMPUTE_TYPE if config.compute_type == "auto" else config.compute_type
@@ -223,13 +164,8 @@ def _load_model(model_id: str, config: TranscriptionConfig):
 
 
 def _maybe_retry_gpu_locked() -> None:
-    """Called from _get_models() under _lock: if we've been on CPU long
-    enough, gives the GPU another chance instead of sticking with CPU for
-    the rest of the session - see _force_cpu_since for why "for the rest of
-    the session" turned out to be too stubborn an assumption in practice.
-    Self-limiting: a failed attempt still falls back to CPU via
-    _load_model(), just with a refreshed _force_cpu_since, so this never
-    becomes a retry on every single file."""
+    """Under _lock: after _GPU_RETRY_COOLDOWN_S on CPU, drop the models so
+    the next load tries the GPU again."""
     global _generic_model, _english_atc_model, _active_config
     if not _force_cpu or _force_cpu_since is None:
         return
@@ -264,13 +200,8 @@ def _get_models(config: TranscriptionConfig):
 
 
 def _resolve_language(lang: str, prob: float, all_probs, candidates: list) -> tuple:
-    """Whisper's language detection on short, noisy VHF clips can be
-    unreliable - on pure noise it can point, with low confidence, at a
-    random exotic language (observed on real recordings from this project:
-    Norwegian, Finnish, Russian) instead of the real English/Polish content.
-    If the winning language isn't one of the ones expected in this kind of
-    listening, and one of the expected ones has a competitive probability,
-    we go with it instead of the exotic "winner"."""
+    """On noisy VHF clips Whisper can pick a random language (Norwegian,
+    Finnish...). Prefer an expected language when its probability is close."""
     if lang in candidates:
         return lang, prob
     probs = dict(all_probs)
@@ -308,17 +239,12 @@ def transcribe_recording(
     rec: Recording, config: TranscriptionConfig, _recovery_step: int = 0,
     forced_language: Optional[str] = None,
 ) -> TranscriptionResult:
-    """Transcribes a single recording. Never raises an exception outward -
-    errors (corrupt file, missing model, GPU out of memory...) are caught
-    and returned as an "error" status, so one bad recording doesn't stop the
-    whole background queue.
+    """Transcribes one recording. Errors come back as an "error" result so
+    one bad file doesn't stop the queue - except ModelUnavailable (the
+    recording is retried later).
 
-    ``forced_language`` (an ISO code, e.g. "pl"/"en") completely bypasses
-    detect_language()/_resolve_language() - used only from a manual
-    "Re-transcribe" with a chosen language on the Recordings page (detection can be
-    unreliable on weak audio, see _resolve_language), never from the
-    automatic background queue (TranscriptionWorker never sets it), so this
-    never changes auto-transcription's behavior in any way."""
+    ``forced_language`` ("pl", "en"...) skips detection - a manual
+    re-transcription with a chosen language."""
     now = datetime.now(timezone.utc).isoformat()
 
     if rec.duration_sec and rec.duration_sec < config.min_duration_sec:
@@ -382,11 +308,7 @@ def transcribe_recording(
                     _active_config = None
                 return transcribe_recording(rec, config, _recovery_step=1, forced_language=forced_language)
 
-            # Only a second GPU failure (or a failure of the variant the
-            # user explicitly forced) falls back to CPU. This retry is
-            # bounded, so we don't flood the log with repeated attempts for
-            # every file. Not forever - see _GPU_RETRY_COOLDOWN_S: that was
-            # this comment's previous, too-stubborn version.
+            # A second GPU failure falls back to CPU, until _GPU_RETRY_COOLDOWN_S.
             if _recovery_step < 2:
                 logger.warning(
                     "Transcription: GPU doesn't work even after retrying (%s) - "
