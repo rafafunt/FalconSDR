@@ -7,10 +7,13 @@
 # Ubuntu 20.04+, Fedora 41, Arch and newer.
 set -eu
 cd "$(dirname "$0")/../.."
-docker run --rm -v "$PWD":/src -w /src python:3.12-slim-bullseye sh -c "
-    apt-get update -qq && apt-get install -y -qq binutils file curl ca-certificates >/dev/null
-    curl -fsSL -o /usr/local/bin/appimagetool \
-      https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+# -e: a failed step must fail the build, not end in a "successful" chown.
+# Python fetches appimagetool: bullseye's curl update is gone from the mirrors.
+docker run --rm -v "$PWD":/src -w /src python:3.12-slim-bullseye sh -ec "
+    apt-get update -qq && apt-get install -y -qq binutils file >/dev/null
+    python3 -c 'import urllib.request, sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
+      https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+      /usr/local/bin/appimagetool
     chmod +x /usr/local/bin/appimagetool
     export APPIMAGE_EXTRACT_AND_RUN=1
     packaging/appimage/build.sh
