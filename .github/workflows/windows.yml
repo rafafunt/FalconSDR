@@ -1,0 +1,41 @@
+# Windows build: a GitHub Windows runner runs packaging/windows/build.ps1 on a
+# release tag (self-test, smoke test of the built exe on a clean PATH and
+# empty profile, portable ZIP, Inno Setup installer) and attaches the ZIP and
+# installer to that release. Run it from the Actions tab: "Run workflow".
+name: Windows build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach the app to
+        required: true
+        default: v1.0.0
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Build
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
+      - name: Attach to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem packaging\windows\out -Include *.zip, *.exe -Recurse | ForEach-Object FullName
+          gh release upload "${{ inputs.tag }}" @files --clobber
