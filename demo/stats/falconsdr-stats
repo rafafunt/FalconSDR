@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""falconsdr.com visitors per day: unique visitors (daily-salted IP hashes,
+see visits.js) and page views. Without arguments: print them. Cron runs
+--rotate at midnight: keep the day's numbers in daily.json (the logs are
+rotated away after 14 days) and replace the salt."""
+import glob
+import gzip
+import json
+import os
+import secrets
+import shutil
+import sys
+from collections import defaultdict
+
+DIR = "/var/lib/falconsdr-stats"
+DAILY = os.path.join(DIR, "daily.json")
+SALT = os.path.join(DIR, "salt")
+
+
+def from_logs() -> dict:
+    days = defaultdict(lambda: [set(), 0])
+    for path in glob.glob("/var/log/nginx/falconsdr-visits.log*"):
+        with (gzip.open if path.endswith(".gz") else open)(path, "rt") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) == 2:
+                    day = days[parts[0][:10]]
+                    day[0].add(parts[1])
+                    day[1] += 1
+    return {d: {"visitors": len(ids), "views": views} for d, (ids, views) in days.items()}
+
+
+def write(path: str, text: str, mode: int) -> None:
+    with open(path + ".tmp", "w") as f:
+        f.write(text)
+    os.chmod(path + ".tmp", mode)
+    shutil.chown(path + ".tmp", "root", "www-data")
+    os.replace(path + ".tmp", path)
+
+
+def main() -> None:
+    saved = json.load(open(DAILY)) if os.path.exists(DAILY) else {}
+    for day, counts in from_logs().items():
+        if counts["views"] >= saved.get(day, {}).get("views", 0):
+            saved[day] = counts
+    if "--rotate" in sys.argv:
+        write(DAILY, json.dumps(saved, indent=1, sort_keys=True), 0o640)
+        write(SALT, secrets.token_hex(32), 0o640)
+        return
+    print(f"{'day':<12}{'visitors':>9}{'views':>8}")
+    for day in sorted(saved):
+        print(f"{day:<12}{saved[day]['visitors']:>9}{saved[day]['views']:>8}")
+    print(f"{'total':<12}{sum(d['visitors'] for d in saved.values()):>9}{sum(d['views'] for d in saved.values()):>8}"
+          "  (visitors summed over days - the same person on two days counts twice)")
+
+
+if __name__ == "__main__":
+    main()

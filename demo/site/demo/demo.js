@@ -32,6 +32,7 @@ const TEXT = {
     unsupported: 'This browser can\'t run the demo (it needs service workers - a private window may block them). Try a normal window of Chrome, Edge, Firefox or Safari - or download FalconSDR.',
     recOff: 'Auto-recording is off, so new transmissions aren\'t saved - the list holds sample recordings. With it on, every transmission the scanner stops on lands here, transcribed.',
     recOn: 'Turn on auto-recording',
+    privacy: 'Privacy: no cookies, no ads, no tracking scripts. To count visitors, the server keeps only a one-way hash of your IP address mixed with a random key that is replaced and deleted every day - not the address itself. What you do in the demo stays in your browser.',
     credits: 'Voices: Piper TTS with the VCTK (University of Edinburgh) and LibriTTS-R (Google) voices, both CC BY 4.0, and Polish voices under CC0. Music generated for the demo.',
     birdie: '{freq} MHz is most likely a birdie: interference made by the receiver itself, a steady carrier with nothing on it. The scanner would sit on it forever. “{skip}” only moves on - it comes back on the next pass. “{bl}” gets rid of it for good (undo in Channels → Blacklist).',
   },
@@ -59,6 +60,7 @@ const TEXT = {
     unsupported: 'Ta przeglądarka nie uruchomi demo (potrzebuje service workerów - okno prywatne może je blokować). Spróbuj zwykłego okna Chrome, Edge, Firefoksa lub Safari - albo pobierz FalconSDR.',
     recOff: 'Automatyczne nagrywanie jest wyłączone, więc nowe transmisje się nie zapisują - na liście są przykładowe nagrania. Po włączeniu trafia tu każda transmisja, na której zatrzyma się skaner, razem z transkrypcją.',
     recOn: 'Włącz automatyczne nagrywanie',
+    privacy: 'Prywatność: bez cookies, reklam i skryptów śledzących. Do liczenia odwiedzin serwer zapisuje tylko jednokierunkowy skrót adresu IP zmieszany z losowym kluczem, który codziennie jest wymieniany i usuwany - nie sam adres. To, co robisz w demo, zostaje w Twojej przeglądarce.',
     credits: 'Głosy: Piper TTS z głosami VCTK (University of Edinburgh) i LibriTTS-R (Google), oba na licencji CC BY 4.0, oraz polskimi głosami na CC0. Muzyka wygenerowana na potrzeby demo.',
     birdie: '{freq} MHz to najpewniej birdie: zakłócenie wytwarzane przez sam odbiornik, stała nośna bez żadnej treści. Skaner stałby na nim w nieskończoność. „{skip}” tylko przechodzi dalej - przy następnym obiegu wróci. „{bl}” usuwa go na dobre (cofniesz w Kanały → Czarna lista).',
   },
@@ -79,7 +81,7 @@ function renderBanner() {
 async function welcome(fromBanner = false) {
   const x = L();
   const body = h('div.col.demo-welcome', { style: { gap: '12px' } },
-    h('p', x.intro), h('b', x.try), h('ul', x.tips.map((tip) => h('li', tip))), h('p.muted', x.real), h('p.faint.small', x.credits));
+    h('p', x.intro), h('b', x.try), h('ul', x.tips.map((tip) => h('li', tip))), h('p.muted', x.real), h('p.faint.small', x.privacy), h('p.faint.small', x.credits));
   const buttons = [[x.download, 'download', 'ghost'], [x.start, 'start', 'primary']];
   if (fromBanner) buttons.unshift([x.reset, 'reset', 'ghost danger']);
   const res = await modal(x.title, body, buttons);
