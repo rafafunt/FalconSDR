@@ -2,7 +2,7 @@
 // then boots the app with a "this is a demo" banner, a welcome dialog and
 // hints - Skip / Skip + blacklist light up when the scanner sits on a birdie.
 import { h, icon, lang, modal, mount, t } from '../js/core.js';
-import { S, on } from '../js/state.js';
+import { S, cfg, confirmRecording, on, patchConfig } from '../js/state.js';
 
 const DOWNLOAD = 'https://github.com/rafafunt/FalconSDR/releases/latest';
 
@@ -28,6 +28,9 @@ const TEXT = {
     resetAsk: 'Bring back the starting settings and sample recordings? Everything you changed in the demo is lost.',
     cancel: 'Cancel',
     unsupported: 'This browser can\'t run the demo (it needs service workers - a private window may block them). Try a normal window of Chrome, Edge, Firefox or Safari - or download FalconSDR.',
+    recOff: 'Auto-recording is off, so new transmissions aren\'t saved - the list holds sample recordings. With it on, every transmission the scanner stops on lands here, transcribed.',
+    recOn: 'Turn on auto-recording',
+    credits: 'Voices: Piper TTS with the VCTK (University of Edinburgh) and LibriTTS-R (Google) voices, both CC BY 4.0, and Polish voices under CC0. Music generated for the demo.',
     birdie: '{freq} MHz is most likely a birdie: interference made by the receiver itself, a steady carrier with nothing on it. The scanner would sit on it forever. “{skip}” only moves on - it comes back on the next pass. “{bl}” gets rid of it for good (undo in Channels → Blacklist).',
   },
   pl: {
@@ -51,6 +54,9 @@ const TEXT = {
     resetAsk: 'Przywrócić początkowe ustawienia i przykładowe nagrania? Wszystko, co zmieniłeś w demo, zniknie.',
     cancel: 'Anuluj',
     unsupported: 'Ta przeglądarka nie uruchomi demo (potrzebuje service workerów - okno prywatne może je blokować). Spróbuj zwykłego okna Chrome, Edge, Firefoksa lub Safari - albo pobierz FalconSDR.',
+    recOff: 'Automatyczne nagrywanie jest wyłączone, więc nowe transmisje się nie zapisują - na liście są przykładowe nagrania. Po włączeniu trafia tu każda transmisja, na której zatrzyma się skaner, razem z transkrypcją.',
+    recOn: 'Włącz automatyczne nagrywanie',
+    credits: 'Głosy: Piper TTS z głosami VCTK (University of Edinburgh) i LibriTTS-R (Google), oba na licencji CC BY 4.0, oraz polskimi głosami na CC0. Muzyka wygenerowana na potrzeby demo.',
     birdie: '{freq} MHz to najpewniej birdie: zakłócenie wytwarzane przez sam odbiornik, stała nośna bez żadnej treści. Skaner stałby na nim w nieskończoność. „{skip}” tylko przechodzi dalej - przy następnym obiegu wróci. „{bl}” usuwa go na dobre (cofniesz w Kanały → Czarna lista).',
   },
 };
@@ -70,7 +76,7 @@ function renderBanner() {
 async function welcome(fromBanner = false) {
   const x = L();
   const body = h('div.col.demo-welcome', { style: { gap: '12px' } },
-    h('p', x.intro), h('b', x.try), h('ul', x.tips.map((tip) => h('li', tip))), h('p.muted', x.real));
+    h('p', x.intro), h('b', x.try), h('ul', x.tips.map((tip) => h('li', tip))), h('p.muted', x.real), h('p.faint.small', x.credits));
   const buttons = [[x.download, 'download', 'ghost'], [x.start, 'start', 'primary']];
   if (fromBanner) buttons.unshift([x.reset, 'reset', 'ghost danger']);
   const res = await modal(x.title, body, buttons);
@@ -99,6 +105,24 @@ function birdieHint(live) {
   note.querySelector('span').textContent = text;
 }
 
+// Recordings: say why nothing new shows up while auto-recording is off (the app itself doesn't).
+function recordingsHint() {
+  const page = location.hash.startsWith('#/recordings') && document.querySelector('main .page');
+  let note = document.querySelector('.demo-rec-hint');
+  const show = page && S.settings && !cfg().recording.enabled;
+  if (!show) { if (note) note.remove(); return; }
+  if (note && page.contains(note)) return;
+  note = h('div.notice.demo-rec-hint', icon('record'), h('span', { style: { flex: '1 1 260px' } }, L().recOff),
+    h('button.primary.small', {
+      onclick: async () => {
+        if (!(await confirmRecording())) return;
+        patchConfig({ recording: { enabled: true } });
+        recordingsHint();
+      },
+    }, L().recOn));
+  page.querySelector('.page-head').after(note);
+}
+
 async function start() {
   renderBanner();
   if (!('serviceWorker' in navigator)) {
@@ -120,6 +144,9 @@ async function start() {
   if (!seen) await welcome();
   on('settings', renderBanner);
   on('live', birdieHint);
+  on('live', recordingsHint);
+  on('config', recordingsHint);
+  window.addEventListener('hashchange', () => setTimeout(recordingsHint, 0));
   await import('../js/main.js');
 }
 

@@ -1,12 +1,18 @@
-"""Sounds of the online demo: synthetic voice traffic (espeak-ng) and a music
-loop synthesized here, so nothing in the demo has a third-party copyright.
+"""Sounds of the online demo: synthetic voice traffic (Piper TTS) and a music
+loop synthesized here, so nothing in the demo is anyone else's recording.
 Writes mono PCM16 at the app's audio rate plus clips.json; the service worker
-adds the noise and plays them as transmissions."""
+adds the noise and plays them as transmissions.
+
+Piper runs from its own venv (demo/.venv: `python3 -m venv demo/.venv &&
+demo/.venv/bin/pip install piper-tts`); the voices are downloaded once into
+demo/voices. Voice licenses: VCTK and LibriTTS-R are CC BY 4.0 (credited in
+the demo's About dialog), the Polish ones CC0."""
 from __future__ import annotations
 
 import json
 import subprocess
 import tempfile
+import urllib.request
 import wave
 from pathlib import Path
 
@@ -14,46 +20,89 @@ import numpy as np
 from scipy.signal import butter, resample_poly, sosfilt
 
 RATE = 12500
+DEMO = Path(__file__).resolve().parent
+PIPER = DEMO / ".venv" / "bin" / "python"
+VOICE_DIR = DEMO / "voices"
+VOICE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
+VOICES = {
+    "vctk": "en/en_GB/vctk/medium/en_GB-vctk-medium",
+    "libritts": "en/en_US/libritts_r/medium/en_US-libritts_r-medium",
+    "gosia": "pl/pl_PL/gosia/medium/pl_PL-gosia-medium",
+    "darkman": "pl/pl_PL/darkman/medium/pl_PL-darkman-medium",
+    "mc": "pl/pl_PL/mc_speech/medium/pl_PL-mc_speech-medium",
+}
 
-# Fictional stations and callsigns only. One conversation = lines on one
-# frequency, a speaker each; the worker plays them with short gaps.
+# Fictional stations and callsigns only. A conversation = lines on one
+# frequency, one speaker each ("voice:speaker id"), per UI language; airband
+# is English everywhere, like the real thing.
 CONVERSATIONS = {
-    "tower": ("en", [
-        ("en-gb+m3", "Kestrel five two, Falcon Tower, wind two seven zero degrees, eight knots, runway two seven, cleared to land."),
-        ("en-us+m7", "Cleared to land runway two seven, Kestrel five two."),
-        ("en-us+m2", "Falcon Tower, Bluejay three zero seven, holding point runway two seven, ready for departure."),
-        ("en-gb+m3", "Bluejay three zero seven, line up and wait, runway two seven."),
-        ("en-us+m2", "Line up and wait, runway two seven, Bluejay three zero seven."),
-    ]),
-    "approach": ("en", [
-        ("en-029+m4", "Falcon Approach, Osprey one eight, passing flight level one two zero, descending flight level eight zero, information Bravo."),
-        ("en-gb-x-rp+f2", "Osprey one eight, Falcon Approach, radar contact. Descend to altitude five thousand feet, QNH one zero one three."),
-        ("en-029+m4", "Descend five thousand feet, QNH one zero one three, Osprey one eight."),
-    ]),
-    "radar": ("en", [
-        ("en-gb-scotland+m1", "Kestrel two one, Falcon Radar, climb flight level three four zero, proceed direct DEMOX."),
-        ("en-us+m5", "Climb flight level three four zero, direct DEMOX, Kestrel two one."),
-    ]),
-    "pmr3": ("pl", [
-        ("pl+f2", "Marek, tu Kasia, odbiór."),
-        ("pl+m3", "Słyszę cię, Kasia. Jesteśmy przy schronisku, za dziesięć minut schodzimy. Odbiór."),
-        ("pl+f2", "Dobra, czekamy na parkingu. Bez odbioru."),
-    ]),
-    "pmr7": ("pl", [
-        ("pl+m1", "Ekipa dwa, sprawdzenie łączności. Jak słychać?"),
-        ("pl+m6", "Słychać dobrze, na piątkę."),
-    ]),
-    "ham": ("pl", [
-        ("pl+m2", "CQ, CQ, tu SP zero DEMO, SP zero DEMO, wywołuję i czekam na odpowiedź."),
-        ("pl+m4", "SP zero DEMO, tu SQ zero TEST. Raport pięć dziewięć, operator Adam. Odbiór."),
-    ]),
+    "tower": {"en": [
+        ("vctk:95", "Kestrel five two, Falcon Tower, wind two seven zero degrees, eight knots, runway two seven, cleared to land."),
+        ("libritts:20", "Cleared to land runway two seven, Kestrel five two."),
+        ("libritts:120", "Falcon Tower, Bluejay three zero seven, holding point runway two seven, ready for departure."),
+        ("vctk:95", "Bluejay three zero seven, line up and wait, runway two seven."),
+        ("libritts:120", "Line up and wait, runway two seven, Bluejay three zero seven."),
+    ]},
+    "approach": {"en": [
+        ("vctk:97", "Falcon Approach, Osprey one eight, passing flight level one two zero, descending flight level eight zero, information Bravo."),
+        ("vctk:107", "Osprey one eight, Falcon Approach, radar contact. Descend to altitude five thousand feet, QNH one zero one three."),
+        ("vctk:97", "Descend five thousand feet, QNH one zero one three, Osprey one eight."),
+    ]},
+    "radar": {"en": [
+        ("vctk:102", "Kestrel two one, Falcon Radar, climb flight level three four zero, proceed direct DEMOX."),
+        ("libritts:300", "Climb flight level three four zero, direct DEMOX, Kestrel two one."),
+    ]},
+    "pmr3": {
+        "pl": [
+            ("gosia:0", "Marek, tu Kasia, odbiór."),
+            ("darkman:0", "Słyszę cię, Kasia. Jesteśmy przy schronisku, za dziesięć minut schodzimy. Odbiór."),
+            ("gosia:0", "Dobra, czekamy na parkingu. Bez odbioru."),
+        ],
+        "en": [
+            ("vctk:90", "Mark, this is Kate, over."),
+            ("vctk:82", "Hear you, Kate. We're at the mountain hut, coming down in ten minutes. Over."),
+            ("vctk:90", "Okay, we'll wait at the car park. Out."),
+        ],
+    },
+    "pmr7": {
+        "pl": [
+            ("mc:0", "Ekipa dwa, sprawdzenie łączności. Jak słychać?"),
+            ("darkman:0", "Słychać dobrze, na piątkę."),
+        ],
+        "en": [
+            ("vctk:60", "Team two, radio check. How do you read?"),
+            ("vctk:81", "Reading you five by five."),
+        ],
+    },
+    "ham": {
+        "pl": [
+            ("darkman:0", "CQ, CQ, tu SP zero DEMO, SP zero DEMO, wywołuję i czekam na odpowiedź."),
+            ("mc:0", "SP zero DEMO, tu SQ zero TEST. Raport pięć dziewięć, operator Adam. Odbiór."),
+        ],
+        "en": [
+            ("vctk:93", "CQ, CQ, this is Sierra Papa Zero Delta Echo Mike Oscar, calling CQ and standing by."),
+            ("libritts:500", "Sierra Papa Zero Delta Echo Mike Oscar, this is Sierra Quebec Zero Test. You're five nine, name here is Adam. Over."),
+        ],
+    },
 }
 
 
+def _model(name: str) -> Path:
+    path = VOICE_DIR / (VOICES[name].rsplit("/", 1)[1] + ".onnx")
+    for suffix in ("", ".json"):
+        target = path.with_name(path.name + suffix)
+        if not target.exists():
+            VOICE_DIR.mkdir(exist_ok=True)
+            urllib.request.urlretrieve(VOICE_URL + VOICES[name] + ".onnx" + suffix, target)
+    return path
+
+
 def _speak(voice: str, text: str) -> np.ndarray:
+    name, speaker = voice.split(":")
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "s.wav"
-        subprocess.run(["espeak-ng", "-v", voice, "-s", "165", "-w", str(path), text], check=True)
+        subprocess.run([str(PIPER), "-m", "piper", "-m", str(_model(name)), "-s", speaker, "-f", str(path)],
+                       input=text.encode(), check=True, capture_output=True)
         with wave.open(str(path)) as w:
             rate = w.getframerate()
             x = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float32) / 32768
@@ -62,9 +111,9 @@ def _speak(voice: str, text: str) -> np.ndarray:
 
 
 def _radio(x: np.ndarray, am: bool) -> np.ndarray:
-    """Voice through a radio: narrow band, a bit of compression, leading/trailing carrier silence."""
-    x = sosfilt(butter(4, [300, 2700 if am else 3000], "bandpass", fs=RATE, output="sos"), x)
-    x = np.tanh(3 * x / (np.max(np.abs(x)) + 1e-9)) * 0.7
+    """Voice through a radio: band-limited, gently compressed, a little carrier before and after."""
+    x = sosfilt(butter(4, [250 if am else 300, 3000 if am else 3400], "bandpass", fs=RATE, output="sos"), x)
+    x = np.tanh(1.5 * x / (np.max(np.abs(x)) + 1e-9)) / np.tanh(1.5) * 0.7
     pad = np.zeros(int(0.25 * RATE), np.float32)
     return np.concatenate([pad, x, pad]).astype(np.float32)
 
@@ -113,13 +162,14 @@ def _write(path: Path, x: np.ndarray) -> None:
 def build(out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     clips = {}
-    for conv, (lang, lines) in CONVERSATIONS.items():
-        am = lang == "en"  # the English ones are airband
-        for i, (voice, text) in enumerate(lines):
-            cid = f"{conv}{i}"
-            x = _radio(_speak(voice, text), am)
-            _write(out / f"{cid}.pcm", x)
-            clips[cid] = {"conv": conv, "text": text, "lang": lang, "samples": int(x.size)}
+    for conv, variants in CONVERSATIONS.items():
+        am = conv in ("tower", "approach", "radar")
+        for lang, lines in variants.items():
+            for i, (voice, text) in enumerate(lines):
+                cid = f"{conv}_{lang}{i}"
+                x = _radio(_speak(voice, text), am)
+                _write(out / f"{cid}.pcm", x)
+                clips[cid] = {"conv": conv, "text": text, "lang": lang, "samples": int(x.size)}
     music = _music()
     _write(out / "music.pcm", music)
     clips["music"] = {"conv": "music", "text": "", "lang": "", "samples": int(music.size)}

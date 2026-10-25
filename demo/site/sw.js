@@ -6,6 +6,7 @@
 
 const RATE = 12500;
 const STATE_KEY = '/demo/state.json';
+const STATE_VERSION = 2;  // bump when saved state stops matching the code (clip ids, defaults)
 const DEMO_DEVICE = 'demo';
 const KEEPALIVE_S = 5;
 
@@ -88,7 +89,7 @@ function init() {
     [FX, CLIPS] = await Promise.all(['/demo/fixtures.json', '/demo/audio/clips.json'].map((u) => fetch(u, { cache: 'no-cache' }).then((r) => r.json())));
     const saved = await (await caches.open('falconsdr-demo')).match(STATE_KEY);
     st = saved ? await saved.json() : null;
-    if (!st || st.version !== FX.version) st = freshState(st);
+    if (!st || st.version !== `${FX.version}/${STATE_VERSION}`) st = freshState(st);
     for (const id of Object.keys(CLIPS.clips)) loadClip(id);
     addLog(tr('Ready.'));
     setInterval(tick, 50);
@@ -120,19 +121,22 @@ function defaultConfig() {
   c.recording.output_dir = '/home/demo/FalconSDR/recordings';
   c.bands = [bandFrom('civil_air', true), bandFrom('pmr446', true), bandFrom('ham_2m', true), bandFrom('fm_broadcast', false)];
   c.workers = {};
+  c.squelch_enabled = true;
+  c.squelch_offset_db = -3;
   return c;
 }
 
-const channel = (mhz, name, modulation, enabled = true) => ({ freq_hz: Math.round(mhz * 1e6), name, modulation, enabled, folder: '', weight: 0, ch833: false });
+// Off by default: an enabled channel is scanned even with every band switched off.
+const channel = (mhz, name, modulation, enabled = false) => ({ freq_hz: Math.round(mhz * 1e6), name, modulation, enabled, folder: '', weight: 0, ch833: false });
 
 function freshState(old) {
   const s = {
-    version: FX.version,
+    version: `${FX.version}/${STATE_VERSION}`,
     config: defaultConfig(),
     channels: [
       channel(121.5, 'Guard', 'AM'), channel(118.1, 'Falcon Tower', 'AM'), channel(127.225, 'Falcon Approach', 'AM'),
       channel(132.85, 'Falcon Radar', 'AM'), channel(446.03125, 'PMR 3', 'NFM'), channel(145.5, '2 m calling', 'NFM'),
-      channel(99.9, 'Radio Demo FM', 'WFM', false),
+      channel(99.9, 'Radio Demo FM', 'WFM'),
     ],
     blacklist: [],
     presets: clone(FX.presets),
@@ -169,7 +173,12 @@ function seedLibrary(s) {
   }
 }
 
-const convLines = (conv) => Object.keys(CLIPS.clips).filter((id) => CLIPS.clips[id].conv === conv);
+// PMR and ham chatter in the UI language when there is a version in it; airband is English only.
+function convLines(conv) {
+  const ids = Object.keys(CLIPS.clips).filter((id) => CLIPS.clips[id].conv === conv);
+  const lang = ids.some((id) => CLIPS.clips[id].lang === currentLang()) ? currentLang() : 'en';
+  return ids.filter((id) => CLIPS.clips[id].lang === lang);
+}
 
 // ------------------------------------------------------------------ sources
 const sourceState = new Map();  // source -> {line, playing: {clip, t0, len}, nextAt}
@@ -191,7 +200,9 @@ function advanceSources(t) {
       else { s.line = 0; s.nextAt = t + rand(...src.gap); }
     }
     if (!s.playing && t >= s.nextAt) {
-      const clip = convLines(src.conv)[s.line];
+      const lines = convLines(src.conv);
+      if (s.line >= lines.length) s.line = 0;  // the language switched to a shorter version
+      const clip = lines[s.line];
       s.playing = { clip, t0: t, len: CLIPS.clips[clip].samples / RATE };
       for (const slot of sim.slots.values()) if (slot.src === src) addPart(slot, s.playing);
       if (sim.manual && sim.primary && sim.slots.get(sim.primary)?.src === src) { addPart(sim.manual, s.playing); sim.manual.firstF ||= sim.primary; }
@@ -703,7 +714,7 @@ function live(since = Infinity) {
   const w = sim.windows[sim.win];
   const primary = sim.slots.get(sim.primary);
   let lvl = -60 + Math.random() * 2;
-  if (primary) lvl = primary.lvl;
+  if (primary) lvl = onAir(primary.src) ? primary.lvl : lvl;  // the hold after a transmission shows the noise
   else if (w) for (const { src, ch } of w.matches) if (onAir(src)) lvl = Math.max(lvl, level(src, ch));
   const d = new Date();
   return {
@@ -754,6 +765,11 @@ const ROUTES = {
     const want = (q.get('lang') || 'en').slice(0, 2).toLowerCase();
     uiLang = FX.i18n[want] ? want : 'en';
     const lang = currentLang();
+    // Band names were stored translated (like the app does) - follow a language switch.
+    for (const b of st.config.bands) {
+      const p = FX.presets.find((x) => [x.label, ...Object.values(FX.i18n).map((c) => c[x.label])].includes(b.label));
+      if (p) b.label = tr(p.label);
+    }
     return { lang, catalog: FX.i18n[lang] || {} };
   },
   'POST /api/login': () => ({ ok: true }),
