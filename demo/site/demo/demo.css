@@ -1,0 +1,36 @@
+/* Online demo additions: the banner on top of the unchanged app, and hints. */
+body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+#app { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#app > .shell { flex: 1; min-height: 0; height: auto; }
+
+.demo-banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 20px;
+  padding-top: max(8px, env(safe-area-inset-top));
+  background: #1d1d1f; color: #f5f5f7; font-size: 14px; line-height: 1.35;
+}
+.demo-banner .pill { background: #ff9f0a; color: #1d1d1f; font-weight: 750; font-size: 12px; letter-spacing: .06em; padding: 3px 8px; border-radius: 6px; }
+.demo-banner .text { flex: 1 1 320px; min-width: 0; }
+.demo-banner .short { display: none; }
+.demo-banner a.btn, .demo-banner button { font-size: 13px; padding: 6px 12px; min-height: 0; border-radius: 8px; }
+.demo-banner a.btn.primary { background: #0a84ff; color: #fff; font-weight: 600; text-decoration: none; }
+.demo-banner button.ghost { color: #f5f5f7; background: rgba(255, 255, 255, .1); }
+.demo-banner button.ghost:hover { background: rgba(255, 255, 255, .18); }
+
+.demo-welcome ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.demo-welcome p { margin: 0; }
+
+.demo-pulse { box-shadow: 0 0 0 3px #ff9f0a; animation: demo-pulse 1.4s ease-in-out infinite; }
+@keyframes demo-pulse { 50% { box-shadow: 0 0 0 6px rgba(255, 159, 10, .25); } }
+@media (prefers-reduced-motion: reduce) { .demo-pulse { animation: none; } }
+.notice.demo-hint { background: rgba(255, 159, 10, .14); }
+.notice.demo-hint svg.ic { color: #ff9f0a; }
+
+@media (max-width: 860px) {
+  .demo-banner { padding: 8px 16px; padding-top: max(8px, env(safe-area-inset-top)); }
+  .demo-banner .long { display: none; }
+  .demo-banner .short { display: inline; }
+  .demo-banner .text { flex-basis: 140px; }
+}
+@media (pointer: coarse) {
+  .demo-banner a.btn, .demo-banner button { min-height: 44px; display: inline-flex; align-items: center; }
+}

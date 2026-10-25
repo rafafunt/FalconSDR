@@ -38,3 +38,6 @@ packaging/windows/out/
 # Locally installed agent skills (third-party text, not part of this project)
 .agents/
 skills-lock.json
+
+# Online demo build output (demo/build.py)
+demo/dist/
