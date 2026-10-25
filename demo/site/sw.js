@@ -6,13 +6,18 @@
 
 const RATE = 12500;
 const STATE_KEY = '/demo/state.json';
-const STATE_VERSION = 2;  // bump when saved state stops matching the code (clip ids, defaults)
-const DEMO_DEVICE = 'demo';
+const STATE_VERSION = 3;  // bump when saved state stops matching the code (clip ids, defaults)
+// Two virtual receivers; picking one sets its capture width (demo.js).
+const DEVICES = [
+  { driver: 'demo-rtl', label: 'Demo RTL-SDR (simulated, 2.4 MHz)', rate: 2.4e6, gain: [0, 49.6] },
+  { driver: 'demo-wide', label: 'Demo wideband SDR (simulated, 10 MHz)', rate: 10e6, gain: [0, 59] },
+];
 const KEEPALIVE_S = 5;
 
 const DEMO_TEXT = {
   pl: {
-    'Demo receiver (simulated)': 'Odbiornik demo (symulowany)',
+    'Demo RTL-SDR (simulated, 2.4 MHz)': 'Demo RTL-SDR (symulowany, 2,4 MHz)',
+    'Demo wideband SDR (simulated, 10 MHz)': 'Demo SDR szerokopasmowy (symulowany, 10 MHz)',
     'Not available in the online demo - download FalconSDR to use it.': 'Niedostępne w demo online - pobierz FalconSDR, żeby z tego skorzystać.',
   },
 };
@@ -20,12 +25,18 @@ const DEMO_TEXT = {
 // Fictional stations (demo/audio.py). level = dBFS at the default gain.
 const SOURCES = [
   { f: 118100000, conv: 'tower', level: -17, gap: [5, 12] },
-  { f: 127225000, conv: 'approach', level: -24, gap: [8, 20] },
+  { f: 125350000, conv: 'approach', level: -24, gap: [8, 20] },
   { f: 132850000, conv: 'radar', level: -37, gap: [8, 18] },
   { f: 446031250, conv: 'pmr3', level: -21, gap: [12, 30] },
   { f: 446081250, conv: 'pmr7', level: -28, gap: [15, 35] },
   { f: 145500000, conv: 'ham', level: -22, gap: [15, 35] },
-  { f: 99900000, music: true, level: -12 },
+  { f: 138775000, conv: 'milvhf', level: -26, gap: [15, 35] },
+  { f: 251150000, conv: 'miluhf', level: -23, gap: [12, 30] },
+  { f: 156800000, conv: 'marine16', level: -20, gap: [25, 50] },
+  { f: 156625000, conv: 'marine72', level: -22, after: 'marine16' },  // they move to 72 when told so on 16
+  { f: 438725000, conv: 'rpt', level: -24, gap: [15, 35] },
+  { f: 99900000, loop: 'music', level: -12 },
+  { f: 103700000, loop: 'talk', level: -16 },
   { f: 124800000, birdie: true, level: -27 },
   { f: 144000000, birdie: true, level: -25 },
 ];
@@ -90,7 +101,6 @@ function init() {
     const saved = await (await caches.open('falconsdr-demo')).match(STATE_KEY);
     st = saved ? await saved.json() : null;
     if (!st || st.version !== `${FX.version}/${STATE_VERSION}`) st = freshState(st);
-    for (const id of Object.keys(CLIPS.clips)) loadClip(id);
     addLog(tr('Ready.'));
     setInterval(tick, 50);
     if (st.running) startScanner();
@@ -98,10 +108,11 @@ function init() {
   return ready;
 }
 
-async function loadClip(id) {
-  if (pcm[id]) return pcm[id];
-  const buf = await (await fetch(`/demo/audio/${id}.pcm`)).arrayBuffer();
-  return (pcm[id] = new Int16Array(buf));
+// Fetched when first needed (a source loads its next line ahead), not all upfront.
+const loading = {};
+function loadClip(id) {
+  return (loading[id] ||= fetch(`/demo/audio/${id}.pcm`).then((r) => r.arrayBuffer()).then((b) => (pcm[id] = new Int16Array(b)))
+    .catch((e) => { delete loading[id]; throw e; }));
 }
 
 const preset = (id) => FX.presets.find((p) => p.id === id);
@@ -117,7 +128,8 @@ const bandFrom = (id, enabled) => {
 function defaultConfig() {
   const c = clone(FX.config);
   delete c.access_token;
-  c.device.driver = DEMO_DEVICE;
+  c.device.driver = DEVICES[0].driver;
+  c.device.sample_rate_hz = DEVICES[0].rate;
   c.recording.output_dir = '/home/demo/FalconSDR/recordings';
   c.bands = [bandFrom('civil_air', true), bandFrom('pmr446', true), bandFrom('ham_2m', true), bandFrom('fm_broadcast', false)];
   c.workers = {};
@@ -134,9 +146,11 @@ function freshState(old) {
     version: `${FX.version}/${STATE_VERSION}`,
     config: defaultConfig(),
     channels: [
-      channel(121.5, 'Guard', 'AM'), channel(118.1, 'Falcon Tower', 'AM'), channel(127.225, 'Falcon Approach', 'AM'),
+      channel(121.5, 'Guard', 'AM'), channel(118.1, 'Falcon Tower', 'AM'), channel(125.35, 'Falcon Approach', 'AM'),
       channel(132.85, 'Falcon Radar', 'AM'), channel(446.03125, 'PMR 3', 'NFM'), channel(145.5, '2 m calling', 'NFM'),
-      channel(99.9, 'Radio Demo FM', 'WFM'),
+      channel(99.9, 'Radio Demo FM', 'WFM'), channel(103.7, 'Falcon FM', 'WFM'),
+      channel(138.775, 'Range Control', 'AM'), channel(251.15, 'Falcon Ops', 'AM'),
+      channel(156.8, 'Marine 16', 'NFM'), channel(156.625, 'Marine 72', 'NFM'), channel(438.725, 'SR0DEMO repeater', 'NFM'),
     ],
     blacklist: [],
     presets: clone(FX.presets),
@@ -151,23 +165,23 @@ function freshState(old) {
 
 // A week of past traffic so Recordings and Statistics have something to show.
 function seedLibrary(s) {
-  const weights = [['tower', 5], ['approach', 4], ['radar', 1], ['pmr3', 2], ['pmr7', 1], ['ham', 1], ['music', 1]];
+  const weights = [['tower', 5], ['approach', 4], ['radar', 1], ['pmr3', 2], ['pmr7', 1], ['ham', 1], ['milvhf', 1], ['miluhf', 1], ['marine16', 1], ['marine72', 1], ['rpt', 1], ['music', 1], ['talk', 1]];
   const total = weights.reduce((a, [, w]) => a + w, 0);
   const now = Date.now();
   for (let d = 6; d >= 0; d--) {
     for (let k = 0, n = 4 + Math.floor(Math.random() * 5); k < n; k++) {
       let r = Math.random() * total, conv = 'tower';
       for (const [c, w] of weights) { if ((r -= w) < 0) { conv = c; break; } }
-      const src = SOURCES.find((x) => (conv === 'music' ? x.music : x.conv === conv));
+      const src = SOURCES.find((x) => x.conv === conv || x.loop === conv);
       const day = new Date(now - d * 86400e3);
       day.setHours(Math.floor(rand(6, 22)), Math.floor(rand(0, 60)), Math.floor(rand(0, 60)), 0);
       if (day.getTime() > now - 120e3) continue;
-      const lines = src.music ? [] : convLines(conv);
+      const lines = src.loop ? [] : convLines(conv);
       const from = Math.floor(Math.random() * Math.max(1, lines.length - 1));
       const parts = lines.slice(from, from + 2 + Math.floor(Math.random() * 2));
-      const e = makeEntry(src, src.f, day.getTime(), parts, src.music ? rand(8, 25) : 0, rand(-4, 3));
+      const e = makeEntry(src, src.f, day.getTime(), parts, src.loop ? rand(8, 25) : 0, rand(-4, 3));
       if (Math.random() < 0.12) e.favorite = true;
-      if (!src.music || Math.random() < 0.5) e.transcript = transcriptFor(e);
+      if (!src.loop || Math.random() < 0.5) e.transcript = transcriptFor(e);
       s.library.push(e);
     }
   }
@@ -176,15 +190,15 @@ function seedLibrary(s) {
 // PMR and ham chatter in the UI language when there is a version in it; airband is English only.
 function convLines(conv) {
   const ids = Object.keys(CLIPS.clips).filter((id) => CLIPS.clips[id].conv === conv);
-  const lang = ids.some((id) => CLIPS.clips[id].lang === currentLang()) ? currentLang() : 'en';
-  return ids.filter((id) => CLIPS.clips[id].lang === lang);
+  const lang = [currentLang(), 'en'].find((l) => ids.some((id) => CLIPS.clips[id].lang === l));
+  return lang ? ids.filter((id) => CLIPS.clips[id].lang === lang) : ids;
 }
 
 // ------------------------------------------------------------------ sources
 const sourceState = new Map();  // source -> {line, playing: {clip, t0, len}, nextAt}
 function srcState(src) {
   let s = sourceState.get(src);
-  if (!s) sourceState.set(src, (s = { line: 0, playing: null, nextAt: nowS() + rand(1, 8) }));
+  if (!s) sourceState.set(src, (s = { line: 0, playing: null, nextAt: src.after ? Infinity : nowS() + rand(1, 8) }));
   return s;
 }
 
@@ -197,8 +211,13 @@ function advanceSources(t) {
       const lines = convLines(src.conv);
       s.line++;
       if (s.line < lines.length) s.nextAt = t + rand(0.7, 1.6);
-      else { s.line = 0; s.nextAt = t + rand(...src.gap); }
+      else {
+        s.line = 0;
+        s.nextAt = src.after ? Infinity : t + rand(...src.gap);
+        for (const next of SOURCES) if (next.after === src.conv) srcState(next).nextAt = t + rand(2, 4);
+      }
     }
+    if (!s.playing) loadClip(convLines(src.conv)[s.line] || convLines(src.conv)[0]).catch(() => {});
     if (!s.playing && t >= s.nextAt) {
       const lines = convLines(src.conv);
       if (s.line >= lines.length) s.line = 0;  // the language switched to a shorter version
@@ -217,7 +236,8 @@ function addPart(target, playing) {
   target.parts.push(playing.clip);
 }
 
-const onAir = (src) => src.music || src.birdie || !!srcState(src).playing;
+const onAir = (src) => !!(src.loop || src.birdie || srcState(src).playing);
+const loopClip = (src) => convLines(src.loop)[0];
 
 // ------------------------------------------------------------------ schedule (falconsdr/schedule.py)
 const minutes = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
@@ -340,8 +360,8 @@ function closeSlot(slot) {
   const dur = (Date.now() - slot.start) / 1000;
   if (slot.src.conv && !slot.parts.length) return;
   if (dur < 0.5) return;
-  const e = makeEntry(slot.src, slot.src.f, slot.start, slot.parts, Math.min(dur, slot.src.music ? 60 : 20), slot.lvl - slot.src.level);
-  if (slot.src.music) e.offset = Math.floor((slot.startT * RATE) % CLIPS.clips.music.samples);
+  const e = makeEntry(slot.src, slot.src.f, slot.start, slot.parts, Math.min(dur, slot.src.loop ? 60 : 20), slot.lvl - slot.src.level);
+  if (slot.src.loop) e.offset = Math.floor((slot.startT * RATE) % CLIPS.clips[e.loopClip].samples);
   st.library.push(e);
   queueTranscript(e);
   save();
@@ -432,10 +452,12 @@ function renderLive(t0, n) {
   const out = new Float32Array(n);
   const src = slot.src, s = src.conv ? srcState(src) : null;
   const amp = noiseAmp(slot.lvl) * nr;
+  const loopPcm = src.loop && pcm[loopClip(src)];
+  if (src.loop && !loopPcm) loadClip(loopClip(src)).catch(() => {});
   for (let i = 0; i < n; i++) {
     const t = t0 + i / RATE;
     let v = 0, live = true;
-    if (src.music) { const m = pcm.music; v = m ? m[Math.floor(t * RATE) % m.length] / 32768 : 0; }
+    if (src.loop) v = loopPcm ? loopPcm[Math.floor(t * RATE) % loopPcm.length] / 32768 : 0;
     else if (src.birdie) v = 0.05 * Math.sin(2 * Math.PI * 740 * t) + 0.02 * Math.sin(2 * Math.PI * 1480 * t);
     else if (s.playing && t >= s.playing.t0) {
       const d = pcm[s.playing.clip], k = Math.floor((t - s.playing.t0) * RATE);
@@ -497,15 +519,16 @@ function makeEntry(src, f, ts, parts, seconds, dLevel) {
   const samples = parts.reduce((a, id) => a + CLIPS.clips[id].samples + 0.5 * RATE, 0) + Math.round(seconds * RATE);
   const lvl = (src ? src.level : -40) + dLevel;
   return {
-    id: `${stamp}/${name}.wav`, f, ts, parts, seconds, offset: 0, kind: src && src.music ? 'music' : src && src.birdie ? 'tone' : 'clips',
+    id: `${stamp}/${name}.wav`, f, ts, parts, seconds, offset: 0, kind: src && src.loop ? 'loop' : src && src.birdie ? 'tone' : 'clips', loopClip: src && src.loop ? loopClip(src) : null,
     lvl, samples, quality: Math.round(clamp(42 + (lvl + 45) * 1.6 + rand(-3, 3), 18, 97) * 10) / 10,
     snr: Math.round(clamp(lvl + 62 + rand(-2, 2), 3, 45) * 10) / 10, favorite: false, transcript: null, queuedAt: 0, lang: null,
   };
 }
 
 function transcriptFor(e) {
-  const text = e.parts.map((id) => CLIPS.clips[id].text).join(' ');
-  const lang = e.lang || (e.parts.length ? CLIPS.clips[e.parts[0]].lang : '');
+  const ids = e.loopClip ? [e.loopClip] : e.parts;
+  const text = ids.map((id) => CLIPS.clips[id].text).join(' ').trim();
+  const lang = e.lang || (ids.length ? CLIPS.clips[ids[0]].lang : '');
   return {
     text, language: text ? lang : '', language_probability: text ? 0.97 : 0, status: text ? 'ok' : 'no_speech',
     engine: 'demo', transcribed_at: new Date().toISOString(),
@@ -631,8 +654,8 @@ async function samplesOf(e) {
     for (let i = 0; i < d.length && k < out.length; i++) out[k++] = d[i] / 32768;
     k += Math.round(0.5 * RATE);
   }
-  if (e.kind === 'music') {
-    const m = await loadClip('music');
+  if (e.kind === 'loop') {
+    const m = await loadClip(e.loopClip);
     for (let i = 0; k < out.length; i++) out[k++] = m[(e.offset + i) % m.length] / 32768;
   } else if (e.kind === 'tone') {
     for (let i = 0; k < out.length; i++, k++) out[k] = 0.05 * Math.sin((2 * Math.PI * 740 * i) / RATE);
@@ -696,9 +719,9 @@ function spectrum() {
     if (src.f < f0 || src.f > f1 || !onAir(src)) continue;
     const ch = w.matches.find((m) => m.src === src)?.ch || { band: w.band };
     const lvl = level(src, ch), x = ((src.f - f0) / (f1 - f0)) * (n - 1);
-    const width = src.music ? 18 : src.birdie ? 0.4 : 1.4;
+    const width = Math.max(0.4, (src.loop ? 85e3 : src.birdie ? 1e3 : 6.5e3) / ((f1 - f0) / n));  // half-width in bins
     for (let i = Math.max(0, Math.floor(x - width * 4)); i <= Math.min(n - 1, Math.ceil(x + width * 4)); i++) {
-      const shape = src.music ? (Math.abs(i - x) < width ? 0 : -((Math.abs(i - x) - width) * 3)) : -((i - x) ** 2) / (2 * width * width) * 4.3;
+      const shape = src.loop ? (Math.abs(i - x) < width ? 0 : -((Math.abs(i - x) - width) * 3)) : -((i - x) ** 2) / (2 * width * width) * 4.3;
       p[i] += 10 ** ((lvl + shape + (Math.random() - 0.5) * 2) / 10);
     }
   }
@@ -721,7 +744,7 @@ function live(since = Infinity) {
     state: sim.state, level: Math.round(lvl * 10) / 10,
     frequencies: sim.running ? (slots.length ? slots.map((s) => [s.f, nameOf(s.f)]) : w ? [[w.chans[0].f, w.chans.length > 1 ? tr('{count} channels in window', { count: w.chans.length }) : nameOf(w.chans[0].f)]] : []) : [],
     recording: slots.some((s) => s.rec), manual_recording: !!sim.manual, raw_iq: sim.rawIq,
-    cycle_time: sim.running ? sim.cycle : null, gain_range: [0, 49.6], running: sim.running, stopping: false,
+    cycle_time: sim.running ? sim.cycle : null, gain_range: (DEVICES.find((d) => d.driver === st.config.device.driver) || DEVICES[0]).gain, running: sim.running, stopping: false,
     solo_band: sim.solo, schedule_active: activeIndices(st.config), clock: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
     spectrum: spectrum(), log: log.filter((e) => e.id > since), audio_rate: RATE,
     demo_birdie: !!(primary && primary.src.birdie),
@@ -732,7 +755,7 @@ function live(since = Infinity) {
 function settings() {
   return {
     version: FX.version, config: st.config, channels: st.channels, blacklist: st.blacklist, presets: st.presets,
-    devices: [{ driver: DEMO_DEVICE, args: '', label: tr('Demo receiver (simulated)') }],
+    devices: DEVICES.map((d) => ({ driver: d.driver, args: '', label: tr(d.label), rate: d.rate })),
     languages: FX.languages,
     capabilities: { ffmpeg: true, transcription_installed: true, platform: 'linux', autostart: null },
     curated: FX.curated, mode: 'local', password_set: false,

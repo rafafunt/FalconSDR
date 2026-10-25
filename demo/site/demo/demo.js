@@ -2,7 +2,8 @@
 // then boots the app with a "this is a demo" banner, a welcome dialog and
 // hints - Skip / Skip + blacklist light up when the scanner sits on a birdie.
 import { h, icon, lang, modal, mount, t } from '../js/core.js';
-import { S, cfg, confirmRecording, on, patchConfig } from '../js/state.js';
+import { liveAudio } from '../js/live-audio.js';
+import { S, cfg, confirmRecording, emit, on, patchConfig } from '../js/state.js';
 
 const DOWNLOAD = 'https://github.com/rafafunt/FalconSDR/releases/latest';
 
@@ -19,7 +20,8 @@ const TEXT = {
       'Press Start, then Listen - the scanner stops only on real transmissions (airband, PMR446, 2 m ham band).',
       'Sooner or later it gets stuck on a birdie - a steady whistle on 124.800 or 144.000 MHz. The demo then shows how to get rid of it.',
       'Lower the Trigger level to about -40 dBFS to also catch the weak Falcon Radar on 132.850 MHz.',
-      'Switch on the “FM broadcast radio” band, or tap its headphones to scan only that band - music on 99.900 MHz.',
+      'Switch on the “FM broadcast radio” band, or tap its headphones to scan only that band - music on 99.900 MHz, a talk station on 103.700 MHz.',
+      'Add any band preset (military VHF/UHF, marine, 70 cm…) - each one has some traffic. In “SDR device” you can pick a 10 MHz wideband receiver instead of the RTL-SDR (with the scanner stopped).',
       'Turn on “Auto-record transmissions”, then open Recordings (with transcripts) and Statistics. Schedule, Channels and Settings all work too.',
     ],
     real: 'For real listening you need FalconSDR on your computer (Windows, macOS, Linux) and an SDR receiver, e.g. an RTL-SDR dongle with an antenna. What you change here stays only in this browser.',
@@ -45,7 +47,8 @@ const TEXT = {
       'Naciśnij Start, potem Nasłuch - skaner zatrzymuje się tylko na prawdziwych transmisjach (lotnictwo, PMR446, pasmo 2 m).',
       'Prędzej czy później utknie na birdie - stałym gwizdzie na 124,800 albo 144,000 MHz. Demo pokaże wtedy, jak się go pozbyć.',
       'Obniż próg wyzwalania do ok. -40 dBFS, żeby złapać też słaby Falcon Radar na 132,850 MHz.',
-      'Włącz pasmo „Radio FM”, albo kliknij przy nim słuchawki, żeby skanować tylko to pasmo - na 99,900 MHz gra muzyka.',
+      'Włącz pasmo „Radio FM”, albo kliknij przy nim słuchawki, żeby skanować tylko to pasmo - na 99,900 MHz gra muzyka, na 103,700 MHz stacja z prognozą pogody.',
+      'Dodaj dowolny preset pasma (wojskowe VHF/UHF, morskie, 70 cm…) - w każdym coś nadaje. W „Urządzenie SDR” możesz zamiast RTL-SDR wybrać szerokopasmowy odbiornik 10 MHz (przy zatrzymanym skanerze).',
       'Włącz „Automatycznie nagrywaj transmisje”, a potem zajrzyj do Nagrań (z transkrypcjami) i Statystyk. Harmonogram, Kanały i Ustawienia też działają.',
     ],
     real: 'Do prawdziwego nasłuchu potrzebujesz programu FalconSDR na komputerze (Windows, macOS, Linux) i odbiornika SDR, np. RTL-SDR z anteną. Zmiany zrobione tutaj zostają tylko w tej przeglądarce.',
@@ -123,6 +126,26 @@ function recordingsHint() {
   page.querySelector('.page-head').after(note);
 }
 
+// The next step lights up: Start while stopped, then Listen while the sound is off.
+function controlsHint() {
+  setTimeout(paintControlsHint, 0);  // after the Listen view, which resets the buttons' classes
+}
+function paintControlsHint() {
+  const [startBtn, listenBtn] = document.querySelectorAll('.hero .controls button.big');
+  const running = !!(S.live && S.live.running);
+  if (startBtn) startBtn.classList.toggle('demo-pulse', !!S.live && !running);
+  if (listenBtn) listenBtn.classList.toggle('demo-pulse', running && !liveAudio.playing);
+}
+
+// Picking a receiver sets its capture width, like choosing the hardware would.
+let lastDriver = null;
+function deviceRate() {
+  const driver = cfg().device.driver, changed = lastDriver !== null && driver !== lastDriver;
+  lastDriver = driver;  // before patchConfig: it emits 'config' again
+  const d = changed && S.settings.devices.find((x) => x.driver === driver);
+  if (d && d.rate) { patchConfig({ device: { sample_rate_hz: d.rate } }); emit('settings'); }
+}
+
 async function start() {
   renderBanner();
   if (!('serviceWorker' in navigator)) {
@@ -145,6 +168,10 @@ async function start() {
   on('settings', renderBanner);
   on('live', birdieHint);
   on('live', recordingsHint);
+  on('live', controlsHint);
+  on('audio', controlsHint);
+  on('config', deviceRate);
+  on('settings', () => { lastDriver = cfg().device.driver; });
   on('config', recordingsHint);
   window.addEventListener('hashchange', () => setTimeout(recordingsHint, 0));
   await import('../js/main.js');

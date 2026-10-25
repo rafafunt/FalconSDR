@@ -74,6 +74,38 @@ CONVERSATIONS = {
             ("vctk:81", "Reading you five by five."),
         ],
     },
+    "milvhf": {"en": [
+        ("vctk:98", "Range Control, Hawk one one, flight of two, entering area Delta, request block four thousand to six thousand."),
+        ("libritts:700", "Hawk one one, Range Control, area Delta is active, block four thousand to six thousand approved, report leaving."),
+        ("vctk:98", "Block four to six approved, wilco, Hawk one one."),
+    ]},
+    "miluhf": {"en": [
+        ("libritts:40", "Viper flight, check."),
+        ("libritts:220", "Two."),
+        ("vctk:107", "Viper one one, Falcon Ops, tanker Shell five one on station, track Alpha, flight level two two zero."),
+        ("libritts:40", "Falcon Ops, Viper one one, copy, proceeding track Alpha."),
+    ]},
+    "marine16": {"en": [
+        ("vctk:93", "Sea Falcon, Sea Falcon, this is Morning Star, Morning Star, over."),
+        ("vctk:81", "Morning Star, this is Sea Falcon, go to channel seven two, over."),
+        ("vctk:93", "Seven two, Morning Star."),
+    ]},
+    "marine72": {"en": [
+        ("vctk:93", "Sea Falcon, Morning Star on seven two. We are anchored by the north buoy, can we meet at eighteen hundred? Over."),
+        ("vctk:81", "Copy, eighteen hundred at the north buoy. Sea Falcon, out."),
+    ]},
+    "rpt": {
+        "pl": [
+            ("darkman:0", "SP zero KOT przez SR zero DEMO, czy ktoś jest na przemienniku? Odbiór."),
+            ("gosia:0", "SP zero KOT, tu SQ zero LIS. Słyszę cię dobrze przez przemiennik. Jak u ciebie pogoda? Odbiór."),
+            ("darkman:0", "Pada od rana, ale antena wytrzymała. Dzięki za łączność, siedemdziesiąt trzy. SP zero KOT."),
+        ],
+        "en": [
+            ("libritts:500", "Sierra Papa Zero Kilo Oscar Tango via the demo repeater, anyone around? Over."),
+            ("vctk:107", "Kilo Oscar Tango, this is Sierra Quebec Zero Lima India Sierra, you're full quieting into the repeater. How's the weather there? Over."),
+            ("libritts:500", "Raining all morning, but the antenna held up. Thanks for the contact, seventy three."),
+        ],
+    },
     "ham": {
         "pl": [
             ("darkman:0", "CQ, CQ, tu SP zero DEMO, SP zero DEMO, wywołuję i czekam na odpowiedź."),
@@ -84,6 +116,11 @@ CONVERSATIONS = {
             ("libritts:500", "Sierra Papa Zero Delta Echo Mike Oscar, this is Sierra Quebec Zero Test. You're five nine, name here is Adam. Over."),
         ],
     },
+}
+
+TALK = {
+    "en": "You're listening to Falcon FM, one oh three point seven. Time for the weather. A dry and sunny afternoon with a light westerly wind and highs of eighteen degrees. Tonight, clear skies and a few patches of fog by the river. Traffic is moving freely on the ring road. Stay with us, more music after the news.",
+    "pl": "Słuchasz Falcon FM, sto trzy i siedem. Czas na pogodę. Po południu sucho i słonecznie, słaby wiatr z zachodu, do osiemnastu stopni. W nocy bezchmurnie, nad rzeką miejscami mgła. Na obwodnicy ruch płynny, bez utrudnień. Zostańcie z nami, po wiadomościach więcej muzyki.",
 }
 
 
@@ -118,17 +155,16 @@ def _radio(x: np.ndarray, am: bool) -> np.ndarray:
     return np.concatenate([pad, x, pad]).astype(np.float32)
 
 
-def _music(seconds_per_bar: float = 2.4, bars: int = 16) -> np.ndarray:
-    """A seamless loop: pads, bass, a plucked arpeggio and a light beat (Am F C G)."""
+def _music(seconds_per_bar: float = 2.4, bars: int = 16, chords=((57, 60, 64), (53, 57, 60), (48, 52, 55), (55, 59, 62))) -> np.ndarray:
+    """A seamless loop: pads, bass, a plucked arpeggio and a light beat (Am F C G by default)."""
     n = int(seconds_per_bar * bars * RATE)
     t = np.arange(n) / RATE
     out = np.zeros(n)
-    chords = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]]
     hz = lambda m: 440 * 2 ** ((m - 69) / 12)
     beat = seconds_per_bar / 4
     rng = np.random.default_rng(7)
     for bar in range(bars):
-        notes = chords[bar % 4]
+        notes = chords[bar % len(chords)]
         s, e = int(bar * seconds_per_bar * RATE), int((bar + 1) * seconds_per_bar * RATE)
         tt = t[s:e] - t[s]
         env = np.minimum(1, tt / 0.3) * np.minimum(1, (seconds_per_bar - tt) / 0.3)
@@ -163,13 +199,31 @@ def build(out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     clips = {}
     for conv, variants in CONVERSATIONS.items():
-        am = conv in ("tower", "approach", "radar")
+        am = conv in ("tower", "approach", "radar", "milvhf", "miluhf")
         for lang, lines in variants.items():
             for i, (voice, text) in enumerate(lines):
                 cid = f"{conv}_{lang}{i}"
                 x = _radio(_speak(voice, text), am)
+                if conv == "rpt":  # the repeater's courtesy beep after each over
+                    tt = np.arange(int(0.18 * RATE)) / RATE
+                    x = np.concatenate([x[:-int(0.1 * RATE)], 0.35 * np.sin(2 * np.pi * 1000 * tt), np.zeros(int(0.15 * RATE))]).astype(np.float32)
                 _write(out / f"{cid}.pcm", x)
                 clips[cid] = {"conv": conv, "text": text, "lang": lang, "samples": int(x.size)}
+    for lang, text in TALK.items():  # second FM station: jingle, then the weather over a music bed
+        voice = _speak("vctk:107" if lang == "en" else "gosia:0", text)
+        voice = 0.75 * voice / np.max(np.abs(voice))
+        n = int(1.6 * RATE) + voice.size + int(20 * RATE)  # then the music comes up
+        bed = _music(2.0, int(np.ceil(n / RATE / 2.0)), ((60, 64, 67), (57, 60, 64), (53, 57, 60), (55, 59, 62)))[:n] * 0.22
+        tt = np.arange(int(0.35 * RATE)) / RATE
+        for k, m in enumerate((72, 76, 79)):
+            a = int(k * 0.3 * RATE)
+            bed[a:a + tt.size] += 0.35 * np.exp(-tt * 6) * np.sin(2 * np.pi * 440 * 2 ** ((m - 69) / 12) * tt)
+        end = int(1.6 * RATE) + voice.size
+        bed[end:] *= np.minimum(3.6, 1 + np.arange(n - end) / (0.8 * RATE))  # bed 0.22 -> 0.8 in 2 s
+        bed[int(1.6 * RATE):end] += voice
+        x = (0.85 * bed / np.max(np.abs(bed))).astype(np.float32)
+        _write(out / f"talk_{lang}.pcm", x)
+        clips[f"talk_{lang}"] = {"conv": "talk", "text": text, "lang": lang, "samples": int(x.size)}
     music = _music()
     _write(out / "music.pcm", music)
     clips["music"] = {"conv": "music", "text": "", "lang": "", "samples": int(music.size)}
