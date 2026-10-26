@@ -546,6 +546,7 @@ def make_handler(app: App):
         ("POST", "/api/scanner/stop"): Handler.scanner,
         ("POST", "/api/scanner/skip"): Handler.scanner,
         ("POST", "/api/scanner/blacklist"): Handler.scanner,
+        ("POST", "/api/scanner/hold"): Handler.scanner,
         ("POST", "/api/scanner/manual_record"): Handler.scanner,
         ("POST", "/api/scanner/raw_iq"): Handler.scanner,
         ("POST", "/api/scanner/solo"): Handler.scanner,

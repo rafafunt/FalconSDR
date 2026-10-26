@@ -1360,7 +1360,7 @@ msgstr "Słuchaj na żywo"
 msgid "I understand"
 msgstr "Rozumiem"
 
-msgid "Hold"
+msgid "Linger"
 msgstr "Podtrzymanie"
 
 msgid "Reconnecting"
@@ -1383,6 +1383,15 @@ msgstr "Pomiń + czarna lista"
 
 msgid "Continuous recording of what you hear, including silence"
 msgstr "Ciągłe nagrywanie tego, co słychać, razem z ciszą"
+
+msgid "Hold"
+msgstr "Trzymaj"
+
+msgid "Resume scanning"
+msgstr "Wznów skanowanie"
+
+msgid "Stay on this frequency - the scanner stops moving on"
+msgstr "Zostań na tej częstotliwości - skaner przestaje przechodzić dalej"
 
 msgid "Record"
 msgstr "Nagrywaj"

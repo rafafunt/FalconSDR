@@ -24,7 +24,7 @@ export function driverHelp() {
 export function stateLabel(state) {
   return {
     IDLE: t('Stopped'), CALCULATE_NEXT_FREQ: t('Scanning'), TUNING: t('Scanning'), SCANNING: t('Scanning'),
-    SIGNAL_DETECTED: t('Signal'), LINGER: t('Hold'), RECONNECTING: t('Reconnecting'),
+    SIGNAL_DETECTED: t('Signal'), LINGER: t('Linger'), RECONNECTING: t('Reconnecting'),
   }[state] || state;
 }
 
@@ -60,6 +60,7 @@ export function listenView(root) {
   const volume = h('input', { type: 'range', min: 0, max: 1.5, step: 0.05, value: liveAudio.volume, oninput: (e) => liveAudio.setVolume(+e.target.value), title: t('Volume') });
   const skipBtn = h('button', { onclick: () => command('skip'), title: t('Leave this frequency for now') }, icon('skip'), t('Skip'));
   const blBtn = h('button', { onclick: () => command('blacklist'), title: t('Leave it and never stop on it again (adds it to the blacklist)') }, icon('ban'), t('Skip + blacklist'));
+  const holdBtn = h('button', { onclick: () => command('hold', { enabled: !(S.live && S.live.hold) }), title: t('Stay on this frequency - the scanner stops moving on') }, icon('pause'), t('Hold'));
   const recBtn = h('button.recbtn', { onclick: () => toggleManualRecord(), title: t('Continuous recording of what you hear, including silence') }, icon('record'), t('Record'));
   const iqBtn = h('button.ghost.small', { onclick: () => toggleRawIq(), title: t('Raw wideband IQ (SigMF) - about 19 MB per second') }, t('Raw IQ'));
   const autoRec = toggle(t('Auto-record transmissions'), cfg().recording.enabled, async (v, e) => {
@@ -75,7 +76,7 @@ export function listenView(root) {
     h('div.col', { style: { gap: '4px' } },
       h('div.meter', meterFill, meterMark),
       h('div.meter-legend', h('span', '-100'), levelText, h('span', '0 dBFS'))),
-    h('div.controls', startBtn, h('div.row', listenBtn, h('div.volume', icon('volume'), volume)), skipBtn, blBtn, recBtn),
+    h('div.controls', startBtn, h('div.row', listenBtn, h('div.volume', icon('volume'), volume)), skipBtn, blBtn, holdBtn, recBtn),
     h('div.row.wrap', autoRec, h('span.spacer'), iqBtn));
 
   // ---------------------------------------------------------- spectrum
@@ -154,7 +155,9 @@ export function listenView(root) {
     mount(startBtn, icon(live.running ? 'stop' : 'play'), live.running ? t('Stop') : t('Start'));
     startBtn.className = 'big ' + (live.running ? 'danger' : 'primary');
     startBtn.disabled = !!live.stopping;
-    [skipBtn, blBtn, recBtn, iqBtn].forEach((b) => { b.disabled = !live.running; });
+    [skipBtn, blBtn, holdBtn, recBtn, iqBtn].forEach((b) => { b.disabled = !live.running; });
+    holdBtn.classList.toggle('on', !!live.hold);
+    mount(holdBtn, icon(live.hold ? 'play' : 'pause'), live.hold ? t('Resume scanning') : t('Hold'));
     recBtn.classList.toggle('on', !!live.manual_recording);
     mount(recBtn, icon('record'), live.manual_recording ? t('Stop recording') : t('Record'));
     iqBtn.textContent = live.raw_iq ? t('Stop raw IQ') : t('Raw IQ');

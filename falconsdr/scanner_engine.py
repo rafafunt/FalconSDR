@@ -324,6 +324,7 @@ class ScannerSignals:
         self.recording_changed = Signal()  # (active, path)
         self.recording_finished = Signal()  # path of a just-closed per-transmission file
         self.manual_recording_changed = Signal()  # (active, path)
+        self.hold_changed = Signal()       # bool
         # (active, path); never goes through recording_finished - not audio.
         self.raw_iq_recording_changed = Signal()
         self.blacklisted = Signal()        # freq_hz
@@ -355,6 +356,7 @@ class ScannerEngine(threading.Thread):
         self._stop_evt = threading.Event()
         self._skip_evt = threading.Event()          # "Skip" - move on now, frequency stays scannable
         self._skip_lockout_evt = threading.Event()   # "Skip + Blacklist" - move on now, permanently blacklist it
+        self._hold = False  # "Hold" - stay on the current window; a plain bool, read once per tick
 
         self._backend = None
         self._spectrum_worker: _SpectrumWorker | None = None
@@ -444,6 +446,12 @@ class ScannerEngine(threading.Thread):
         """request_skip() that also blacklists every active frequency. No
         confirmation on purpose: it must be fast, and undoing it is one click."""
         self._skip_lockout_evt.set()
+
+    def set_hold(self, enabled: bool) -> None:
+        """Stay on the window being scanned now: its channels keep opening,
+        recording and closing as usual, the scanner just doesn't move on."""
+        self._hold = bool(enabled)
+        self.signals.hold_changed.emit(self._hold)
 
     # -- manual continuous recording (gotcha 13) -------------------------
     # Independent of auto-recording: one continuous file for as long as it's
@@ -1224,6 +1232,8 @@ class ScannerEngine(threading.Thread):
                         self.signals.blacklisted.emit(best_freq)
                     self._skip_evt.clear()
                     self._skip_lockout_evt.clear()
+                    if self._hold:  # Skip means "leave" - a hold would just reopen it next tick
+                        self.set_hold(False)
                     state = ScannerState.CALCULATE_NEXT_FREQ
                     self._emit_state(state)
                 elif (
@@ -1238,7 +1248,7 @@ class ScannerEngine(threading.Thread):
                                 n=self.config.recording.max_concurrent_recordings, freq=best_freq / 1e6,
                             )
                         )
-                    if not any_active and now >= scanning_deadline:
+                    if not any_active and not self._hold and now >= scanning_deadline:
                         state = ScannerState.CALCULATE_NEXT_FREQ
                         self._emit_state(state)
                 elif (
@@ -1252,7 +1262,7 @@ class ScannerEngine(threading.Thread):
                         self._channel_bw_map.get(best_freq, 0.0),
                     )
                     self._open_slot(best_freq, window, raw_level)
-                elif not any_active and time.monotonic() >= scanning_deadline:
+                elif not any_active and not self._hold and time.monotonic() >= scanning_deadline:
                     # Nothing active and the dwell is over - move on.
                     self._maybe_log_floor(iq, sample_rate, window)
                     state = ScannerState.CALCULATE_NEXT_FREQ

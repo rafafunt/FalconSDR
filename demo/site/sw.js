@@ -51,7 +51,7 @@ let logId = 0;
 
 const sim = {
   running: false, state: 'IDLE', windows: [], win: -1, winUntil: 0, lastVisit: new Map(), cycle: null,
-  slots: new Map(), primary: null, firstStart: null, ignored: new Set(), solo: null, manual: null, rawIq: false, schedSig: '', schedAt: 0,
+  slots: new Map(), primary: null, firstStart: null, ignored: new Set(), solo: null, manual: null, rawIq: false, hold: false, schedSig: '', schedAt: 0,
   capLogged: new Map(),
 };
 const listeners = new Set();
@@ -384,7 +384,7 @@ function step(t) {
   if (!sim.slots.size) {
     if (t < sim.winUntil) return;
     const found = actives(w);
-    if (!found.length) { nextWindow(t); return; }
+    if (!found.length) { if (!sim.hold) nextWindow(t); return; }
     found.forEach((m) => openSlot(m, t));
   } else {
     for (const m of actives(w)) if (!sim.slots.has(m.ch.f)) openSlot(m, t);
@@ -394,7 +394,7 @@ function step(t) {
     if (on.has(slot.f)) { slot.lastOn = t; slot.lvl = level(slot.src, slot.ch); }
     else if (t - slot.lastOn > opt(slot.ch.band, 'linger_time_ms', st.config.timing.linger_time_ms) / 1000) closeSlot(slot);
   }
-  if (!sim.slots.size) { nextWindow(t); return; }
+  if (!sim.slots.size) { if (sim.hold) sim.state = 'SCANNING'; else nextWindow(t); return; }
   if (!sim.primary || !sim.slots.has(sim.primary) || (!on.has(sim.primary) && on.size)) {
     const best = [...sim.slots.values()].sort((a, b) => (on.has(b.f) - on.has(a.f)) || (b.lvl - a.lvl))[0];
     sim.primary = best.f;
@@ -419,6 +419,7 @@ function stopScanner() {
   sim.state = 'IDLE';
   sim.win = -1;
   sim.rawIq = false;
+  sim.hold = false;
   save();
 }
 
@@ -426,6 +427,7 @@ function stopScanner() {
 // carry on. A skipped channel is ignored until the scanner leaves the window.
 function skip(lockout) {
   if (!sim.running) throw new Error(tr('Scanner is not running'));
+  sim.hold = false;  // Skip means "leave", as in the app
   const slot = sim.slots.get(sim.primary);
   if (!slot) { nextWindow(nowS()); return; }
   closeSlot(slot);
@@ -755,7 +757,7 @@ function live(since = Infinity) {
   return {
     state: sim.state, level: Math.round(lvl * 10) / 10,
     frequencies: sim.running ? (slots.length ? slots.map((s) => [s.f, nameOf(s.f)]) : w ? [[w.chans[0].f, w.chans.length > 1 ? tr('{count} channels in window', { count: w.chans.length }) : nameOf(w.chans[0].f)]] : []) : [],
-    recording: slots.some((s) => s.rec), manual_recording: !!sim.manual, raw_iq: sim.rawIq,
+    recording: slots.some((s) => s.rec), manual_recording: !!sim.manual, raw_iq: sim.rawIq, hold: sim.hold,
     cycle_time: sim.running ? sim.cycle : null, gain_range: (DEVICES.find((d) => d.driver === st.config.device.driver) || DEVICES[0]).gain, running: sim.running, stopping: false,
     solo_band: sim.solo, schedule_active: activeIndices(st.config), clock: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
     spectrum: spectrum(), log: log.filter((e) => e.id > since), audio_rate: RATE,
@@ -815,6 +817,11 @@ const ROUTES = {
   'POST /api/scanner/stop': () => { stopScanner(); return live(); },
   'POST /api/scanner/skip': () => { skip(false); return live(); },
   'POST /api/scanner/blacklist': () => { skip(true); return live(); },
+  'POST /api/scanner/hold': async (req) => {
+    if (!sim.running) throw new Error(tr('Scanner is not running'));
+    sim.hold = !!(await body(req)).enabled;
+    return live();
+  },
   'POST /api/scanner/manual_record': async (req) => {
     if (!sim.running) throw new Error(tr('Scanner is not running'));
     const on = !!(await body(req)).enabled;

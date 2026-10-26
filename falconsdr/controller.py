@@ -109,7 +109,7 @@ class Controller:
     def _idle_live() -> dict[str, Any]:
         return {
             "state": "IDLE", "level": -120.0, "frequencies": [], "recording": False,
-            "manual_recording": False, "raw_iq": False, "cycle_time": None, "gain_range": [0.0, 50.0],
+            "manual_recording": False, "raw_iq": False, "hold": False, "cycle_time": None, "gain_range": [0.0, 50.0],
         }
 
     def start_background(self) -> None:
@@ -165,6 +165,7 @@ class Controller:
         s.freq_changed.connect(lambda v: self._set_live(frequencies=[[int(f), str(n)] for f, n in v]))
         s.recording_changed.connect(lambda active, _p: self._set_live(recording=bool(active)))
         s.manual_recording_changed.connect(lambda active, _p: self._set_live(manual_recording=bool(active)))
+        s.hold_changed.connect(lambda v: self._set_live(hold=bool(v)))
         s.raw_iq_recording_changed.connect(lambda active, _p: self._set_live(raw_iq=bool(active)))
         s.cycle_time_changed.connect(lambda v: self._set_live(cycle_time=round(float(v), 2)))
         s.gain_range_changed.connect(lambda lo, hi: self._set_live(gain_range=[float(lo), float(hi)]))
@@ -210,6 +211,8 @@ class Controller:
             engine.request_skip()
         elif name == "blacklist":
             engine.request_skip_and_blacklist()
+        elif name == "hold":
+            engine.set_hold(enabled)
         elif name == "manual_record":
             (engine.start_manual_recording if enabled else engine.stop_manual_recording)()
         elif name == "raw_iq":
