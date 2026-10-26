@@ -51,7 +51,7 @@ let logId = 0;
 
 const sim = {
   running: false, state: 'IDLE', windows: [], win: -1, winUntil: 0, lastVisit: new Map(), cycle: null,
-  slots: new Map(), primary: null, solo: null, manual: null, rawIq: false, schedSig: '', schedAt: 0,
+  slots: new Map(), primary: null, firstStart: null, solo: null, manual: null, rawIq: false, schedSig: '', schedAt: 0,
   capLogged: new Map(),
 };
 const listeners = new Set();
@@ -241,7 +241,9 @@ function addPart(target, playing) {
   target.parts.push(playing.clip);
 }
 
-const onAir = (src) => !!(src.loop || src.birdie || srcState(src).playing);
+// Birdies show up only a minute after the first Start, so a newcomer hears real traffic first.
+const BIRDIE_DELAY_S = 60;
+const onAir = (src) => !!(src.loop || (src.birdie ? sim.firstStart !== null && nowS() - sim.firstStart >= BIRDIE_DELAY_S : srcState(src).playing));
 const loopClip = (src) => convLines(src.loop)[0];
 
 // ------------------------------------------------------------------ schedule (falconsdr/schedule.py)
@@ -404,6 +406,7 @@ function step(t) {
 function startScanner() {
   if (sim.running) return;
   sim.running = true;
+  sim.firstStart ??= nowS();
   rebuild(true);
   save();
 }
