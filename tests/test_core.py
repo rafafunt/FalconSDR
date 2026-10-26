@@ -264,6 +264,47 @@ class SquelchTest(unittest.TestCase):
         self.assertEqual(ScannerEngine._effective_squelch_dbfs(fake, SimpleNamespace(band=VfoRangeConfig())), -54.0)
 
 
+class DigitalVoiceTest(unittest.TestCase):
+    def test_stream_resampler_matches_one_call_on_the_whole_stream(self) -> None:
+        import numpy as np
+        from scipy.signal import resample_poly
+        from falconsdr.dsp import StreamResampler
+        rng = np.random.default_rng(1)
+        for fs in (2_400_000, 2_048_000):
+            x = (rng.standard_normal(fs // 4) + 1j * rng.standard_normal(fs // 4)).astype(np.complex64)
+            g = np.gcd(48000, fs)
+            whole = resample_poly(x, 48000 // g, fs // g)
+            r, parts, i = StreamResampler(fs, 48000), [], 0
+            while i < x.size:  # odd block sizes, some shorter than the filter
+                n = int(rng.integers(300, 80000))
+                parts.append(r.process(x[i:i + n]))
+                i += n
+            y = np.concatenate(parts)
+            self.assertGreater(y.size, whole.size - 50)  # only the last few samples still wait for more input
+            np.testing.assert_allclose(y, whole[:y.size], atol=1e-5)
+
+    def test_decoder_parses_calls_and_keeps_its_timeline(self) -> None:
+        import numpy as np
+        from falconsdr import digital_voice
+        dec = digital_voice.DsdDecoder.__new__(digital_voice.DsdDecoder)  # no dsd-fme process
+        dec.out_rate, dec._frac, dec._buf, dec._lock = 12500, 0.0, np.zeros(0, np.float32), threading.Lock()
+        dec.talkgroup = dec.source = ""
+        dec.encrypted = False
+        dec._proc = type("P", (), {"stderr": [b"12:00 Sync: +DMR  slot1 | TGT=260 SRC=2601234 Group\n",
+                                              b"Encrypted call\n"]})()
+        dec._read_info()
+        self.assertEqual((dec.talkgroup, dec.source, dec.encrypted), ("260", "2601234", True))
+        dec._proc = type("P", (), {"stderr": [b"Sync: +YSF  DST: ALL        SRC: SP8ABC     \n"]})()
+        dec._read_info()
+        self.assertEqual((dec.talkgroup, dec.source), ("ALL", "SP8ABC"))
+        # Silence while nothing is decoded, then voice - always exactly n samples per call.
+        self.assertEqual(dec.read(375).tolist(), [0.0] * 375)
+        dec._buf = np.full(800, 0.5, np.float32)
+        out = np.concatenate([dec.read(375) for _ in range(10)])
+        self.assertEqual(out.size, 3750)
+        self.assertAlmostEqual(float(out[:1000].mean()), 0.5, places=3)  # 800 samples @ 8 kHz = 1250 @ 12.5 kHz
+
+
 class ScheduleTest(unittest.TestCase):
     def test_active_entries_pick_bands_and_survive_a_config_patch(self) -> None:
         import datetime as dt

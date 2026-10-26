@@ -2484,3 +2484,75 @@ msgstr "Tryb harmonogramu jest włączony - te przełączniki działają tylko p
 
 msgid "Schedule: outside the time ranges - scanning as usual."
 msgstr "Harmonogram: poza przedziałami - skanowanie jak zwykle."
+
+msgid "{mod} {freq:.4f} MHz: to {tg} from {src}"
+msgstr "{mod} {freq:.4f} MHz: do {tg} od {src}"
+
+msgid "Digital voice is not available ({error}) - playing {mod} channels as NFM"
+msgstr "Głos cyfrowy niedostępny ({error}) - kanały {mod} odtwarzane jako NFM"
+
+msgid "{freq:.4f} MHz: encrypted - not decoded"
+msgstr "{freq:.4f} MHz: szyfrowane - nie dekodowane"
+
+msgid "Stop the scanner first"
+msgstr "Najpierw zatrzymaj skaner"
+
+msgid "optional download"
+msgstr "do pobrania"
+
+msgid "Digital voice (DMR, C4FM)"
+msgstr "Głos cyfrowy (DMR, C4FM)"
+
+msgid "Install digital voice"
+msgstr "Instalacja głosu cyfrowego"
+
+msgid "Experimental"
+msgstr "Eksperymentalne"
+
+msgid "Digital voice is new in FalconSDR and hasn't been tested with every system and receiver yet."
+msgstr "Głos cyfrowy to nowość w FalconSDR i nie był jeszcze sprawdzony na każdym systemie i odbiorniku."
+
+msgid "If something doesn't work, please report it - it helps a lot:"
+msgstr "Jeśli coś nie działa, zgłoś to - to bardzo pomaga:"
+
+msgid "Downloads the dsd-fme decoder (about 40 MB) from its authors."
+msgstr "Pobiera dekoder dsd-fme (ok. 40 MB) od jego autorów."
+
+msgid "Downloads the dsd-fme decoder from its authors and compiles it on this machine - a few minutes."
+msgstr "Pobiera dekoder dsd-fme od jego autorów i kompiluje go na tym komputerze - kilka minut."
+
+msgid "Uninstall digital voice"
+msgstr "Odinstaluj głos cyfrowy"
+
+msgid "Removes the dsd-fme decoder. DMR and C4FM channels then play as plain NFM."
+msgstr "Usuwa dekoder dsd-fme. Kanały DMR i C4FM będą wtedy odtwarzane jako zwykłe NFM."
+
+msgid "Digital voice installed - pick DMR or C4FM as a band's or channel's modulation."
+msgstr "Głos cyfrowy zainstalowany - wybierz DMR lub C4FM jako modulację pasma albo kanału."
+
+msgid "Optional add-on: listens to DMR and Yaesu System Fusion (C4FM) voice using dsd-fme, an independent open-source decoder that FalconSDR downloads from its authors. It runs on the machine that scans. Encrypted calls stay muted - nothing is ever decrypted."
+msgstr "Opcjonalny dodatek: odsłuch głosu DMR i Yaesu System Fusion (C4FM) przez dsd-fme - niezależny dekoder open source, który FalconSDR pobiera od jego autorów. Działa na komputerze, który skanuje. Rozmowy szyfrowane pozostają wyciszone - nic nie jest odszyfrowywane."
+
+msgid "Decoder"
+msgstr "Dekoder"
+
+msgid "Installed. Choose DMR or C4FM as the modulation of a band or a Memory List channel."
+msgstr "Zainstalowany. Wybierz DMR lub C4FM jako modulację pasma albo kanału z Listy pamięci."
+
+msgid "Installing…"
+msgstr "Instalowanie…"
+
+msgid "Not installed."
+msgstr "Nie zainstalowany."
+
+msgid "installed"
+msgstr "zainstalowany"
+
+msgid "Installation failed: {error}"
+msgstr "Instalacja nie powiodła się: {error}"
+
+msgid "It needs a compiler and a few libraries. Install them with this command (in a terminal on this machine), then press Install again:"
+msgstr "Potrzebny jest kompilator i kilka bibliotek. Zainstaluj je tym poleceniem (w terminalu na tym komputerze), a potem ponownie naciśnij Zainstaluj:"
+
+msgid "{freq:.4f} MHz: no digital voice decoded - recording discarded"
+msgstr "{freq:.4f} MHz: nie zdekodowano głosu cyfrowego - nagranie odrzucone"

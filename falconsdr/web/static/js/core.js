@@ -159,9 +159,21 @@ export function toggle(label, checked, onchange, { hint, disabled } = {}) {
   return h('label.switch', input, h('span.label', label, hint ? h('small', hint) : null));
 }
 
+// options: [value, label] or [value, label, onpick] - an option with onpick is
+// shown greyed out (not available yet): picking it keeps the previous value
+// and calls onpick instead (e.g. to point at where it can be installed).
 export function select(options, value, onchange, attrs = {}) {
-  const el = h('select', { ...attrs, onchange: (e) => onchange(e.target.value, e) },
-    options.map(([v, label]) => h('option', { value: v, selected: String(v) === String(value) }, label)));
+  const picks = new Map(options.filter((o) => o[2]).map(([v, , onpick]) => [String(v), onpick]));
+  let prev = String(value);
+  const el = h('select', {
+    ...attrs,
+    onchange: (e) => {
+      const onpick = picks.get(e.target.value);
+      if (onpick) { e.target.value = prev; onpick(); return; }
+      prev = e.target.value;
+      onchange(e.target.value, e);
+    },
+  }, options.map(([v, label, onpick]) => h('option', { value: v, selected: String(v) === String(value), class: onpick ? 'unavailable' : null }, label)));
   return el;
 }
 

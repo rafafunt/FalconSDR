@@ -60,6 +60,41 @@ def _resample_rate(x: np.ndarray, from_rate: float, to_rate: float) -> np.ndarra
     return resample_poly(x, up // g, down // g)
 
 
+class StreamResampler:
+    """resample_poly over a stream, block by block, with the same output as
+    one call on the whole stream: each block is processed with enough of the
+    previous one in front that the filter never sees the zero padding at a
+    block edge (resample_poly alone would put a glitch every block - harmless
+    for voice, but a lost symbol every 30 ms for digital voice). The price is
+    a delay of half the filter, well under a millisecond."""
+
+    _HALF_LEN = 10  # resample_poly's default: filter half-length = 10 * max(up, down) taps
+
+    def __init__(self, from_rate: float, to_rate: float):
+        up, down = int(round(to_rate)), int(round(from_rate))
+        g = np.gcd(up, down)
+        self.up, self.down = up // g, down // g
+        self._half = -(-self._HALF_LEN * max(self.up, self.down) // self.up)  # in input samples
+        self._hist = np.zeros(0, dtype=np.complex64)
+        self._start = 0   # stream index of _hist[0], always a multiple of down
+        self._next = 0    # next output index to emit
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        seg = np.concatenate([self._hist, x])
+        end = self._start + seg.size
+        y = resample_poly(seg, self.up, self.down)
+        first = self._start * self.up // self.down  # output index of y[0]
+        last = (end - self._half) * self.up // self.down  # outputs from here on still see the edge
+        lo = max(self._next, first)
+        out = y[lo - first:max(lo, last) - first]
+        self._next = max(self._next, last)
+        keep_from = (self._next * self.down // self.up - 2 * self._half) // self.down * self.down
+        keep_from = max(self._start, keep_from)
+        self._hist = seg[keep_from - self._start:]
+        self._start = keep_from
+        return out
+
+
 class Demodulator:
     """Converts IQ at `sample_rate` into mono audio at `audio_rate`, keeping
     state (DC estimate, FM phase, filter memory) across calls so a burst
@@ -80,6 +115,7 @@ class Demodulator:
         self._ssb_mix_index = 0
         self._voice_lpf_ba = None
         self._voice_lpf_zi = None
+        self._stream_resampler: StreamResampler | None = None  # discriminate() only
 
     def reset(self) -> None:
         self._prev_phase = 0.0
@@ -146,6 +182,23 @@ class Demodulator:
         if intermediate_rate != self.audio_rate:
             audio = _resample_rate(audio, intermediate_rate, self.audio_rate)
         return audio
+
+    def discriminate(self, iq: np.ndarray, offset_hz: float, rate: int) -> np.ndarray:
+        """Raw FM discriminator output at ``rate`` (radians/sample) - what a
+        digital voice decoder needs: no voice filter, no de-emphasis, no AGC."""
+        if iq.size == 0:
+            return np.zeros(0, dtype=np.float32)
+        if offset_hz:
+            n = iq.size
+            t = (self._mix_index + np.arange(n)) / self.sample_rate
+            iq = iq * np.exp(-2j * np.pi * offset_hz * t)
+            self._mix_index = (self._mix_index + n) % int(round(self.sample_rate))
+        if self._stream_resampler is None:
+            self._stream_resampler = StreamResampler(self.sample_rate, rate)
+        baseband = self._stream_resampler.process(iq)
+        phase = np.unwrap(np.concatenate(([self._prev_phase], np.angle(baseband))))
+        self._prev_phase = phase[-1]
+        return np.diff(phase).astype(np.float32)
 
     def demod(self, iq: np.ndarray, modulation: Modulation, offset_hz: float = 0.0) -> np.ndarray:
         """Returns mono audio as a 1-D float32 array."""

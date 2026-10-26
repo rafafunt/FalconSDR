@@ -22,6 +22,8 @@ class Modulation(str, Enum):
     SSB = "SSB"  # user-facing only - resolve_ssb_sideband() turns this into USB/LSB
     USB = "USB"
     LSB = "LSB"
+    DMR = "DMR"  # digital - digital_voice.py, needs the optional dsd-fme add-on
+    YSF = "YSF"  # Yaesu System Fusion (C4FM)
 
 
 # Amateur convention: LSB below 10 MHz, USB above - except 60 m, which is USB.

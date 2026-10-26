@@ -561,6 +561,28 @@ catalog loads; wrap them in a function called at point of use
     `driverHelp()`, shown while `RECONNECTING` and in the SDR device card)
     keys off `capabilities.platform`.
 
+45. **Digital voice (DMR, C4FM/YSF) is an optional add-on, never bundled**
+    (`digital_voice.py`): dsd-fme + mbelib (AMBE/IMBE vocoder - patent-
+    encumbered, so FalconSDR must never distribute it) are fetched from their
+    authors on the user's machine - the authors' Windows zip, pinned source
+    built into `DSD_DIR` elsewhere (`install_hint()` gives the root command for
+    the -dev packages; the app never asks for a password). `dsd_executable()`
+    is the one availability check. It installs on the *scanning* machine
+    (`/api/digital`), unlike Whisper (gotcha 18): decoding is live. A digital
+    slot runs its own dsd-fme process (`-i - -o -`), fed by
+    `Demodulator.discriminate()` - raw 48 kHz discriminator through a
+    `StreamResampler`, because per-block `resample_poly` puts an edge glitch
+    every 30 ms = a lost DMR symbol per burst. `DsdDecoder.read(n)` always
+    returns exactly n samples (zeros while nothing is decoded) so the slot's
+    timeline never drifts. Only decoded audio is `real` for the Recorder - an
+    encrypted call is muted by dsd-fme and must not leave a silent file.
+    **`DsdDecoder`'s argument list stays input/output/mode only - never add a
+    key or privacy option** (`-b`, `-H`, `-1`, `-k`/`-K`, `-4`, ... - a dozen,
+    see `dsd-fme -h`): no decryption, ever. Without the add-on, DMR/YSF channels play as NFM. In the
+    UI, `modOptions()` (bands.js) greys them out and `select()`'s onpick sends
+    the user to `#/settings/digital`; the "experimental, please report bugs"
+    note appears only in the Install dialog - no banners.
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch

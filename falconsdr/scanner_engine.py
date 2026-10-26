@@ -30,6 +30,7 @@ from .channelizer import (
     plan_windows, spectrum_cumsum, spectrum_snapshot,
 )
 from .config import AppConfig, CONFIG_DIR, RecordingConfig, VfoRangeConfig
+from . import digital_voice
 from .dsp import Demodulator, NoiseReducer
 from .i18n import tr
 from . import schedule
@@ -291,6 +292,10 @@ class _Slot:
         # Per-tick levels for _detect_reflections(); every slot appends in the
         # same tick, so the histories are time-aligned without timestamps.
         self.level_history: deque[float] = deque(maxlen=_REFLECTION_HISTORY_TICKS)
+        # Digital voice (DMR/YSF): its dsd-fme process, None for analog - or
+        # when the add-on is missing, then it plays as NFM.
+        self.dsd: digital_voice.DsdDecoder | None = None
+        self.announced_call: tuple[str, str] = ("", "")
 
 
 class Signal:
@@ -363,6 +368,7 @@ class ScannerEngine(threading.Thread):
         self._last_spectrum_submit_at = 0.0
         self._edge_compensation: EdgeCompensation | None = None
         self._logged_checkpoints: set[str] = set()  # see _checkpoint_once()
+        self._dsd_warned = False
 
         # Guards the scheduling state below: _rebuild_windows() replaces it
         # from the API thread while _next_window() reads it on this thread.
@@ -1480,7 +1486,17 @@ class ScannerEngine(threading.Thread):
     def _process_one_slot(self, slot: _Slot, iq: np.ndarray, squelched: bool) -> None:
         """Demodulates one slot from the shared, read-only ``iq`` (may run on
         the slot pool)."""
-        audio = slot.demod.demod(iq, slot.modulation, slot.offset_hz)
+        if slot.dsd is not None:
+            slot.dsd.feed(slot.demod.discriminate(iq, slot.offset_hz, digital_voice.DISCRIMINATOR_RATE))
+            audio = slot.dsd.read(round(iq.size * AUDIO_RATE / slot.demod.sample_rate))
+            call = (slot.dsd.talkgroup, slot.dsd.source)
+            if call[0] and call != slot.announced_call:
+                slot.announced_call = call
+                self.signals.log.emit(tr("{mod} {freq:.4f} MHz: to {tg} from {src}").format(
+                    mod=slot.modulation.value, freq=slot.freq_hz / 1e6, tg=call[0], src=call[1]))
+        else:
+            mod = Modulation.NFM if slot.modulation in digital_voice.DIGITAL_MODULATIONS else slot.modulation
+            audio = slot.demod.demod(iq, mod, slot.offset_hz)
         self._play_and_record_slot(slot, audio, squelched=squelched)
 
     def _at_recording_capacity(self) -> bool:
@@ -1502,6 +1518,14 @@ class ScannerEngine(threading.Thread):
         offset_hz = float(freq_hz - window.center_hz)
         slot = _Slot(freq_hz, name, modulation, offset_hz, demod, noise_reducer, recorder)
         slot.window = window  # remembered for _register_recency_boost on close
+        if modulation in digital_voice.DIGITAL_MODULATIONS:
+            try:
+                slot.dsd = digital_voice.DsdDecoder(modulation, AUDIO_RATE)
+            except (RuntimeError, OSError) as exc:
+                if not self._dsd_warned:  # once per scan, not once per transmission
+                    self._dsd_warned = True
+                    self.signals.log.emit(tr("Digital voice is not available ({error}) - playing {mod} channels as NFM").format(
+                        error=exc, mod=modulation.value))
         self._slots[freq_hz] = slot
 
         # Higher weight wins the live speaker; a tie keeps whichever slot
@@ -1550,14 +1574,20 @@ class ScannerEngine(threading.Thread):
         slot = self._slots.pop(freq_hz, None)
         if slot is None:
             return
+        if slot.dsd is not None:
+            slot.dsd.close()
+            slot.meta.update(talkgroup=slot.dsd.talkgroup, source=slot.dsd.source, encrypted=slot.dsd.encrypted)
+            if slot.dsd.encrypted:
+                self.signals.log.emit(tr("{freq:.4f} MHz: encrypted - not decoded").format(freq=freq_hz / 1e6))
         finished_path = None
         if self.config.recording.enabled:
             finished_path = slot.recorder.end_transmission()
             slot.recorder.stop_session()
-            if finished_path is None and reason == "linger":
+            if finished_path is None and reason == "linger" and not (slot.dsd and slot.dsd.encrypted):
                 # Recorder dropped it - say so, a silent loss looks like a bug.
                 self.signals.log.emit(
-                    tr("{freq:.4f} MHz: nothing above the squelch level - recording discarded").format(freq=freq_hz / 1e6)
+                    (tr("{freq:.4f} MHz: no digital voice decoded - recording discarded") if slot.dsd
+                     else tr("{freq:.4f} MHz: nothing above the squelch level - recording discarded")).format(freq=freq_hz / 1e6)
                 )
             if finished_path is not None and reason == "reflection":
                 # A reflection is never a real transmission. Renamed, not
@@ -1667,14 +1697,16 @@ class ScannerEngine(threading.Thread):
             # audible click). The demodulator ran every tick and needs no reset.
             slot.noise_reducer.reset()
             slot.was_squelched = False
-        mono = self._apply_noise_reduction(slot, audio)
+        # Vocoder output is already clean; a spectral gate only damages it.
+        mono = audio if slot.dsd is not None else self._apply_noise_reduction(slot, audio)
         if slot.freq_hz == self._primary_freq:
             self.signals.live_audio_ready.emit(mono)
         if slot.freq_hz == self._primary_freq:
             # Manual recording follows the primary slot regardless of mute.
             self._feed_manual_recording(mono, freq_hz=slot.freq_hz)
         if self.config.recording.enabled:
-            slot.recorder.write_audio(mono)
+            # Digital: only decoded voice makes a recording worth keeping (not an encrypted call's silence).
+            slot.recorder.write_audio(mono, real=slot.dsd is None or bool(mono.any()))
 
     def _apply_noise_reduction(self, slot: _Slot, audio):
         enabled, strength = self._effective_noise_reduction(slot.window)

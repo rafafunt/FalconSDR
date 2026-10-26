@@ -2,7 +2,23 @@
 import { carrierHz, fmtChannel, fmtMHz, formDialog, h, icon, mount, select, slider, t, toggle } from '../core.js';
 import { S, cfg } from '../state.js';
 
-export const MODULATIONS = ['AM', 'NFM', 'WFM', 'SSB'];
+export const MODULATIONS = ['AM', 'NFM', 'WFM', 'SSB', 'DMR', 'YSF'];
+const DIGITAL = ['DMR', 'YSF'];
+export const modLabel = (m) => (m === 'YSF' ? 'C4FM (YSF)' : m);
+
+// Digital voice is an optional add-on (Settings → Digital voice): until it is
+// installed DMR/C4FM show greyed out, and picking one leads there instead.
+export function modOptions() {
+  const ready = S.settings.capabilities.digital;
+  return MODULATIONS.map((m) => (DIGITAL.includes(m) && !ready
+    ? [m, `${modLabel(m)} · ${t('optional download')}`, offerDigital]
+    : [m, modLabel(m)]));
+}
+
+function offerDigital() {
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));  // closes the form dialog it was picked in
+  location.hash = '#/settings/digital';
+}
 export const OVERRIDES = ['trigger_level_dbfs', 'tuning_time_ms', 'linger_time_ms', 'gain_mode', 'gain_db', 'noise_reduction_enabled', 'noise_reduction_strength', 'squelch_enabled', 'squelch_offset_db'];
 export const hasOverrides = (b) => OVERRIDES.some((k) => b[k] !== null && b[k] !== undefined);
 export const clearOverrides = (b) => OVERRIDES.forEach((k) => { b[k] = null; });
@@ -15,8 +31,8 @@ export function newBand(fields) {
 }
 
 export function bandRange(b) {
-  if (b.start_hz === b.stop_hz) return `${fmtMHz(b.start_hz, 4)} MHz · ${b.modulation}`;
-  return `${fmtMHz(b.start_hz, 3)} – ${fmtMHz(b.stop_hz, 3)} MHz · ${(b.step_hz / 1000).toFixed(b.step_hz % 1000 ? 3 : 0)} kHz · ${b.modulation}${b.weight ? ` · W ${b.weight}` : ''}`;
+  if (b.start_hz === b.stop_hz) return `${fmtMHz(b.start_hz, 4)} MHz · ${modLabel(b.modulation)}`;
+  return `${fmtMHz(b.start_hz, 3)} – ${fmtMHz(b.stop_hz, 3)} MHz · ${(b.step_hz / 1000).toFixed(b.step_hz % 1000 ? 3 : 0)} kHz · ${modLabel(b.modulation)}${b.weight ? ` · W ${b.weight}` : ''}`;
 }
 
 export function presetPicker(onAdd) {
@@ -33,7 +49,7 @@ export async function askCustomRange() {
     { key: 'start', label: t('Start (MHz)'), type: 'number', value: 118 },
     { key: 'stop', label: t('Stop (MHz)'), type: 'number', value: 137 },
     { key: 'step', label: t('Step (kHz)'), type: 'number', value: 25 },
-    { key: 'mod', label: t('Modulation'), type: 'select', value: 'AM', options: MODULATIONS.map((m) => [m, m]) },
+    { key: 'mod', label: t('Modulation'), type: 'select', value: 'AM', options: modOptions() },
   ], t('Add'));
   if (!v || !(v.stop > v.start) || !(v.step > 0)) return null;
   return newBand({ label: v.label || t('Custom range'), start_hz: Math.round(v.start * 1e6), stop_hz: Math.round(v.stop * 1e6), step_hz: Math.round(v.step * 1e3), modulation: v.mod });
@@ -43,7 +59,7 @@ export async function askSingleFrequency() {
   const v = await formDialog(t('Single frequency'), [
     { key: 'freq', label: t('Frequency (MHz)'), type: 'number', value: 121.5, hint: t('Watched alongside the bands, e.g. 121.500 MHz guard') },
     { key: 'label', label: t('Name'), value: '' },
-    { key: 'mod', label: t('Modulation'), type: 'select', value: 'AM', options: MODULATIONS.map((m) => [m, m]) },
+    { key: 'mod', label: t('Modulation'), type: 'select', value: 'AM', options: modOptions() },
   ], t('Add'));
   if (!v || !(v.freq > 0)) return null;
   const hz = carrierHz(v.freq);
@@ -59,7 +75,7 @@ export function bandEditor(b, save, rerender) {
     num(single ? t('Frequency (MHz)') : t('Start (MHz)'), (b.start_hz / 1e6).toFixed(4), (v) => { b.start_hz = Math.round(v * 1e6); if (single) b.stop_hz = b.start_hz; }),
     single ? null : num(t('Stop (MHz)'), (b.stop_hz / 1e6).toFixed(4), (v) => { b.stop_hz = Math.round(v * 1e6); }),
     single ? null : num(t('Step (kHz)'), b.step_hz / 1000, (v) => { b.step_hz = Math.round(v * 1000); }),
-    h('label.field', t('Modulation'), select(MODULATIONS.map((m) => [m, m]), b.modulation, (v) => { b.modulation = v; save(); })),
+    h('label.field', t('Modulation'), select(modOptions(), b.modulation, (v) => { b.modulation = v; save(); })),
     num(t('Priority weight'), b.weight, (v) => { b.weight = v; }, { min: 0, max: 20, step: 0.5, title: t('0 = normal. Higher = visited more often than other weighted bands (1 vs 2 = twice as often).') }));
   // Per-band overrides: unticked = follow the global setting. Values that
   // only make sense together (on/off + strength, mode + gain) share one tile.

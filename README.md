@@ -30,6 +30,9 @@ headless receiver you listen to from any phone or PC on your network.
   reduction.
 - Blacklist for carriers and interference, one click from the live view.
 - AM, NFM, WFM and SSB demodulation; software or hardware gain control.
+- Optional, experimental digital voice: DMR and Yaesu System Fusion (C4FM)
+  through [dsd-fme](https://github.com/lwvmobile/dsd-fme), installed from
+  Settings → Digital voice. Encrypted calls stay muted.
 
 **Listening**
 - Live audio in the browser, with a frequency display, signal level and a
@@ -338,3 +341,8 @@ build). Transcription software and Whisper models are not bundled: they are
 downloaded on the user's own request from their publishers (faster-whisper,
 CTranslate2 and the default models `Systran/faster-whisper-large-v3` and
 `jacktol/whisper-medium.en-fine-tuned-for-ATC-faster-whisper` are MIT-licensed).
+Neither is the digital voice decoder: on request, the app downloads
+[dsd-fme](https://github.com/lwvmobile/dsd-fme) and
+[mbelib](https://github.com/lwvmobile/mbelib) from their authors (the
+authors' Windows build; source compiled on the user's machine elsewhere) and
+runs dsd-fme as a separate program.

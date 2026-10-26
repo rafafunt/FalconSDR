@@ -25,7 +25,7 @@ from urllib.error import URLError
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
-from .. import autostart, i18n, military_presets
+from .. import autostart, digital_voice, i18n, military_presets
 from ..config import AppConfig
 from ..controller import Controller, channel_dict, channel_from_dict
 from ..military_presets import BandPreset
@@ -330,6 +330,18 @@ def make_handler(app: App):
             autostart.set_enabled(bool(self._body().get("enabled")))
             self._json({"enabled": autostart.is_enabled()})
 
+        def digital(self, _query: dict) -> None:
+            """Optional digital voice add-on (digital_voice.py) - installed on
+            this machine, the one that scans."""
+            action = self.path.split("?")[0].rsplit("/", 1)[-1]
+            if action == "install":
+                digital_voice.start_install()
+            elif action == "uninstall":
+                if ctl.live()["running"]:
+                    raise ValueError(i18n.tr("Stop the scanner first"))
+                digital_voice.uninstall()
+            self._json(digital_voice.install_state())
+
         def reset(self, _query: dict) -> None:
             ctl.reset_to_defaults()
             self._json({"ok": True})
@@ -562,6 +574,9 @@ def make_handler(app: App):
         ("POST", "/api/access"): Handler.access,
         ("POST", "/api/quit"): Handler.quit,
         ("POST", "/api/autostart"): Handler.autostart,
+        ("GET", "/api/digital"): Handler.digital,
+        ("POST", "/api/digital/install"): Handler.digital,
+        ("POST", "/api/digital/uninstall"): Handler.digital,
         ("POST", "/api/client/quit"): Handler.quit,
         ("POST", "/api/client/connect"): Handler.connect_client,
         ("GET", "/api/client/status"): Handler.client_status,

@@ -2,8 +2,7 @@
 // own modulation, priority weight and on/off) and the blacklist.
 import { carrierHz, confirmDialog, fmtChannel, fmtMHz, formDialog, h, icon, mount, seg, t, toast, typedAs833 } from '../core.js';
 import { S, cfg, loadSettings, on, patchConfig, saveBlacklist, saveChannels } from '../state.js';
-
-const MODULATIONS = ['AM', 'NFM', 'WFM', 'SSB'];
+import { modLabel, modOptions } from './bands.js';
 let tab = 'memory';
 
 export function channelsView(root) {
@@ -78,7 +77,7 @@ export function channelsView(root) {
     const v = await formDialog(isNew ? t('Add channel') : t('Edit channel'), [
       { key: 'freq', label: t('Frequency (MHz)'), type: 'number', value: ch ? fmtChannel(ch.freq_hz) : '', hint: t('Airband: type the channel as published, e.g. 126.805') },
       { key: 'name', label: t('Name'), value: ch ? ch.name : '', placeholder: t('e.g. Downtown Tower') },
-      { key: 'mod', label: t('Modulation'), type: 'select', value: ch ? ch.modulation : 'AM', options: MODULATIONS.map((m) => [m, m]) },
+      { key: 'mod', label: t('Modulation'), type: 'select', value: ch ? ch.modulation : 'AM', options: modOptions() },
       { key: 'folder', label: t('Folder'), type: 'select', value: ch ? ch.folder : '', options: [['', t('(no folder)')], ...fl.map((f) => [f, f])] },
       { key: 'weight', label: t('Priority weight'), type: 'number', value: ch ? ch.weight : 0, hint: t('0 = normal. Higher = checked more often.') },
     ], isNew ? t('Add') : t('Save'));
@@ -138,7 +137,7 @@ export function channelsView(root) {
       h('td', h('label.switch', h('input', { type: 'checkbox', checked: ch.enabled, title: t('Scan this channel'), onchange: (e) => { ch.enabled = e.target.checked; save(); } }))),
       h('td.mono', { title: `${fmtMHz(ch.freq_hz, 4)} MHz` }, fmtChannel(ch.freq_hz)),
       h('td', ch.name || h('span.faint', t('(unnamed)'))),
-      h('td', h('span.chip', ch.modulation)),
+      h('td', h('span.chip', modLabel(ch.modulation))),
       h('td', h('input', { type: 'number', min: 0, max: 20, step: 0.5, value: ch.weight, style: { width: '74px' }, title: t('Priority weight'), onchange: (e) => { ch.weight = +e.target.value || 0; save(); } })),
       h('td', h('div.actions',
         h('button.icon.ghost', { title: t('Edit'), onclick: () => editChannel(ch) }, icon('edit')),

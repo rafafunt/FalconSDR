@@ -158,6 +158,9 @@ input, select, textarea {
 }
 input::placeholder, textarea::placeholder { color: var(--secondary); }
 select { cursor: pointer; }
+option.unavailable { color: var(--secondary); }
+.card.spotlight { animation: spotlight 2.5s ease-out; }
+@keyframes spotlight { from { box-shadow: 0 0 0 3px var(--accent); } }
 textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 input[type="number"] { font-family: var(--mono); }
 input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color: var(--accent); }
@@ -378,7 +381,7 @@ td .actions { display: flex; gap: 2px; justify-content: flex-end; }
 .setting p { margin: 2px 0 0; color: var(--secondary); font-size: 13px; }
 .worker { border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 12px; background: var(--bg); }
 @media (prefers-color-scheme: dark) { .worker { background: var(--fill); } }
-.worker pre { margin: 0; max-height: 130px; overflow: auto; font: 12px/1.45 var(--mono); color: var(--secondary); white-space: pre-wrap; }
+.worker pre, pre.log { margin: 0; max-height: 130px; overflow: auto; font: 12px/1.45 var(--mono); color: var(--secondary); white-space: pre-wrap; }
 code.cmd { display: block; font: 13px var(--mono); background: var(--fill); padding: 10px 12px; border-radius: 8px; overflow-x: auto; white-space: nowrap; }
 details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 

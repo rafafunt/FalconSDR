@@ -771,7 +771,7 @@ function settings() {
     version: FX.version, config: st.config, channels: st.channels, blacklist: st.blacklist, presets: st.presets,
     devices: DEVICES.map((d) => ({ driver: d.driver, args: '', label: tr(d.label), rate: d.rate })),
     languages: FX.languages,
-    capabilities: { ffmpeg: true, transcription_installed: true, platform: 'linux', autostart: null },
+    capabilities: { ffmpeg: true, transcription_installed: true, digital: false, platform: 'linux', autostart: null },
     curated: FX.curated, mode: 'local', password_set: false,
   };
 }
@@ -893,6 +893,9 @@ const ROUTES = {
   'POST /api/access': notInDemo,
   'POST /api/quit': notInDemo,
   'POST /api/autostart': notInDemo,
+  'GET /api/digital': () => ({ installed: false, running: false, log: [], error: '', hint: '' }),
+  'POST /api/digital/install': notInDemo,
+  'POST /api/digital/uninstall': notInDemo,
   'POST /api/client/connect': notInDemo,
   'GET /api/library': (req, q) => query(q),
   'GET /api/library/ids': (req, q) => select(q).map((e) => e.id),

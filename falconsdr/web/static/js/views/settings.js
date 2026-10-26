@@ -5,10 +5,12 @@ import {
   api, confirmDialog, errorToast, fmtAgo, fmtBytes, fmtDate, fmtMHz, formDialog, h, icon, lang, modal, mount, qs, select, t, toast, toggle,
 } from '../core.js';
 import { S, cfg, confirmRecording, loadSettings, on, patchConfig } from '../state.js';
+import { modLabel, modOptions } from './bands.js';
 
 const SECTIONS = [
   ['recording', () => t('Recording')],
   ['transcription', () => t('Transcription & computers')],
+  ['digital', () => t('Digital voice (DMR, C4FM)')],
   ['presets', () => t('Band presets')],
   ['location', () => t('Location')],
   ['appearance', () => t('Language & listening')],
@@ -217,6 +219,52 @@ export function settingsView(root, hash) {
       info.log && info.log.length ? h('pre', info.log.slice(-6).join('\n')) : null);
   }
 
+  // ---------------------------------------------------------- digital voice (optional add-on)
+  let digitalPoll = null;
+  async function renderDigital() {
+    let st;
+    try { st = await api.get('/api/digital'); } catch (e) { errorToast(e); return; }
+    const windows = S.settings.capabilities.platform === 'win32';
+    const install = async () => {
+      // Shown once, here, at the moment of choosing it - not as a banner elsewhere.
+      const ok = await modal(t('Install digital voice'), h('div.col', { style: { gap: '10px' } },
+        h('p', h('span.chip.warn', t('Experimental')), ' ', t('Digital voice is new in FalconSDR and hasn\'t been tested with every system and receiver yet.')),
+        h('p', t('If something doesn\'t work, please report it - it helps a lot:'), ' ',
+          h('a', { href: 'https://github.com/rafafunt/FalconSDR/issues', target: '_blank', rel: 'noopener' }, 'github.com/rafafunt/FalconSDR/issues')),
+        h('p.small.muted', windows ? t('Downloads the dsd-fme decoder (about 40 MB) from its authors.')
+          : t('Downloads the dsd-fme decoder from its authors and compiles it on this machine - a few minutes.'))),
+      [[t('Cancel'), false, 'ghost'], [t('Install'), true, 'primary']]);
+      if (!ok) return;
+      try { await api.post('/api/digital/install'); } catch (e) { errorToast(e); return; }
+      renderDigital();
+    };
+    const uninstall = async () => {
+      if (!(await confirmDialog(t('Uninstall digital voice'), t('Removes the dsd-fme decoder. DMR and C4FM channels then play as plain NFM.'), t('Uninstall'), true))) return;
+      try { await api.post('/api/digital/uninstall'); } catch (e) { errorToast(e); return; }
+      await loadSettings(); renderDigital();
+    };
+    clearTimeout(digitalPoll);
+    if (st.running) digitalPoll = setTimeout(renderDigital, 1500);
+    else if (st.installed !== S.settings.capabilities.digital) {
+      await loadSettings();  // the modulation pickers follow
+      if (st.installed) toast(t('Digital voice installed - pick DMR or C4FM as a band\'s or channel\'s modulation.'), 'good');
+    }
+    mount(body('digital'),
+      h('p.muted', { style: { margin: 0 } }, t('Optional add-on: listens to DMR and Yaesu System Fusion (C4FM) voice using dsd-fme, an independent open-source decoder that FalconSDR downloads from its authors. It runs on the machine that scans. Encrypted calls stay muted - nothing is ever decrypted.')),
+      setting(t('Decoder'),
+        st.installed ? t('Installed. Choose DMR or C4FM as the modulation of a band or a Memory List channel.')
+          : st.running ? t('Installing…') : t('Not installed.'),
+        h('div.row.wrap',
+          st.installed ? h('span.chip.good', h('span.dot'), t('installed')) : null,
+          !st.installed && !st.running ? h('button.primary', { onclick: install }, icon('download'), t('Install')) : null,
+          st.installed && !st.running ? h('button.ghost.danger', { onclick: uninstall }, icon('trash'), t('Uninstall')) : null)),
+      st.error ? h('div.col', { style: { gap: '6px' } },
+        h('span', { style: { color: 'var(--red)' } }, t('Installation failed: {error}', { error: st.error })),
+        st.hint ? h('p.small.muted', { style: { margin: 0 } }, t('It needs a compiler and a few libraries. Install them with this command (in a terminal on this machine), then press Install again:')) : null,
+        st.hint ? h('code.cmd', st.hint) : null) : null,
+      st.log.length ? h('pre.log', st.log.filter((l) => l.trim()).join('\n')) : null);
+  }
+
   // ---------------------------------------------------------- connect (local mode)
   function renderConnect() {
     if (!cards.connect) return;
@@ -289,7 +337,7 @@ export function settingsView(root, hash) {
         { key: 'start', label: t('Start (MHz)'), type: 'number', value: p ? p.start_hz / 1e6 : '' },
         { key: 'stop', label: t('Stop (MHz)'), type: 'number', value: p ? p.stop_hz / 1e6 : '' },
         { key: 'step', label: t('Step (kHz)'), type: 'number', value: p ? p.step_hz / 1e3 : 25 },
-        { key: 'modulation', label: t('Modulation'), type: 'select', value: p ? p.modulation : 'AM', options: ['AM', 'NFM', 'WFM', 'SSB'].map((m) => [m, m]) },
+        { key: 'modulation', label: t('Modulation'), type: 'select', value: p ? p.modulation : 'AM', options: modOptions() },
       ]);
       if (!v || !(v.stop >= v.start) || !(v.step > 0)) return;
       try {
@@ -318,7 +366,7 @@ export function settingsView(root, hash) {
       h('div.table-wrap', h('table', h('tbody', presets.map((p) => h('tr',
         h('td', t(p.label), p.user ? h('span.chip', { style: { marginLeft: '8px' } }, t('custom')) : null),
         h('td.mono.small', p.start_hz === p.stop_hz ? fmtMHz(p.start_hz, 3) : `${fmtMHz(p.start_hz, 3)}–${fmtMHz(p.stop_hz, 3)}`),
-        h('td.small', p.modulation),
+        h('td.small', modLabel(p.modulation)),
         h('td', h('div.actions',
           h('button.icon.ghost', { title: t('Edit'), onclick: () => edit(p) }, icon('edit')),
           h('button.icon.ghost', {
@@ -380,12 +428,15 @@ export function settingsView(root, hash) {
   }
 
   function renderAll() {
-    renderRecording(); renderStorage(); renderTranscription(); renderConnect(); renderAccess();
+    renderRecording(); renderStorage(); renderTranscription(); renderDigital(); renderConnect(); renderAccess();
     renderLocation(); renderPresets(); renderAppearance(); renderAdvanced();
   }
   renderAll();
   timers.push(setInterval(loadWorkers, 3000));
   const sub = (hash.match(/^#\/settings\/(\w+)/) || [])[1];
-  if (sub && cards[sub]) setTimeout(() => cards[sub].scrollIntoView({ block: 'start' }), 50);
-  return { destroy() { timers.forEach(clearInterval); offs.forEach((f) => f()); } };
+  if (sub && cards[sub]) {
+    setTimeout(() => cards[sub].scrollIntoView({ block: 'start' }), 50);
+    cards[sub].classList.add('spotlight');  // arrived from a link (e.g. a greyed-out modulation) - show where
+  }
+  return { destroy() { timers.forEach(clearInterval); clearTimeout(digitalPoll); offs.forEach((f) => f()); } };
 }

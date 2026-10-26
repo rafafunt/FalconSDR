@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from . import __version__, autostart, i18n, military_presets, schedule, storage
+from . import __version__, autostart, digital_voice, i18n, military_presets, schedule, storage
 from .audio_transcode import ffmpeg_available
 from .config import DEFAULT_RECORDINGS_DIR, AppConfig, ScheduleEntry, VfoRangeConfig, _from_dict
 from .models import BlacklistEntry, Channel, Modulation, snap_airband_hz
@@ -307,6 +307,7 @@ class Controller:
             "capabilities": {
                 "ffmpeg": ffmpeg_available(),
                 "transcription_installed": is_transcription_installed(),
+                "digital": digital_voice.is_digital_installed(),
                 "platform": sys.platform,
                 "autostart": autostart.is_enabled() if autostart.supported() else None,
             },
