@@ -6,7 +6,7 @@
 
 const RATE = 12500;
 const STATE_KEY = '/demo/state.json';
-const STATE_VERSION = 3;  // bump when saved state stops matching the code (clip ids, defaults)
+const STATE_VERSION = 4;  // bump when saved state stops matching the code (clip ids, defaults)
 // Two virtual receivers; picking one sets its capture width (demo.js).
 const DEVICES = [
   { driver: 'demo-rtl', label: 'Demo RTL-SDR (simulated, 2.4 MHz)', rate: 2.4e6, gain: [0, 49.6] },
@@ -88,8 +88,10 @@ function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     st.running = sim.running;
-    const cache = await caches.open('falconsdr-demo');
-    await cache.put(STATE_KEY, new Response(JSON.stringify(st), { headers: { 'Content-Type': 'application/json' } }));
+    try {
+      const cache = await caches.open('falconsdr-demo');
+      await cache.put(STATE_KEY, new Response(JSON.stringify(st), { headers: { 'Content-Type': 'application/json' } }));
+    } catch { /* no Cache Storage (some in-app browsers): the demo just starts fresh next time */ }
   }, 400);
 }
 
@@ -98,7 +100,8 @@ let ready = null;
 function init() {
   ready ||= (async () => {
     [FX, CLIPS] = await Promise.all(['/demo/fixtures.json', '/demo/audio/clips.json'].map((u) => fetch(u, { cache: 'no-cache' }).then((r) => r.json())));
-    const saved = await (await caches.open('falconsdr-demo')).match(STATE_KEY);
+    let saved = null;
+    try { saved = await (await caches.open('falconsdr-demo')).match(STATE_KEY); } catch { /* see save() */ }
     st = saved ? await saved.json() : null;
     if (!st || st.version !== `${FX.version}/${STATE_VERSION}`) st = freshState(st);
     addLog(tr('Ready.'));
@@ -133,6 +136,9 @@ function defaultConfig() {
   c.recording.output_dir = '/home/demo/FalconSDR/recordings';
   c.bands = [bandFrom('civil_air', true), bandFrom('pmr446', true), bandFrom('ham_2m', true), bandFrom('fm_broadcast', false)];
   c.workers = {};
+  // Nothing real can be heard or recorded here - the app shows its legal notices once it's installed.
+  const langs = FX.languages.map((l) => l.code);
+  c.legal_disclaimer = { launch_seen_languages: langs, recording_seen_languages: langs };
   c.squelch_enabled = true;
   c.squelch_offset_db = -3;
   return c;
@@ -158,7 +164,6 @@ function freshState(old) {
     library: [],
     running: false,
   };
-  if (old) s.config.legal_disclaimer = old.config.legal_disclaimer;  // like "Reset to defaults"
   seedLibrary(s);
   return s;
 }
@@ -952,6 +957,9 @@ async function handle(req, url) {
   }
 }
 
+// Also loaded as a plain page script where service workers aren't available
+// (demo.js inPage()): the listeners below then never fire and handle() is
+// called directly.
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 // A hard reload bypasses the worker - the page then asks to be taken over again.

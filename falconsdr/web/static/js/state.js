@@ -73,9 +73,11 @@ async function poll() {
   try {
     const live = await api.get('/api/live?since_log=' + S.logId);
     S.live = live;
-    if (live.log.length) {
-      S.log = [...S.log, ...live.log].slice(-100);
-      S.logId = live.log[live.log.length - 1].id;
+    // Two polls can overlap (setFastPolling) - append each entry once.
+    const fresh = live.log.filter((e) => e.id > S.logId);
+    if (fresh.length) {
+      S.log = [...S.log, ...fresh].slice(-100);
+      S.logId = fresh[fresh.length - 1].id;
     }
     emit('live', live);
   } catch { /* server restarting - keep trying */ }

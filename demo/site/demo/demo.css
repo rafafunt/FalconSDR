@@ -27,10 +27,12 @@ body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
 @media (max-width: 860px) {
   .demo-banner { padding: 8px 16px; padding-top: max(8px, env(safe-area-inset-top)); }
+  .demo-banner { flex-wrap: nowrap; gap: 8px; }
   .demo-banner .long { display: none; }
   .demo-banner .short { display: inline; }
-  .demo-banner .text { flex-basis: 140px; }
+  .demo-banner .text { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .demo-banner button.ghost { min-width: 36px; justify-content: center; }
 }
 @media (pointer: coarse) {
-  .demo-banner a.btn, .demo-banner button { min-height: 44px; display: inline-flex; align-items: center; }
+  .demo-banner a.btn, .demo-banner button { min-height: 44px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; }
 }
