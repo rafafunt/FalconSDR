@@ -13,7 +13,7 @@ UNIT=falconsdr-receiver.service
 
 # A fresh Debian/Raspberry Pi OS Lite lacks some of these.
 if command -v apt-get >/dev/null && ! { command -v rsync && python3 -c "import ensurepip"; } >/dev/null 2>&1; then
-    apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q rsync python3-venv
+    apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rsync python3-venv >/dev/null
 fi
 
 getent group plugdev >/dev/null || groupadd --system plugdev
@@ -37,8 +37,8 @@ rsync -a --delete --exclude .venv --exclude .git --exclude '__pycache__' \
 [ -x "$DEST/.venv/bin/python" ] || python3 -m venv "$DEST/.venv"
 "$DEST/.venv/bin/pip" install --quiet --upgrade -r "$DEST/requirements.txt"
 
-install -m 644 "$SRC/packaging/linux-deb/60-rtl-sdr.rules" /etc/udev/rules.d/
-install -m 644 "$SRC/packaging/linux-deb/blacklist-rtl-dvb.conf" /etc/modprobe.d/
+install -D -m 644 "$SRC/packaging/linux-deb/60-rtl-sdr.rules" /etc/udev/rules.d/60-rtl-sdr.rules
+install -D -m 644 "$SRC/packaging/linux-deb/blacklist-rtl-dvb.conf" /etc/modprobe.d/blacklist-rtl-dvb.conf
 command -v udevadm >/dev/null && timeout 5 udevadm control --reload-rules >/dev/null 2>&1 || true
 
 # The service user owns its data and its venv (so "Install transcription" in the UI can pip into it).
