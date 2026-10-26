@@ -51,10 +51,6 @@ fi
 
 install -m 644 "$SRC/packaging/remote-server/$UNIT" /etc/systemd/system/
 systemctl daemon-reload
-if systemctl is-active --quiet "$UNIT"; then
-    systemctl restart "$UNIT"
-    echo "restarted $UNIT"
-else
-    echo "installed $UNIT - start it with: systemctl start $UNIT  (or: systemctl enable --now $UNIT)"
-fi
+systemctl enable --quiet "$UNIT"
+systemctl restart "$UNIT"  # starts it, or restarts it onto the new code
 echo "Web UI: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8765/"

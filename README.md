@@ -235,10 +235,11 @@ On a Linux machine with the SDR attached (Debian, Ubuntu, Raspberry Pi OS):
 curl -fsSL https://raw.githubusercontent.com/rafafunt/FalconSDR/master/packaging/install.sh | bash -s -- --server
 ```
 
-Run it again to update.
-
-Then open `http://<receiver-ip>:8765` from any device. See
-[packaging/remote-server/README.md](packaging/remote-server/README.md).
+It installs the latest release as a service that starts on boot and ends
+with the address to open from any device on your network
+(`http://<receiver-ip>:8765`). Run the same line again to update - settings
+and recordings are kept. Details, other versions and helper computers for
+transcription: [packaging/remote-server/README.md](packaging/remote-server/README.md).
 
 ## First steps
 

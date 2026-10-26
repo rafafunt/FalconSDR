@@ -14,14 +14,16 @@ one line installs or updates it and starts the service:
 curl -fsSL https://raw.githubusercontent.com/rafafunt/FalconSDR/master/packaging/install.sh | bash -s -- --server
 ```
 
-It keeps a checkout in `/opt/falconsdr-src` and runs `install.sh` from it;
-`FALCONSDR_REF=<branch or tag>` in front of `bash` installs another version.
-Or, from a checkout of this repository:
+It installs the latest release (`FALCONSDR_REF=<tag or branch>` in front of
+`bash` picks another), keeps its checkout in `/opt/falconsdr-src` and runs
+`install.sh` from it. Or, from a checkout of this repository:
 
 ```sh
 sudo packaging/remote-server/install.sh
-sudo systemctl enable --now falconsdr-receiver.service
 ```
+
+Either way the service is started (and on every boot) and the address to
+open is printed at the end.
 
 The script copies the app to `/opt/falconsdr`, creates its own Python
 venv there, adds the unprivileged `falconsdr` user (settings in

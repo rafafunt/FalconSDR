@@ -16,8 +16,8 @@
 #     there), and releases that don't publish the matching asset yet)
 #   - `--server` -> headless receiver: a checkout in /opt/falconsdr-src,
 #     packaging/remote-server/install.sh, systemd service started (Debian,
-#     Ubuntu, Raspberry Pi OS). FALCONSDR_REF=<branch|tag> picks the version;
-#     re-run to update.
+#     Ubuntu, Raspberry Pi OS). The latest release unless FALCONSDR_REF=
+#     <branch|tag> picks another version; re-run to update.
 #
 # After installing, unplug and replug the RTL-SDR dongle once (udev rule),
 # then run `falconsdr` - the UI opens at http://127.0.0.1:8765.
@@ -25,7 +25,7 @@ set -eu
 
 REPO="${FALCONSDR_REPO:-rafafunt/FalconSDR}"
 VERSION="${FALCONSDR_VERSION:-latest}"
-REF="${FALCONSDR_REF:-master}"
+REF="${FALCONSDR_REF:-}"
 FROM_SOURCE=0
 SERVER=0
 for a in "$@"; do
@@ -195,15 +195,27 @@ install_server() {
   if ! command -v git >/dev/null 2>&1; then
     $SUDO apt-get update -qq && $SUDO apt-get install -y -qq git ca-certificates
   fi
-  say "Fetching FalconSDR ($REF)..."
+  ref="${REF:-$(release_tag)}"
+  [ -n "$ref" ] || die "couldn't find the latest release (GitHub API) - set FALCONSDR_REF=v1.1.0 or similar"
+  say "Fetching FalconSDR ($ref)..."
   if [ -d "$src/.git" ]; then
-    $SUDO git -C "$src" fetch -q --depth 1 origin "$REF"
+    $SUDO git -C "$src" fetch -q --depth 1 origin "$ref"
     $SUDO git -C "$src" checkout -q --force FETCH_HEAD
   else
-    $SUDO git clone -q --depth 1 --branch "$REF" "https://github.com/$REPO.git" "$src"
+    $SUDO git clone -q --depth 1 --branch "$ref" "https://github.com/$REPO.git" "$src"
   fi
-  $SUDO sh "$src/packaging/remote-server/install.sh"
-  $SUDO systemctl enable --now falconsdr-receiver.service
+  $SUDO sh "$src/packaging/remote-server/install.sh" >/dev/null
+  # Also here: releases up to 1.1.0 leave the service stopped on a first install.
+  $SUDO systemctl enable --quiet --now falconsdr-receiver.service
+  version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$src/falconsdr/__init__.py")
+  ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  sleep 2
+  systemctl is-active --quiet falconsdr-receiver.service ||
+    die "FalconSDR $version is installed, but the service didn't start - see: journalctl -u falconsdr-receiver"
+  say ""
+  say "FalconSDR $version is installed and running (service falconsdr-receiver, starts on boot)."
+  say "Open it from any device on your network:  http://${ip:-<server-ip>}:8765/"
+  say "To update later, run the same command again."
 }
 
 main() {
