@@ -51,7 +51,7 @@ let logId = 0;
 
 const sim = {
   running: false, state: 'IDLE', windows: [], win: -1, winUntil: 0, lastVisit: new Map(), cycle: null,
-  slots: new Map(), primary: null, firstStart: null, solo: null, manual: null, rawIq: false, schedSig: '', schedAt: 0,
+  slots: new Map(), primary: null, firstStart: null, ignored: new Set(), solo: null, manual: null, rawIq: false, schedSig: '', schedAt: 0,
   capLogged: new Map(),
 };
 const listeners = new Set();
@@ -332,10 +332,11 @@ function level(src, ch) {
 const trigger = (ch) => opt(ch.band, 'trigger_level_dbfs', st.config.trigger_level_dbfs);
 
 function actives(w) {
-  return w.matches.filter(({ src, ch }) => onAir(src) && level(src, ch) >= trigger(ch));
+  return w.matches.filter(({ src, ch }) => !sim.ignored.has(ch.f) && onAir(src) && level(src, ch) >= trigger(ch));
 }
 
 function nextWindow(t) {
+  sim.ignored.clear();
   if (!sim.windows.length) { sim.win = -1; return; }
   sim.win = (sim.win + 1) % sim.windows.length;
   const last = sim.lastVisit.get(sim.win);
@@ -421,19 +422,22 @@ function stopScanner() {
   save();
 }
 
+// Skip acts on the channel being listened to; other transmissions in the window
+// carry on. A skipped channel is ignored until the scanner leaves the window.
 function skip(lockout) {
   if (!sim.running) throw new Error(tr('Scanner is not running'));
-  const freqs = [...sim.slots.keys()];
-  closeAllSlots();
-  if (lockout && freqs.length) {
+  const slot = sim.slots.get(sim.primary);
+  if (!slot) { nextWindow(nowS()); return; }
+  closeSlot(slot);
+  sim.ignored.add(slot.f);
+  if (lockout) {
     const today = new Date();
-    st.blacklist = [...st.blacklist, ...freqs.map((f) => ({ freq_hz: f, margin_hz: st.config.default_blacklist_margin_hz, label: 'Auto-lockout (SKIP)', date_added: `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}` }))];
-    const win = sim.win;
-    rebuild(false);
-    sim.win = Math.min(win, sim.windows.length - 1);
+    st.blacklist = [...st.blacklist, { freq_hz: slot.f, margin_hz: st.config.default_blacklist_margin_hz, label: 'Auto-lockout (SKIP)', date_added: `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}` }];
+    for (const w of sim.windows) w.matches = w.matches.filter((m) => !blacklisted(m.ch.f));
     save();
   }
-  nextWindow(nowS());
+  if (sim.slots.size) sim.primary = [...sim.slots.values()].sort((a, b) => b.lvl - a.lvl)[0].f;
+  else nextWindow(nowS());
 }
 
 function stopManual() {
