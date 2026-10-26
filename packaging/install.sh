@@ -202,7 +202,7 @@ install_server() {
     $SUDO git -C "$src" fetch -q --depth 1 origin "$ref"
     $SUDO git -C "$src" checkout -q --force FETCH_HEAD
   else
-    $SUDO git clone -q --depth 1 --branch "$ref" "https://github.com/$REPO.git" "$src"
+    $SUDO git -c advice.detachedHead=false clone -q --depth 1 --branch "$ref" "https://github.com/$REPO.git" "$src"
   fi
   $SUDO sh "$src/packaging/remote-server/install.sh" >/dev/null
   # Also here: releases up to 1.1.0 leave the service stopped on a first install.
