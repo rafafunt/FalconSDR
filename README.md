@@ -226,12 +226,13 @@ Windows *Settings → Apps*; your recordings and settings stay on disk (see
 
 ### Headless receiver
 
-On a Linux machine with the SDR attached:
+On a Linux machine with the SDR attached (Debian, Ubuntu, Raspberry Pi OS):
 
 ```
-sudo packaging/remote-server/install.sh
-sudo systemctl enable --now falconsdr-receiver
+curl -fsSL https://raw.githubusercontent.com/rafafunt/FalconSDR/master/packaging/install.sh | bash -s -- --server
 ```
+
+Run it again to update.
 
 Then open `http://<receiver-ip>:8765` from any device. See
 [packaging/remote-server/README.md](packaging/remote-server/README.md).

@@ -14,6 +14,10 @@
 #     also the fallback for unsupported CPU architectures, musl-based
 #     distros such as Alpine (the AppImage needs glibc and won't run
 #     there), and releases that don't publish the matching asset yet)
+#   - `--server` -> headless receiver: a checkout in /opt/falconsdr-src,
+#     packaging/remote-server/install.sh, systemd service started (Debian,
+#     Ubuntu, Raspberry Pi OS). FALCONSDR_REF=<branch|tag> picks the version;
+#     re-run to update.
 #
 # After installing, unplug and replug the RTL-SDR dongle once (udev rule),
 # then run `falconsdr` - the UI opens at http://127.0.0.1:8765.
@@ -21,8 +25,13 @@ set -eu
 
 REPO="${FALCONSDR_REPO:-rafafunt/FalconSDR}"
 VERSION="${FALCONSDR_VERSION:-latest}"
+REF="${FALCONSDR_REF:-master}"
 FROM_SOURCE=0
-for a in "$@"; do [ "$a" = "--from-source" ] && FROM_SOURCE=1; done
+SERVER=0
+for a in "$@"; do
+  [ "$a" = "--from-source" ] && FROM_SOURCE=1
+  [ "$a" = "--server" ] && SERVER=1
+done
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -178,7 +187,27 @@ SoapySDR hardware: install python3-soapysdr + soapysdr-module-<device>.)
 EOF
 }
 
+install_server() {
+  have_apt || die "--server needs a Debian-based system (Debian, Ubuntu, Raspberry Pi OS)"
+  SUDO=""
+  if [ "$(id -u)" != "0" ]; then need sudo; SUDO=sudo; fi
+  src=/opt/falconsdr-src
+  if ! command -v git >/dev/null 2>&1; then
+    $SUDO apt-get update -qq && $SUDO apt-get install -y -qq git ca-certificates
+  fi
+  say "Fetching FalconSDR ($REF)..."
+  if [ -d "$src/.git" ]; then
+    $SUDO git -C "$src" fetch -q --depth 1 origin "$REF"
+    $SUDO git -C "$src" checkout -q --force FETCH_HEAD
+  else
+    $SUDO git clone -q --depth 1 --branch "$REF" "https://github.com/$REPO.git" "$src"
+  fi
+  $SUDO sh "$src/packaging/remote-server/install.sh"
+  $SUDO systemctl enable --now falconsdr-receiver.service
+}
+
 main() {
+  if [ "$SERVER" = "1" ]; then install_server; return; fi
   if [ "$FROM_SOURCE" = "1" ]; then install_from_source; return; fi
   # No prebuilt bundle runs here: musl-based distros (Alpine, ...) can't
   # execute the glibc-linked AppImage, and there is no musl asset.

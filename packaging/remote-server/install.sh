@@ -11,6 +11,11 @@ UNIT=falconsdr-receiver.service
 
 [ "$(id -u)" -eq 0 ] || { echo "Run as root (sudo)." >&2; exit 1; }
 
+# A fresh Debian/Raspberry Pi OS Lite lacks some of these.
+if command -v apt-get >/dev/null && ! { command -v rsync && python3 -c "import ensurepip"; } >/dev/null 2>&1; then
+    apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q rsync python3-venv
+fi
+
 getent group plugdev >/dev/null || groupadd --system plugdev
 if ! id falconsdr >/dev/null 2>&1; then
     useradd --system --home-dir "$HOME_DIR" --no-create-home --shell /usr/sbin/nologin --groups plugdev falconsdr

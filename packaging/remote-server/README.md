@@ -7,8 +7,16 @@ Settings → Access if other people share your network.
 
 ## Install / update
 
-On the receiver (Debian/Ubuntu, VM or LXC container), from a checkout of
-this repository:
+On the receiver (Debian, Ubuntu, Raspberry Pi OS - 64-bit recommended),
+one line installs or updates it and starts the service:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rafafunt/FalconSDR/master/packaging/install.sh | bash -s -- --server
+```
+
+It keeps a checkout in `/opt/falconsdr-src` and runs `install.sh` from it;
+`FALCONSDR_REF=<branch or tag>` in front of `bash` installs another version.
+Or, from a checkout of this repository:
 
 ```sh
 sudo packaging/remote-server/install.sh
