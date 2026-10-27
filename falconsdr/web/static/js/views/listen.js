@@ -240,6 +240,8 @@ export function listenView(root) {
         h('label.field', t('Device'), sel),
         h('label.field', t('Capture width (MHz)'), bw)),
       h('span.faint.small.lockhint', t('Stop the scanner to change the device or capture width.')),
+      // Picked by USB order (no serial of its own) - that order can change when dongles are replugged.
+      devices.some((d) => /(^|,)index=/.test(d.args)) ? h('span.faint.small', t('Some dongles share a serial number (often 00000001) and are told apart only by USB order, which can change after replugging. To keep your choice for good, give each one its own serial with rtl_eeprom -s.')) : null,
       isWindows() ? h('button.ghost.small', { onclick: () => driverHelp() }, t('Dongle not detected? Driver (Zadig) instructions')) : null);
     lockDevice(S.live && S.live.running);
   }

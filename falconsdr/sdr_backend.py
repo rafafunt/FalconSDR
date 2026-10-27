@@ -12,6 +12,7 @@ from collections import deque
 import numpy as np
 
 from .config import CONFIG_DIR
+from .i18n import tr
 from .io_diag_log import SdrIoDiagLogger
 
 try:
@@ -241,13 +242,14 @@ class RtlSdrBackend(SdrBackend):
         if not HAVE_RTLSDR_NATIVE:
             raise RuntimeError("The pyrtlsdr/pyrtlsdrlib modules are not installed")
         SoapyBackend._wait_for_reopen_cooldown()
-        serial = None
-        for kv in (device_args or "").split(","):
-            if "=" in kv:
-                k, v = kv.split("=", 1)
-                if k.strip() == "serial" and v.strip():
-                    serial = v.strip()
-        self.device = RtlSdr(serial_number=serial) if serial else RtlSdr()
+        args = dict(kv.split("=", 1) for kv in (device_args or "").split(",") if "=" in kv)
+        args = {k.strip(): v.strip() for k, v in args.items()}
+        if args.get("index", "").isdigit():  # dongles without a serial of their own (enumerate_devices)
+            self.device = RtlSdr(device_index=int(args["index"]))
+        elif args.get("serial"):
+            self.device = RtlSdr(serial_number=args["serial"])
+        else:
+            self.device = RtlSdr()
         try:
             self.device.set_bias_tee(False)
             self.sample_rate = sample_rate
@@ -304,15 +306,40 @@ class RtlSdrBackend(SdrBackend):
         if not HAVE_RTLSDR_NATIVE:
             return []
         try:
-            serials = RtlSdr.get_device_serial_addresses()
+            from rtlsdr.librtlsdr import librtlsdr
+            count = librtlsdr.rtlsdr_get_device_count()
         except Exception:
             return []
-        # No commas in the label - Controller.devices() joins every key into one
-        # "k=v,k=v" device_args string.
-        return [
-            {"driver": RTLSDR_NATIVE_DRIVER, "label": f"RTL-SDR (librtlsdr) SN {serial}", "serial": serial}
-            for serial in serials
-        ]
+        # One by one: pyrtlsdr's get_device_serial_addresses() fails as a whole
+        # when one dongle can't be opened (in use, no WinUSB driver) - reported
+        # with 10 dongles on Windows, none could be picked.
+        serials: list[str | None] = []
+        for i in range(count):
+            try:
+                serials.append(_read_serial(librtlsdr, i))
+            except Exception:
+                serials.append(None)
+        devices = []
+        for i, serial in enumerate(serials):
+            # No commas in the label - Controller.devices() joins every key into one
+            # "k=v,k=v" device_args string.
+            if serial and serials.count(serial) == 1:  # by serial: survives replugging
+                devices.append({"driver": RTLSDR_NATIVE_DRIVER, "label": f"RTL-SDR (librtlsdr) SN {serial}", "serial": serial})
+                continue
+            # Most dongles ship with serial 00000001 - only the USB order tells them apart.
+            label = (tr("RTL-SDR #{n} (librtlsdr) SN {serial} - same serial as another dongle").format(n=i + 1, serial=serial)
+                     if serial else tr("RTL-SDR #{n} (librtlsdr) - in use or no WinUSB driver").format(n=i + 1))
+            devices.append({"driver": RTLSDR_NATIVE_DRIVER, "label": label, "index": str(i)})
+        return devices
+
+
+def _read_serial(lib, index: int) -> str:
+    """One dongle's USB serial string (raises if it can't be opened)."""
+    from ctypes import c_ubyte
+    buf = (c_ubyte * 256)()
+    if lib.rtlsdr_get_device_usb_strings(index, None, None, buf) != 0:
+        raise OSError(f"can't read RTL-SDR #{index + 1}")
+    return bytes(b for b in buf if b).decode("ascii", "replace")
 
 
 def enumerate_devices() -> list[dict]:

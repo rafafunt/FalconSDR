@@ -332,6 +332,33 @@ class DigitalVoiceTest(unittest.TestCase):
         self.assertEqual(seen, [None])  # not a certificate problem - no second try
 
 
+class RtlSdrListTest(unittest.TestCase):
+    def test_every_dongle_is_listed_and_shared_serials_go_by_usb_order(self) -> None:
+        import sys
+        import types
+        from unittest import mock
+        from falconsdr import sdr_backend
+        serials = ["SDR-A", "00000001", "00000001", None]  # None: in use / no WinUSB driver
+
+        def read(_lib, i):
+            if serials[i] is None:
+                raise OSError("busy")
+            return serials[i]
+
+        lib = types.SimpleNamespace(rtlsdr_get_device_count=lambda: len(serials))
+        fake = types.ModuleType("rtlsdr.librtlsdr")
+        fake.librtlsdr = lib
+        with mock.patch.dict(sys.modules, {"rtlsdr": types.ModuleType("rtlsdr"), "rtlsdr.librtlsdr": fake}), \
+                mock.patch.object(sdr_backend, "HAVE_RTLSDR_NATIVE", True), \
+                mock.patch.object(sdr_backend, "_read_serial", read):
+            devs = sdr_backend.RtlSdrBackend.enumerate_devices()
+        self.assertEqual(len(devs), 4)  # one unreadable dongle no longer hides the others
+        self.assertEqual(devs[0]["serial"], "SDR-A")  # unique serial: stable across replugging
+        self.assertNotIn("index", devs[0])
+        self.assertEqual([d.get("index") for d in devs[1:]], ["1", "2", "3"])
+        self.assertTrue(all("," not in d["label"] for d in devs))  # Controller.devices() joins with commas
+
+
 class ScheduleTest(unittest.TestCase):
     def test_active_entries_pick_bands_and_survive_a_config_patch(self) -> None:
         import datetime as dt
