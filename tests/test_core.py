@@ -305,6 +305,33 @@ class DigitalVoiceTest(unittest.TestCase):
         self.assertAlmostEqual(float(out[:1000].mean()), 0.5, places=3)  # 800 samples @ 8 kHz = 1250 @ 12.5 kHz
 
 
+    def test_download_retries_only_certificate_errors_with_other_trust_stores(self) -> None:
+        import ssl
+        import urllib.error
+        from unittest import mock
+        from falconsdr import digital_voice
+        seen = []
+
+        def fake(url, timeout, context):
+            seen.append(context)
+            if context is None:  # the default store doesn't know the issuer
+                raise urllib.error.URLError(ssl.SSLCertVerificationError("unable to get issuer certificate"))
+            return "response"
+
+        with mock.patch("urllib.request.urlopen", fake):
+            self.assertEqual(digital_voice._urlopen("https://example.invalid/x"), "response")
+        self.assertEqual(len(seen), 2)  # default, then the OS verifier
+        seen.clear()
+
+        def offline(url, timeout, context):
+            seen.append(context)
+            raise urllib.error.URLError(OSError("network unreachable"))
+
+        with mock.patch("urllib.request.urlopen", offline), self.assertRaises(urllib.error.URLError):
+            digital_voice._urlopen("https://example.invalid/x")
+        self.assertEqual(seen, [None])  # not a certificate problem - no second try
+
+
 class ScheduleTest(unittest.TestCase):
     def test_active_entries_pick_bands_and_survive_a_config_patch(self) -> None:
         import datetime as dt

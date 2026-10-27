@@ -14,10 +14,12 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tarfile
 import threading
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -206,9 +208,40 @@ def _install_thread() -> None:
             _state["running"] = False
 
 
+def _ssl_contexts():
+    """Default first; on a certificate error the OS's own verifier, then
+    Mozilla's CA list. Reported: CERTIFICATE_VERIFY_FAILED - a packaged
+    build's OpenSSL may not find the system CA store, and on Windows only the
+    OS verifier fetches a root it doesn't have yet. Every install has pip,
+    which vendors both (truststore needs Python 3.10+)."""
+    yield None
+    try:
+        from pip._vendor import truststore
+        yield truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except Exception:
+        pass
+    try:
+        from pip._vendor import certifi
+        yield ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass
+
+
+def _urlopen(url: str):
+    error = None
+    for context in _ssl_contexts():
+        try:
+            return urllib.request.urlopen(url, timeout=60, context=context)
+        except urllib.error.URLError as exc:
+            if not isinstance(exc.reason, ssl.SSLCertVerificationError):
+                raise
+            error = error or exc  # the first one says what the system itself saw
+    raise error
+
+
 def _download(url: str, dest: Path) -> None:
     _say(f"Downloading {url.split('/')[4]}…")
-    with urllib.request.urlopen(url, timeout=60) as resp, open(dest, "wb") as out:
+    with _urlopen(url) as resp, open(dest, "wb") as out:
         shutil.copyfileobj(resp, out)
 
 
