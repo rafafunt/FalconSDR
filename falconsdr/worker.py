@@ -34,6 +34,7 @@ from .config import CONFIG_DIR, TranscriptionConfig, _from_dict, atomic_write_te
 from .playback.models import QualityMetrics, Recording
 from .playback.organizer import iter_all_recordings, parse_filename
 from .playback.transcription_availability import is_transcription_installed
+from .playback.transcription_install import removal_pending
 
 logger = logging.getLogger(__name__)
 
@@ -88,13 +89,15 @@ class Api:
 
 class Worker(threading.Thread):
     def __init__(self, base_url: str, token: str, name: str = "", local_root: Optional[Path] = None,
-                 embedded: bool = False, on_detach: Optional[Callable[[], None]] = None) -> None:
+                 embedded: bool = False, on_detach: Optional[Callable[[], None]] = None,
+                 on_restart: Optional[Callable[[], None]] = None) -> None:
         super().__init__(daemon=True, name="worker")
         self.api = Api(base_url, token)
         self.name = name or socket.gethostname()
         self.local_root = Path(local_root) if local_root else None
         self.embedded = embedded
         self.on_detach = on_detach
+        self.on_restart = on_restart
         self._stop = threading.Event()
         self._wake = threading.Event()  # a command arrived - don't sit out the idle pause
         self._log: deque[str] = deque(maxlen=40)
@@ -117,7 +120,7 @@ class Worker(threading.Thread):
         return {
             "embedded": self.embedded, "status": self._status, "installed": self._installed,
             "gpu": _gpu_name(), "log": list(self._log), "local_only": self._local_only,
-            "mirror_root": str(self._mirror_root() or ""),
+            "mirror_root": str(self._mirror_root() or ""), "removal_pending": removal_pending(),
         }
 
     def _heartbeat_loop(self) -> None:
@@ -177,6 +180,9 @@ class Worker(threading.Thread):
                 self._install(with_gpu=command == "install_gpu")
             elif command in ("uninstall", "uninstall_with_models"):
                 self._uninstall(with_models=command == "uninstall_with_models")
+            elif command == "restart" and self.on_restart:
+                self.say("restarting FalconSDR")
+                self.on_restart()
             elif command == "upload_local":
                 self._upload_local()
             elif command == "detach":
@@ -207,7 +213,7 @@ class Worker(threading.Thread):
         # Off right away, also when the files only go at the next start.
         self._installed = False if ok else is_transcription_installed()
         if ok and needs_restart:
-            self.say("transcription uninstalled - its files are removed when FalconSDR next starts")
+            self.say("transcription uninstalled - restart FalconSDR to remove its files")
         else:
             self.say("transcription uninstalled" if ok else f"uninstall failed: {message[-300:]}")
         self._status = "idle"
@@ -243,7 +249,8 @@ class Worker(threading.Thread):
             # Back to the queue, untouched - the next try loads the model afresh.
             self.api.post("/api/worker/release", {"id": rel})
             self.say(f"transcription model not available yet ({exc}) - retrying in {_MODEL_RETRY_S:.0f} s")
-            self._stop.wait(_MODEL_RETRY_S)
+            self._wake.wait(_MODEL_RETRY_S)  # a command (e.g. Uninstall) still gets through
+            self._wake.clear()
             return False
         except BaseException:
             try:

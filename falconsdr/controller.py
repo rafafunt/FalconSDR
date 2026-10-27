@@ -481,7 +481,7 @@ class Controller:
         self.config.save()
 
     def send_worker_command(self, name: str, command: str) -> None:
-        if command not in ("install", "install_gpu", "uninstall", "uninstall_with_models", "upload_local", "detach"):
+        if command not in ("install", "install_gpu", "uninstall", "uninstall_with_models", "restart", "upload_local", "detach"):
             raise ValueError("Unknown worker command")
         with self._lock:
             self.worker_commands.setdefault(name, []).append(command)

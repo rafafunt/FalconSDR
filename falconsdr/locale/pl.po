@@ -2604,3 +2604,9 @@ msgstr "Włącz"
 
 msgid "FalconSDR switches it off whenever scanning stops."
 msgstr "FalconSDR wyłącza je zawsze, gdy skanowanie się zatrzymuje."
+
+msgid "Transcription is uninstalled - restart FalconSDR on this computer to remove its files."
+msgstr "Transkrypcja odinstalowana - uruchom ponownie FalconSDR na tym komputerze, żeby usunąć jej pliki."
+
+msgid "Restart now"
+msgstr "Uruchom ponownie teraz"

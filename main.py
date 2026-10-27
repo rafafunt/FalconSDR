@@ -134,7 +134,8 @@ def main() -> int:
         rr = config.remote_receiver
         worker = Worker(rr.url, rr.token, name=os.environ.get("FALCONSDR_WORKER_NAME", ""),
                         local_root=Path(config.recording.output_dir),
-                        on_detach=lambda: (setattr(rr, "enabled", False), config.save(), stop.set()))
+                        on_detach=lambda: (setattr(rr, "enabled", False), config.save(), stop.set()),
+                        on_restart=switch_mode)
         worker.start()
         app = App(config, None, token, "client", on_switch=switch_mode, worker=worker, on_quit=stop.set)
         browser_url = f"{rr.url}/#token={quote(rr.token, safe='')}"
@@ -149,7 +150,7 @@ def main() -> int:
         browser_url = f"http://127.0.0.1:{args.port}/"
         # This computer's own transcription helper - talks to its own API.
         worker = Worker(f"http://127.0.0.1:{args.port}", token, name=os.environ.get("FALCONSDR_WORKER_NAME", ""),
-                        embedded=True)
+                        embedded=True, on_restart=switch_mode)
         worker.start()
         if args.start:
             controller.start()

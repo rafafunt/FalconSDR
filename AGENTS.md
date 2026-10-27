@@ -540,7 +540,10 @@ catalog loads; wrap them in a function called at point of use
     (`transcription_install.py`, appended to sys.path by `enable_addons()`).
     The Windows bundle needs `python3.dll` copied in by `build.ps1` - abi3
     wheels (PyAV) link it and PyInstaller omits it. Never `--upgrade` add-ons
-    already imported in the process (Windows locks loaded `.pyd`). MP3 in
+    already imported in the process (Windows locks loaded `.pyd`), and never
+    install over a pending removal (`_REMOVE_MARKER`): `rmtree` skips locked
+    `.pyd` and pip `--target` skips existing folders - together they left
+    half-deleted `tokenizers`/`av` and every transcription failed. MP3 in
     every install: `audio_transcode.ffmpeg_exe()` = system ffmpeg, else
     `imageio-ffmpeg`'s binary; spawn console tools with `NO_WINDOW` (the
     windowed exe would flash a console per call). Never assume text files

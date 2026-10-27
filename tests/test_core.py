@@ -185,6 +185,34 @@ class LibraryTest(_LibCase):
                 self.assertEqual(ti.uninstall_transcription([], lines.append), (True, False, ""))
             self.assertFalse((ti.ADDONS_DIR / "faster_whisper").exists())
             self.assertTrue(ti.ADDONS_DIR.is_dir())  # still there for a later install
+            # Another process still holds a .pyd: rmtree leaves part of it - finish on restart.
+            (ti.ADDONS_DIR / "faster_whisper").mkdir()
+            with mock.patch.object(ti, "_loaded", return_value=False), \
+                    mock.patch.object(ti.shutil, "rmtree"), mock.patch.object(ti.time, "sleep"):
+                self.assertEqual(ti.uninstall_transcription([], lines.append), (True, True, ""))
+                self.assertTrue(ti.removal_pending())
+                sys.path.remove(str(ti.ADDONS_DIR))
+                ti.enable_addons()  # restart while still locked: marker stays, broken files stay off sys.path
+                self.assertNotIn(str(ti.ADDONS_DIR), sys.path)
+            self.assertTrue(ti.removal_pending())
+            ok, _, _ = ti.install_transcription(False, lines.append)  # never over half-removed files
+            self.assertFalse(ok)
+            ti.enable_addons()
+            self.assertFalse((ti.ADDONS_DIR / "faster_whisper").exists())
+            self.assertFalse(ti._REMOVE_MARKER.exists())
+
+    def test_uninstall_deletes_only_the_chosen_models(self) -> None:
+        from unittest import mock
+        from falconsdr.playback import transcription_install as ti
+        cache = Path(tempfile.mkdtemp())
+        for repo in ("Systran--faster-whisper-large-v3", "jacktol--atc", "someone--other"):
+            (cache / f"models--{repo}" / "blobs").mkdir(parents=True)
+            (cache / f"models--{repo}" / "blobs" / "x").write_bytes(b"0" * 10)
+        lines: list[str] = []
+        with mock.patch.dict(os.environ, {"HF_HUB_CACHE": str(cache)}):
+            ti.delete_models(["large-v3", "jacktol/atc", "medium.en"], lines.append)
+        self.assertEqual(sorted(p.name for p in cache.iterdir()), ["models--someone--other"])
+        self.assertTrue(any("not downloaded" in line for line in lines))
 
     def test_model_load_failure_keeps_the_recording_queued(self) -> None:
         import sys

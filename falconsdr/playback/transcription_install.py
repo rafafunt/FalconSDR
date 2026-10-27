@@ -17,9 +17,11 @@ prebuilt wheels into ``ADDONS_DIR`` in the user's profile, which
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -42,17 +44,37 @@ def _loaded() -> bool:
     return any(m in sys.modules for m in ("faster_whisper", "ctranslate2", "av", "onnxruntime", "tokenizers"))
 
 
+def _remove_addons() -> bool:
+    """True once ADDONS_DIR is gone. Windows refuses to delete a .pyd another
+    FalconSDR process still has loaded - rmtree then removes everything else,
+    leaving packages that import but are broken."""
+    shutil.rmtree(ADDONS_DIR, ignore_errors=True)
+    return not ADDONS_DIR.exists()
+
+
 def enable_addons() -> None:
     """Packaged build: make the extras install_transcription() put in
     ADDONS_DIR importable. Appended, so the build's own numpy etc. always win
     over the copies pip also places there. Created up front - a sys.path
     entry that doesn't exist yet stays invisible after a later install."""
     if _REMOVE_MARKER.exists():  # an uninstall that had to wait for this restart
-        shutil.rmtree(ADDONS_DIR, ignore_errors=True)
+        # The process this restart replaced may still be exiting and holding its .pyd files.
+        for _ in range(10):
+            if _remove_addons():
+                break
+            time.sleep(0.5)
+        else:
+            return  # still locked: keep the half-removed packages off sys.path, retry next start
         _REMOVE_MARKER.unlink(missing_ok=True)
     ADDONS_DIR.mkdir(parents=True, exist_ok=True)
     if str(ADDONS_DIR) not in sys.path:
         sys.path.append(str(ADDONS_DIR))
+
+
+def removal_pending() -> bool:
+    """An uninstall is waiting for FalconSDR to restart (packaged build only)."""
+    return _REMOVE_MARKER.exists()
+
 
 # av<19: faster-whisper 1.2.1 passes av.open(metadata_errors=...), which PyAV
 # 19 removed - every transcription failed. The wheels are abi3, no source build.
@@ -81,27 +103,48 @@ def _run_streamed(cmd: list[str], on_line: Callable[[str], None]) -> tuple[bool,
     return proc.returncode == 0, "\n".join(lines)
 
 
+def _hf_cache_dir() -> Path:
+    """Hugging Face's own cache location rules (huggingface_hub.constants), without importing it."""
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"])
+    home = os.environ.get("HF_HOME") or Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "huggingface"
+    return Path(home) / "hub"
+
+
+# faster_whisper.utils._MODELS (1.2.1) where it isn't "Systran/faster-whisper-<name>".
+_MODEL_REPOS = {
+    "large": "Systran/faster-whisper-large-v3",
+    "distil-large-v2": "Systran/faster-distil-whisper-large-v2",
+    "distil-medium.en": "Systran/faster-distil-whisper-medium.en",
+    "distil-small.en": "Systran/faster-distil-whisper-small.en",
+    "distil-large-v3": "Systran/faster-distil-whisper-large-v3",
+    "distil-large-v3.5": "distil-whisper/distil-large-v3.5-ct2",
+    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+    "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+}
+
+
 def delete_models(model_ids: list[str], on_line: Callable[[str], None]) -> None:
     """Deletes the given Whisper models (faster-whisper names like "large-v3"
     or Hugging Face repo ids) from the Hugging Face cache - only these: the
-    cache is shared with any other program on this computer."""
-    try:
-        from faster_whisper.utils import _MODELS
-        from huggingface_hub import scan_cache_dir
-    except ImportError as exc:
-        on_line(f"models: no Hugging Face cache support installed - nothing to delete ({exc})")
-        return
-    from .transcription_engine import unload_models
-    unload_models()  # loaded models keep their files open
-    wanted = {_MODELS.get(m, m) for m in model_ids}
-    cache = scan_cache_dir()
-    repos = [r for r in cache.repos if r.repo_type == "model" and r.repo_id in wanted]
-    if not repos:
-        on_line("models: none downloaded")
-        return
-    strategy = cache.delete_revisions(*[rev.commit_hash for r in repos for rev in r.revisions])
-    on_line(f"deleting models {', '.join(r.repo_id for r in repos)} ({strategy.expected_freed_size_str})")
-    strategy.execute()
+    cache is shared with any other program on this computer. Never imports
+    faster-whisper: an uninstall is often what fixes a broken one."""
+    if "faster_whisper" in sys.modules:
+        from .transcription_engine import unload_models
+        unload_models()  # loaded models keep their files open
+    cache = _hf_cache_dir()
+    for model_id in model_ids:
+        repo = model_id if "/" in model_id else _MODEL_REPOS.get(model_id, f"Systran/faster-whisper-{model_id}")
+        folder = cache / ("models--" + repo.replace("/", "--"))
+        if not folder.exists():
+            on_line(f"model {repo}: not downloaded")
+            continue
+        size = sum(f.stat().st_size for f in folder.rglob("*") if f.is_file() and not f.is_symlink())
+        shutil.rmtree(folder, ignore_errors=True)
+        if folder.exists():
+            on_line(f"model {repo}: some files are in use - delete {folder} by hand")
+        else:
+            on_line(f"deleted model {repo} ({size / 1e9:.1f} GB)")
 
 
 def uninstall_transcription(model_ids: list[str], on_line: Callable[[str], None]) -> tuple[bool, bool, str]:
@@ -118,7 +161,10 @@ def uninstall_transcription(model_ids: list[str], on_line: Callable[[str], None]
             _REMOVE_MARKER.touch()
             on_line("files in use - they are removed when FalconSDR next starts")
             return True, True, ""
-        shutil.rmtree(ADDONS_DIR, ignore_errors=True)
+        if not _remove_addons():
+            _REMOVE_MARKER.touch()
+            on_line("some files are in use - they are removed when FalconSDR next starts")
+            return True, True, ""
         ADDONS_DIR.mkdir(parents=True, exist_ok=True)  # stays on sys.path for a later install
         return True, False, ""
     if sys.platform == "win32" and _loaded():
@@ -146,8 +192,13 @@ def install_transcription(with_gpu: bool, on_line: Callable[[str], None]) -> tup
     # not a real Python interpreter - `-m pip` would re-launch the app.
     # Its own `--pip` mode runs the bundled pip instead (main.py).
     if getattr(sys, "frozen", False):
+        if _REMOVE_MARKER.exists():
+            # pip --target skips folders that already exist, so installing over a
+            # pending (possibly half-done) removal would keep broken packages.
+            message = "Restart FalconSDR to finish removing transcription, then install it again."
+            on_line(message)
+            return False, False, message
         enable_addons()
-        _REMOVE_MARKER.unlink(missing_ok=True)  # installing again cancels a pending uninstall
         # Windows locks a loaded .pyd: once transcription has run in this
         # process, --upgrade can't replace those folders - only add what's
         # missing (e.g. the GPU libraries on a second "Install").
