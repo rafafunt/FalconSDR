@@ -609,8 +609,9 @@ catalog loads; wrap them in a function called at point of use
     keeps the state across opens. Soapy "on" writes only `biastee`/
     `bias_tee`, never `offset_tuning` (that changes tuning on other tuners);
     "off" writes all three. `device_args` can never turn it on (filtered).
-    The UI asks for confirmation (damage warning; Cancel is the red,
-    focused button - owner's call) and resets it to off when a different
+    The UI asks for confirmation (damage warning; Cancel is the highlighted
+    primary, focused button and Turn on a plain one - owner's call: people
+    click the highlighted button) and resets it to off when a different
     dongle is picked.
 
 ## Testing without touching the user's real config/recordings

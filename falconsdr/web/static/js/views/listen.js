@@ -296,8 +296,9 @@ export function listenView(root) {
       h('p', t('Bias-T sends about 4.5 V DC up the antenna cable to power an LNA or an active antenna.')),
       h('p', t('Turn it on only when such a device is connected and your dongle supports it (e.g. RTL-SDR Blog V3/V4). A DC-shorted antenna, a splitter or other equipment on the cable can be damaged - and so can the dongle.')),
       h('p.small.muted', t('FalconSDR switches it off whenever scanning stops.'))),
-    // The safe choice is the prominent one, and last - the button a dialog focuses (Enter).
-    [[t('Turn on'), true, 'ghost'], [t('Cancel'), false, 'danger solid']])) === true;
+    // The safe choice is the prominent one, and last - the button a dialog focuses (Enter):
+    // people click the highlighted button, and here that must not be the risky one.
+    [[t('Turn on'), true, 'ghost'], [t('Cancel'), false, 'primary']])) === true;
   }
 
   function lockDevice(running) {
