@@ -359,6 +359,61 @@ class RtlSdrListTest(unittest.TestCase):
         self.assertTrue(all("," not in d["label"] for d in devs))  # Controller.devices() joins with commas
 
 
+class MultiDongleTest(unittest.TestCase):
+    def test_scan_plan_is_split_without_overlap_and_lanes_keep_their_weight(self) -> None:
+        from falconsdr.channelizer import plan_windows
+        from falconsdr.scanner_engine import _Lane, _partition_windows
+        freqs = list(range(118_000_000, 137_000_000, 25_000))
+        default = plan_windows(freqs[:500], 2_400_000, 25_000)
+        lane = _Lane(weight=2.0, windows=plan_windows(freqs[600:], 2_400_000, 25_000), is_range=True)
+        everything = {w.center_hz for w in default} | {w.center_hz for w in lane.windows}
+        shares = [_partition_windows(default, [lane], k, 3) for k in range(3)]
+        seen = [{w.center_hz for w in d} | {w.center_hz for ln in lanes for w in ln.windows} for d, lanes in shares]
+        self.assertEqual(set().union(*seen), everything)  # nothing left unscanned
+        self.assertEqual(sum(len(s) for s in seen), len(everything))  # no window scanned twice
+        self.assertLessEqual(max(map(len, seen)) - min(map(len, seen)), 1)  # even split
+        for _d, lanes in shares:
+            self.assertTrue(all(ln.weight == 2.0 and ln.is_range for ln in lanes))
+        self.assertEqual(_partition_windows(default[:1], [], 1, 2), ([], []))  # more dongles than windows: idle
+
+    def test_one_transmission_is_claimed_by_one_dongle(self) -> None:
+        from falconsdr.scanner_engine import SharedFrequencies
+        shared, a, b = SharedFrequencies(), object(), object()
+        self.assertTrue(shared.claim(121_500_000, a))
+        self.assertFalse(shared.claim(121_500_000, b))
+        self.assertTrue(shared.taken_by_other(121_500_000, b))
+        self.assertFalse(shared.taken_by_other(121_500_000, a))
+        shared.release(121_500_000, b)  # not b's - stays a's
+        self.assertTrue(shared.taken_by_other(121_500_000, b))
+        shared.release_all(a)
+        self.assertTrue(shared.claim(121_500_000, b))
+
+    def test_live_status_merges_dongles_and_audio_follows_the_one_heard(self) -> None:
+        from falconsdr.controller import Controller
+        ctl = Controller(AppConfig())
+        heard = []
+        ctl._audio_subscribers = [type("Q", (), {"put_nowait": lambda self, pcm: heard.append(pcm)})()]
+        idle = ctl._idle_live()
+        ctl._lives = [{**idle, "state": "SCANNING", "frequencies": [[118_000_000, "window"]]},
+                      {**idle, "state": "SIGNAL_DETECTED", "frequencies": [[124_000_000, "Tower"]], "recording": True}]
+        ctl._engines = [object(), object()]
+        ctl._audible = 1
+        ctl._on_live_audio(0, [0.1])  # dongle 2 is mid-transmission - dongle 1 can't take the speaker
+        self.assertEqual(len(heard), 0)
+        ctl._on_live_audio(1, [0.1])
+        self.assertEqual(len(heard), 1)
+        with ctl._lock:
+            live = ctl._merged_live_locked()
+        self.assertEqual(live["state"], "SIGNAL_DETECTED")
+        self.assertEqual(live["frequencies"][0][0], 124_000_000)
+        self.assertTrue(live["recording"])
+        self.assertEqual(len(live["dongles"]), 2)
+        ctl._lives[1]["state"] = "SCANNING"  # its transmission ended - the next dongle that hears something takes over
+        ctl._on_live_audio(0, [0.1])
+        self.assertEqual(ctl._audible, 0)
+        ctl._engines = []
+
+
 class ScheduleTest(unittest.TestCase):
     def test_active_entries_pick_bands_and_survive_a_config_patch(self) -> None:
         import datetime as dt

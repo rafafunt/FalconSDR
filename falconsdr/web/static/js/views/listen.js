@@ -68,8 +68,10 @@ export function listenView(root) {
     patchConfig({ recording: { enabled: v } });
   });
 
+  const dongleRow = h('div.row.wrap', { style: { gap: '6px' } });
   const hero = h('section.card.hero',
     h('div.row', stateChip, h('span.spacer'), cycleText),
+    dongleRow,
     h('div', freqEl, nameEl),
     driverHint,
     others,
@@ -145,6 +147,8 @@ export function listenView(root) {
       mount(freqEl, '—');
       nameEl.textContent = live.running ? '' : t('Press Start to begin scanning');
     }
+    // Several dongles: each one's own state, so a stuck or idle one is visible.
+    mount(dongleRow, (live.dongles || []).map((d, i) => h('span.chip', { class: stateClass({ ...d, running: true }) }, `SDR ${i + 1}: ${stateLabel(d.state)}`)));
     mount(others, active ? rest.map(([f, n]) => h('span.chip', h('b.mono', fmtChannel(f)), n ? ` ${n}` : '')) : []);
     const pct = (v) => Math.max(0, Math.min(100, (v + 100)));
     meterFill.style.width = `${pct(live.level)}%`;
@@ -233,12 +237,38 @@ export function listenView(root) {
       patchConfig({ device: { driver: d.driver, device_args: d.args } });
     });
     const bw = h('input', { type: 'number', min: 0.25, max: 61.44, step: 0.01, value: (c.device.sample_rate_hz / 1e6).toFixed(2), onchange: (e) => patchConfig({ device: { sample_rate_hz: +e.target.value * 1e6 } }) });
-    deviceInputs = [sel, bw];
+    // Experimental: more dongles scanning together - each takes its share of the capture windows.
+    const extra = c.device.extra_devices || [];
+    const choices = devices.filter((d) => d.driver !== 'auto');  // an extra dongle must be a specific one
+    const setExtra = (list) => { patchConfig({ device: { extra_devices: list } }); renderDevice(); };
+    const extraInputs = [];
+    const extraRows = extra.map((x, i) => {
+      const at = choices.findIndex((d) => d.driver === x.driver && d.args === x.device_args);
+      const s = select([...(at < 0 ? [[-1, t('(not connected)')]] : []), ...choices.map((d, j) => [j, d.label])], at, (v) => {
+        const d = choices[+v];
+        setExtra(extra.map((e, j) => (j === i ? { driver: d.driver, device_args: d.args } : e)));
+      });
+      const del = h('button.icon.ghost', { title: t('Remove'), onclick: () => setExtra(extra.filter((_, j) => j !== i)) }, icon('x'));
+      extraInputs.push(s, del);
+      return h('label.field', t('Dongle {n}', { n: i + 2 }), h('div.row', s, del));
+    });
+    const used = new Set([`${c.device.driver}|${c.device.device_args}`, ...extra.map((x) => `${x.driver}|${x.device_args}`)]);
+    const add = h('button.ghost.small', {
+      onclick: () => {
+        const d = choices.find((x) => !used.has(`${x.driver}|${x.args}`));
+        if (!d) { toast(t('No other SDR device found - plug it in, then reload this page.'), 'bad'); return; }
+        setExtra([...extra, { driver: d.driver, device_args: d.args }]);
+      },
+    }, icon('plus'), t('Scan with another dongle (experimental)'));
+    deviceInputs = [sel, bw, add, ...extraInputs];
     mount(device,
       h('div.card-head', h('h2', t('SDR device'))),
       h('div.fields',
         h('label.field', t('Device'), sel),
-        h('label.field', t('Capture width (MHz)'), bw)),
+        h('label.field', t('Capture width (MHz)'), bw),
+        ...extraRows),
+      extra.length ? h('span.faint.small', t('The scan plan is split between all dongles - each scans its own share of the windows, so a full cycle is that much shorter. You hear one dongle at a time; the others keep recording.')) : null,
+      add,
       h('span.faint.small.lockhint', t('Stop the scanner to change the device or capture width.')),
       // Picked by USB order (no serial of its own) - that order can change when dongles are replugged.
       devices.some((d) => /(^|,)index=/.test(d.args)) ? h('span.faint.small', t('Some dongles share a serial number (often 00000001) and are told apart only by USB order, which can change after replugging. To keep your choice for good, give each one its own serial with rtl_eeprom -s.')) : null,

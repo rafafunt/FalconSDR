@@ -346,11 +346,67 @@ class ScannerSignals:
         self.finished = Signal()
 
 
+class SharedFrequencies:
+    """Frequencies some engine has an open slot on - with several dongles
+    (Controller), one transmission is demodulated and recorded once, even
+    when it falls inside two dongles' windows (edge probes, overlapping
+    bands). Never touched by an AcquisitionThread (gotcha 11)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._taken: dict[int, object] = {}
+
+    def claim(self, freq_hz: int, owner: object) -> bool:
+        with self._lock:
+            return self._taken.setdefault(freq_hz, owner) is owner
+
+    def release(self, freq_hz: int, owner: object) -> None:
+        with self._lock:
+            if self._taken.get(freq_hz) is owner:
+                del self._taken[freq_hz]
+
+    def release_all(self, owner: object) -> None:
+        with self._lock:
+            for freq_hz in [f for f, o in self._taken.items() if o is owner]:
+                del self._taken[freq_hz]
+
+    def taken_by_other(self, freq_hz: int, owner: object) -> bool:
+        holder = self._taken.get(freq_hz)  # a dict read is atomic - no lock in the per-tick path
+        return holder is not None and holder is not owner
+
+
+def _partition_windows(
+    default_windows: list[ScanWindow], lanes: list[_Lane], index: int, count: int,
+) -> tuple[list[ScanWindow], list[_Lane]]:
+    """This engine's share of the scan plan when ``count`` dongles scan
+    together: every engine builds the same plan from the same config and
+    keeps every count-th window by frequency, so the shares never overlap
+    and each dongle's cycle is ~count times shorter. A dongle left with one
+    window parks on it - no retuning at all."""
+    every = sorted({w.center_hz for w in default_windows} | {w.center_hz for lane in lanes for w in lane.windows})
+    mine = {c for i, c in enumerate(every) if i % count == index}
+    kept_lanes = []
+    for lane in lanes:
+        windows = [w for w in lane.windows if w.center_hz in mine]
+        if windows:
+            kept_lanes.append(_Lane(weight=lane.weight, windows=windows, is_range=lane.is_range))
+    return [w for w in default_windows if w.center_hz in mine], kept_lanes
+
+
 class ScannerEngine(threading.Thread):
-    def __init__(self, config: AppConfig, channels: list[Channel], blacklist: list[BlacklistEntry]):
+    def __init__(
+        self, config: AppConfig, channels: list[Channel], blacklist: list[BlacklistEntry],
+        device: dict | None = None, share: tuple[int, int] = (0, 1), shared: SharedFrequencies | None = None,
+    ):
+        """``device`` ({"driver", "device_args"}) overrides config.device's
+        for an extra dongle; ``share`` = (this engine's index, engine count)
+        splits the scan plan between them (_partition_windows)."""
         super().__init__(daemon=True)
         self.signals = ScannerSignals()
         self.config = config
+        self._device = device
+        self._share = share
+        self._shared = shared
         self.channels = channels
         self.blacklist = blacklist
         # Vectorized mirror of self.blacklist - see _rebuild_blacklist_arrays().
@@ -660,18 +716,27 @@ class ScannerEngine(threading.Thread):
         self._rebuild_windows()
         _checkpoint("_rebuild_windows() done")
 
+    @property
+    def driver(self) -> str:
+        return str((self._device or {}).get("driver") or self.config.device.driver)
+
+    @property
+    def device_args(self) -> str:
+        return str((self._device or {}).get("device_args", "")) if self._device else self.config.device.device_args
+
     def _open_backend(self, allow_simulated_fallback: bool) -> None:
         dev = self.config.device
-        _checkpoint(f"_open_backend: constructing (driver={dev.driver!r})")
-        if allow_simulated_fallback or dev.driver == "simulated":
+        driver, device_args = self.driver, self.device_args
+        _checkpoint(f"_open_backend: constructing (driver={driver!r})")
+        if allow_simulated_fallback or driver == "simulated":
             raw_backend = create_backend(
-                dev.driver, dev.device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db,
+                driver, device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db,
                 debug_mode=self.config.debug_mode,
             )
         else:
             # Reconnect after real hardware was seen: keep failing, never fall
             # back to simulation (gotcha 8/10).
-            raw_backend = open_real_backend(dev.driver, dev.device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db)
+            raw_backend = open_real_backend(driver, device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db)
         # Hardware reads happen on their own thread (gotcha 11), so nothing in
         # this loop can delay them; it proxies the backend's interface.
         self._backend = AcquisitionThread(raw_backend, self._chunk_size(), debug=self.config.debug_mode)
@@ -679,7 +744,7 @@ class ScannerEngine(threading.Thread):
         _checkpoint(f"_open_backend: constructed (label={self._backend.label})")
         self._applied_gain_mode, self._applied_gain_db = dev.gain_mode, dev.gain_db
         self.signals.gain_range_changed.emit(*self._backend.gain_range_db)
-        if self._backend.label == "simulated" and dev.driver != "simulated":
+        if self._backend.label == "simulated" and driver != "simulated":
             self.signals.log.emit(tr("SoapySDR not found/configured - running in SIMULATION mode."))
         # Whether one tick's worth of samples fits in a single readStream() call.
         mtu = getattr(self._backend, "stream_mtu", None)
@@ -743,6 +808,8 @@ class ScannerEngine(threading.Thread):
             self._backend.close()
         # Wait for in-flight writes/transcodes before a quick Stop/Start.
         self._slot_pool.shutdown(wait=True)
+        if self._shared is not None:
+            self._shared.release_all(self)
 
     def _rebuild_windows(self) -> None:
         """Rebuilds everything the weighted scanner needs to pick its next
@@ -930,6 +997,8 @@ class ScannerEngine(threading.Thread):
             if c.name:
                 name_by_khz[round(c.freq_hz / 1000)] = c.name
 
+        if self._share[1] > 1:
+            default_windows, priority_lanes = _partition_windows(default_windows, priority_lanes, *self._share)
         with self._lock:
             self._priority_lanes = priority_lanes
             self._default_lane = _Lane(weight=0.0, windows=default_windows, is_range=False)
@@ -1208,6 +1277,7 @@ class ScannerEngine(threading.Thread):
                     f for f, ok in zip(window.freqs, not_blacklisted)
                     if ok and f not in self._slots
                     and not any(abs(f - w) < _WFM_GUARD_HZ for w in wfm_active)
+                    and not (self._shared and self._shared.taken_by_other(f, self))
                 ]
                 raw_powers: dict[int, float] = {}
                 best_freq = best_level = None
@@ -1509,6 +1579,8 @@ class ScannerEngine(threading.Thread):
         return len(self._slots) >= limit
 
     def _open_slot(self, freq_hz: int, window: ScanWindow, level_dbfs: float) -> None:
+        if self._shared is not None and not self._shared.claim(freq_hz, self):
+            return  # another dongle opened it between our check and now
         dev = self.config.device
         demod = Demodulator(dev.sample_rate_hz, AUDIO_RATE)
         noise_reducer = NoiseReducer(AUDIO_RATE)
@@ -1555,7 +1627,7 @@ class ScannerEngine(threading.Thread):
             "edge_correction_db": self._correction_db(offset_hz),
             "gain_mode": self._applied_gain_mode,
             "gain_db": self._applied_gain_db,
-            "device_driver": dev.driver,
+            "device_driver": self.driver,
             "scanning_dwell_ms": timing.scanning_dwell_ms,
             "tuning_time_ms": self._effective_tuning_time_ms(window),
             "linger_time_ms": self._effective_linger_time_ms(window),
@@ -1574,6 +1646,8 @@ class ScannerEngine(threading.Thread):
         slot = self._slots.pop(freq_hz, None)
         if slot is None:
             return
+        if self._shared is not None:
+            self._shared.release(freq_hz, self)
         if slot.dsd is not None:
             slot.dsd.close()
             slot.meta.update(talkgroup=slot.dsd.talkgroup, source=slot.dsd.source, encrypted=slot.dsd.encrypted)

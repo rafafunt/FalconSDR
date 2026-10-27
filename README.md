@@ -30,6 +30,8 @@ headless receiver you listen to from any phone or PC on your network.
   reduction.
 - Blacklist for carriers and interference, one click from the live view.
 - AM, NFM, WFM and SSB demodulation; software or hardware gain control.
+- Experimental: several dongles at once - the scan plan is split between
+  them, so each band is revisited that many times more often.
 - Optional, experimental digital voice: DMR and Yaesu System Fusion (C4FM)
   through [dsd-fme](https://github.com/lwvmobile/dsd-fme), installed from
   Settings → Digital voice. Encrypted calls stay muted.

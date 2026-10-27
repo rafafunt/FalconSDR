@@ -82,6 +82,10 @@ class DeviceConfig:
     gain_mode: str = "sw_auto"
 
     gain_db: float = 30.0
+    # Experimental: more dongles scanning at the same time, each
+    # {"driver", "device_args"} like the two fields above; the scan plan is
+    # split between all of them (scanner_engine._partition_windows).
+    extra_devices: list = field(default_factory=list)
 
 
 @dataclass

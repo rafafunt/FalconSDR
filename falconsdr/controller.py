@@ -27,7 +27,7 @@ from .config import DEFAULT_RECORDINGS_DIR, AppConfig, ScheduleEntry, VfoRangeCo
 from .models import BlacklistEntry, Channel, Modulation, snap_airband_hz
 from .playback.index import Library
 from .playback.transcription_availability import is_transcription_installed
-from .scanner_engine import AUDIO_RATE, ScannerEngine
+from .scanner_engine import AUDIO_RATE, ScannerEngine, SharedFrequencies
 from .sdr_backend import enumerate_devices
 
 # Bounds each listener's backlog so a slow or stalled browser can never make
@@ -52,6 +52,9 @@ def _coerce(current: Any, value: Any) -> Any:
 
 # Lists of dataclasses sent whole: field name -> item type.
 _LIST_TYPES = {"bands": VfoRangeConfig, "entries": ScheduleEntry}
+_ACTIVE = ("SIGNAL_DETECTED", "LINGER")
+# With several dongles the status shown is the most telling of their states.
+_STATE_RANK = ["SIGNAL_DETECTED", "LINGER", "RECONNECTING", "SCANNING", "TUNING", "CALCULATE_NEXT_FREQ", "IDLE"]
 
 
 def merge_patch(obj: Any, patch: dict) -> None:
@@ -92,9 +95,13 @@ class Controller:
         self.channels: list[Channel] = storage.load_channels()
         self.blacklist: list[BlacklistEntry] = storage.load_blacklist()
         self._lock = threading.Lock()
-        self._engine: Optional[ScannerEngine] = None
+        # One engine per dongle (config.device + device.extra_devices); the
+        # first is the "lead". _audible = index of the one heard live.
+        self._engines: list[ScannerEngine] = []
+        self._finished: set[int] = set()
+        self._lives: list[dict[str, Any]] = []
+        self._audible = 0
         self._solo_band: Optional[int] = None
-        self._live: dict[str, Any] = self._idle_live()
         self._spectrum: Optional[dict] = None
         self._log: deque[dict] = deque(maxlen=_LOG_SIZE)
         self._log_id = 0
@@ -116,9 +123,10 @@ class Controller:
         self.library.start()
 
     def shutdown(self) -> None:
-        engine = self._engine
-        if engine is not None:
+        engines = self._engines
+        for engine in engines:
             engine.request_stop()
+        for engine in engines:
             engine.join(timeout=5.0)
         self.library.stop()
 
@@ -132,8 +140,7 @@ class Controller:
         return names
 
     def open_recording_paths(self) -> set[Path]:
-        engine = self._engine
-        return engine.open_recording_paths() if engine is not None else set()
+        return set().union(*(engine.open_recording_paths() for engine in self._engines))
 
     def log(self, message: str) -> None:
         with self._lock:
@@ -145,87 +152,123 @@ class Controller:
     # -- scanner lifecycle ----------------------------------------------------
     @property
     def running(self) -> bool:
-        return self._engine is not None
+        return bool(self._engines)
+
+    def _devices(self) -> list[Optional[dict]]:
+        """None = config.device itself, then every usable extra dongle."""
+        extra = [d for d in self.config.device.extra_devices if isinstance(d, dict) and d.get("driver")]
+        return [None, *extra]
 
     def start(self) -> None:
         with self._lock:
-            existing = self._engine
-        if existing is not None:
-            if not existing._stop_evt.is_set():
+            existing = list(self._engines)
+        if existing:
+            if not all(e._stop_evt.is_set() for e in existing):
                 return
-            # Start right after Stop: let the old engine finish first, never
+            # Start right after Stop: let the old engines finish first, never
             # two engines fighting over one dongle.
-            existing.join(timeout=8.0)
-            if existing.is_alive():
+            for e in existing:
+                e.join(timeout=8.0)
+            if any(e.is_alive() for e in existing):
                 raise RuntimeError(i18n.tr("Scanner is still stopping - try again"))
-        engine = ScannerEngine(self.config, self.channels, self.blacklist)
-        s = engine.signals
-        s.state_changed.connect(lambda v: self._set_live(state=str(v)))
-        s.level_changed.connect(lambda v: self._set_live(level=round(float(v), 1)))
-        s.freq_changed.connect(lambda v: self._set_live(frequencies=[[int(f), str(n)] for f, n in v]))
-        s.recording_changed.connect(lambda active, _p: self._set_live(recording=bool(active)))
-        s.manual_recording_changed.connect(lambda active, _p: self._set_live(manual_recording=bool(active)))
-        s.hold_changed.connect(lambda v: self._set_live(hold=bool(v)))
-        s.raw_iq_recording_changed.connect(lambda active, _p: self._set_live(raw_iq=bool(active)))
-        s.cycle_time_changed.connect(lambda v: self._set_live(cycle_time=round(float(v), 2)))
-        s.gain_range_changed.connect(lambda lo, hi: self._set_live(gain_range=[float(lo), float(hi)]))
-        s.recording_finished.connect(lambda path: self.library.add_file(Path(path)))
-        s.spectrum_ready.connect(self._on_spectrum)
-        s.live_audio_ready.connect(self._on_live_audio)
-        s.blacklisted.connect(self._on_blacklisted)
-        s.log.connect(self.log)
-        s.finished.connect(lambda: self._on_finished(engine))
-        if self._solo_band is not None and self._solo_band < len(self.config.bands):
-            engine.set_solo_band(self.config.bands[self._solo_band])
+        devices = self._devices()
+        shared = SharedFrequencies() if len(devices) > 1 else None
+        engines = [
+            ScannerEngine(self.config, self.channels, self.blacklist, device=dev, share=(k, len(devices)), shared=shared)
+            for k, dev in enumerate(devices)
+        ]
+        for k, engine in enumerate(engines):
+            self._connect(k, engine, len(engines))
+            if self._solo_band is not None and self._solo_band < len(self.config.bands):
+                engine.set_solo_band(self.config.bands[self._solo_band])
         with self._lock:
-            self._engine = engine
-            self._live = {**self._idle_live(), "state": "CALCULATE_NEXT_FREQ"}
-        engine.start()
+            self._engines, self._finished, self._audible = engines, set(), 0
+            self._lives = [{**self._idle_live(), "state": "CALCULATE_NEXT_FREQ"} for _ in engines]
+        for engine in engines:
+            engine.start()
+
+    def _connect(self, k: int, engine: ScannerEngine, count: int) -> None:
+        s = engine.signals
+        s.state_changed.connect(lambda v: self._set_live(k, state=str(v)))
+        s.level_changed.connect(lambda v: self._set_live(k, level=round(float(v), 1)))
+        s.freq_changed.connect(lambda v: self._set_live(k, frequencies=[[int(f), str(n)] for f, n in v]))
+        s.recording_changed.connect(lambda active, _p: self._set_live(k, recording=bool(active)))
+        s.manual_recording_changed.connect(lambda active, _p: self._set_live(k, manual_recording=bool(active)))
+        s.hold_changed.connect(lambda v: self._set_live(k, hold=bool(v)))
+        s.raw_iq_recording_changed.connect(lambda active, _p: self._set_live(k, raw_iq=bool(active)))
+        s.cycle_time_changed.connect(lambda v: self._set_live(k, cycle_time=round(float(v), 2)))
+        s.gain_range_changed.connect(lambda lo, hi: self._set_live(k, gain_range=[float(lo), float(hi)]))
+        s.recording_finished.connect(lambda path: self.library.add_file(Path(path)))
+        s.spectrum_ready.connect(lambda *a: self._on_spectrum(k, *a))
+        s.live_audio_ready.connect(lambda mono: self._on_live_audio(k, mono))
+        s.blacklisted.connect(self._on_blacklisted)
+        s.log.connect(self.log if count == 1 else (lambda msg: self.log(f"SDR {k + 1}: {msg}")))
+        s.finished.connect(lambda: self._on_finished(k, engine))
 
     def stop(self) -> None:
-        engine = self._engine
-        if engine is not None:
+        for engine in self._engines:
             engine.request_stop()
 
-    def _on_finished(self, engine: ScannerEngine) -> None:
+    def _on_finished(self, k: int, engine: ScannerEngine) -> None:
         with self._lock:
-            if self._engine is not engine:
+            if k >= len(self._engines) or self._engines[k] is not engine:
                 return
-            self._engine = None
-            self._live = self._idle_live()
-            self._spectrum = None
+            self._finished.add(k)
+            if len(self._finished) == len(self._engines):
+                self._engines, self._lives = [], []
+                self._spectrum = None
+
+    def _target(self) -> ScannerEngine:
+        """The engine a listener's command means: the one being heard."""
+        engines = self._engines
+        if not engines:
+            raise RuntimeError(i18n.tr("Scanner is not running"))
+        return engines[self._audible] if self._audible < len(engines) else engines[0]
 
     def command(self, name: str, payload: dict) -> None:
-        engine = self._engine
         if name == "solo":
             idx = payload.get("band")
             self._solo_band = int(idx) if idx is not None else None
-            if engine is not None:
-                band = self.config.bands[self._solo_band] if self._solo_band is not None else None
+            band = self.config.bands[self._solo_band] if self._solo_band is not None else None
+            for engine in self._engines:
                 engine.set_solo_band(band)
             return
-        if engine is None:
-            raise RuntimeError(i18n.tr("Scanner is not running"))
+        engine = self._target()
         enabled = bool(payload.get("enabled"))
         if name == "skip":
             engine.request_skip()
         elif name == "blacklist":
             engine.request_skip_and_blacklist()
         elif name == "hold":
-            engine.set_hold(enabled)
+            if enabled:
+                engine.set_hold(True)
+            else:
+                for e in self._engines:  # "Resume" whichever is held
+                    e.set_hold(False)
         elif name == "manual_record":
-            (engine.start_manual_recording if enabled else engine.stop_manual_recording)()
+            if enabled:
+                engine.start_manual_recording()
+            else:
+                for e in self._engines:
+                    e.stop_manual_recording()
         elif name == "raw_iq":
-            (engine.start_raw_iq_recording if enabled else engine.stop_raw_iq_recording)()
+            if enabled:
+                engine.start_raw_iq_recording()
+            else:
+                for e in self._engines:
+                    e.stop_raw_iq_recording()
         else:
             raise ValueError("Unknown command")
 
     # -- engine signal handlers (engine threads) ------------------------------
-    def _set_live(self, **values: Any) -> None:
+    def _set_live(self, k: int, **values: Any) -> None:
         with self._lock:
-            self._live.update(values)
+            if k < len(self._lives):
+                self._lives[k].update(values)
 
-    def _on_spectrum(self, freqs: Any, db: Any, trigger_dbfs: float, custom: bool) -> None:
+    def _on_spectrum(self, k: int, freqs: Any, db: Any, trigger_dbfs: float, custom: bool) -> None:
+        if k != self._audible:
+            return  # the spectrum follows the dongle being heard
         freqs, db = np.asarray(freqs), np.asarray(db)
         if db.size > _SPECTRUM_POINTS:
             step = int(np.ceil(db.size / _SPECTRUM_POINTS))
@@ -248,7 +291,14 @@ class Controller:
         )
         self.set_blacklist(self.blacklist + [entry])
 
-    def _on_live_audio(self, mono: Any) -> None:
+    def _on_live_audio(self, k: int, mono: Any) -> None:
+        with self._lock:
+            # One dongle on the speaker at a time: the one heard keeps it while
+            # its transmission lasts, then the next one to hear something takes over.
+            owner = self._audible
+            if k != owner and owner < len(self._lives) and self._lives[owner]["state"] in _ACTIVE:
+                return
+            self._audible = k
         pcm16 = (np.clip(np.asarray(mono, dtype=np.float32), -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
         with self._audio_lock:
             for q in self._audio_subscribers:
@@ -278,12 +328,30 @@ class Controller:
             return len(self._audio_subscribers)
 
     # -- snapshots --------------------------------------------------------------
+    def _merged_live_locked(self) -> dict[str, Any]:
+        """One status for the UI out of every dongle's: the heard one's
+        frequencies, level and gain first, then whatever the others have on air."""
+        lives = self._lives
+        if not lives:
+            return self._idle_live()
+        heard = lives[self._audible] if self._audible < len(lives) else lives[0]
+        if len(lives) == 1:
+            return dict(heard)
+        others = [f for live in lives if live is not heard and live["state"] in _ACTIVE for f in live["frequencies"]]
+        return {
+            **heard,
+            "state": min((live["state"] for live in lives), key=lambda s: _STATE_RANK.index(s) if s in _STATE_RANK else 99),
+            "frequencies": heard["frequencies"] + others,
+            **{key: any(live[key] for live in lives) for key in ("recording", "manual_recording", "raw_iq", "hold")},
+            "dongles": [{"state": live["state"], "frequencies": live["frequencies"]} for live in lives],
+        }
+
     def live(self, since_log: int = 0) -> dict:
         with self._lock:
             return {
-                **self._live,
-                "running": self._engine is not None,
-                "stopping": self._engine is not None and self._engine._stop_evt.is_set(),
+                **self._merged_live_locked(),
+                "running": bool(self._engines),
+                "stopping": any(e._stop_evt.is_set() for e in self._engines),
                 "solo_band": self._solo_band,
                 "schedule_active": schedule.active_indices(self.config),
                 "clock": time.strftime("%H:%M"),
@@ -344,23 +412,20 @@ class Controller:
     def set_channels(self, channels: list[Channel]) -> None:
         self.channels = channels
         storage.save_channels(channels)
-        engine = self._engine
-        if engine is not None:
+        for engine in self._engines:
             engine.update_channels(channels)
             engine.request_rebuild()
 
     def set_blacklist(self, blacklist: list[BlacklistEntry]) -> None:
         self.blacklist = blacklist
         storage.save_blacklist(blacklist)
-        engine = self._engine
-        if engine is not None:
+        for engine in self._engines:
             engine.update_blacklist(blacklist)
 
     def _rebuild(self) -> None:
-        engine = self._engine
-        if engine is not None:
-            if self._solo_band is not None and self._solo_band >= len(self.config.bands):
-                self._solo_band = None
+        if self._solo_band is not None and self._solo_band >= len(self.config.bands):
+            self._solo_band = None
+        for engine in self._engines:
             engine.set_solo_band(self.config.bands[self._solo_band] if self._solo_band is not None else None)
             engine.request_rebuild()
 

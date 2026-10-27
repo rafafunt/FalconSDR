@@ -2565,3 +2565,18 @@ msgstr "RTL-SDR #{n} (librtlsdr) - zajęty lub bez sterownika WinUSB"
 
 msgid "Some dongles share a serial number (often 00000001) and are told apart only by USB order, which can change after replugging. To keep your choice for good, give each one its own serial with rtl_eeprom -s."
 msgstr "Niektóre dongle mają ten sam numer seryjny (często 00000001) i rozróżnia je tylko kolejność USB, która może się zmienić po przełożeniu. Żeby wybór był stały, nadaj każdemu własny numer poleceniem rtl_eeprom -s."
+
+msgid "(not connected)"
+msgstr "(niepodłączony)"
+
+msgid "Dongle {n}"
+msgstr "Dongle {n}"
+
+msgid "No other SDR device found - plug it in, then reload this page."
+msgstr "Nie znaleziono innego urządzenia SDR - podłącz je i odśwież stronę."
+
+msgid "Scan with another dongle (experimental)"
+msgstr "Skanuj kolejnym donglem (eksperymentalne)"
+
+msgid "The scan plan is split between all dongles - each scans its own share of the windows, so a full cycle is that much shorter. You hear one dongle at a time; the others keep recording."
+msgstr "Plan skanowania dzielony jest między wszystkie dongle - każdy skanuje swoją część okien, więc pełny cykl jest odpowiednio krótszy. Słychać jeden dongle naraz, pozostałe w tym czasie nagrywają."

@@ -583,6 +583,24 @@ catalog loads; wrap them in a function called at point of use
     the user to `#/settings/digital`; the "experimental, please report bugs"
     note appears only in the Install dialog - no banners.
 
+46. **Several dongles (experimental) = one `ScannerEngine` per dongle**
+    (`config.device` + `device.extra_devices`, each `{driver, device_args}`),
+    not one engine juggling several streams - each keeps its own
+    `AcquisitionThread`, slots, gain/AGC, hold and recency boosts. Every
+    engine builds the *same* plan from the same config and keeps every n-th
+    window by frequency (`_partition_windows`, applied at the end of
+    `_rebuild_windows` - any new lane type must survive it); a dongle left
+    with one window parks there. `SharedFrequencies` makes sure one
+    transmission is recorded once even if two dongles' windows overlap (edge
+    probes) - plain lock, never touched by an AcquisitionThread (gotcha 11).
+    `Controller` keeps `_engines`/`_lives` lists: the UI status is merged
+    (`_merged_live_locked`, plus per-dongle `dongles`), the speaker and the
+    spectrum follow one dongle (`_audible`) - it keeps them while its
+    transmission lasts - and Skip/Hold/Record act on that one. Measured on a
+    virtual busy airband (36 random 1-4 s transmissions in 45 s): 1/2/4
+    dongles recorded 14/28/50 % of them, no duplicates - the default 5 s
+    linger is what holds a single dongle back.
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch
