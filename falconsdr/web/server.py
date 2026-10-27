@@ -610,8 +610,15 @@ def make_handler(app: App):
     return Handler
 
 
+class _Server(ThreadingHTTPServer):
+    # socketserver's default listen backlog is 5, but one page load opens ~20
+    # connections at once (HTTP/1.0: every JS module is its own request).
+    # Reported on macOS: a blank page on every other load - one module never loaded.
+    request_queue_size = 128
+
+
 def serve(app: App, host: str, port: int) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), make_handler(app))
+    httpd = _Server((host, port), make_handler(app))
     httpd.daemon_threads = True
     threading.Thread(target=httpd.serve_forever, daemon=True, name="http").start()
     return httpd
