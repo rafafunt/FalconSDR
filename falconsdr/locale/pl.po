@@ -2580,3 +2580,27 @@ msgstr "Skanuj kolejnym donglem (eksperymentalne)"
 
 msgid "The scan plan is split between all dongles - each scans its own share of the windows, so a full cycle is that much shorter. You hear one dongle at a time; the others keep recording."
 msgstr "Plan skanowania dzielony jest między wszystkie dongle - każdy skanuje swoją część okien, więc pełny cykl jest odpowiednio krótszy. Słychać jeden dongle naraz, pozostałe w tym czasie nagrywają."
+
+msgid "Bias-T is on: the dongle powers its antenna input (until scanning stops)."
+msgstr "Bias-T włączony: dongle zasila wejście antenowe (do zatrzymania skanowania)."
+
+msgid "Bias-T (antenna power)"
+msgstr "Bias-T (zasilanie anteny)"
+
+msgid "On while scanning - powers an LNA or active antenna"
+msgstr "Włączony podczas skanowania - zasila LNA lub antenę aktywną"
+
+msgid "Turn on Bias-T?"
+msgstr "Włączyć Bias-T?"
+
+msgid "Bias-T sends about 4.5 V DC up the antenna cable to power an LNA or an active antenna."
+msgstr "Bias-T podaje ok. 4,5 V napięcia stałego na kabel antenowy, żeby zasilić LNA albo antenę aktywną."
+
+msgid "Turn it on only when such a device is connected and your dongle supports it (e.g. RTL-SDR Blog V3/V4). A DC-shorted antenna, a splitter or other equipment on the cable can be damaged - and so can the dongle."
+msgstr "Włącz tylko wtedy, gdy takie urządzenie jest podłączone, a Twój dongle to obsługuje (np. RTL-SDR Blog V3/V4). Antena zwierająca DC, rozgałęźnik lub inny sprzęt na kablu może się uszkodzić - podobnie jak sam dongle."
+
+msgid "FalconSDR switches it off whenever scanning stops. This is experimental - please report any problems."
+msgstr "FalconSDR wyłącza je zawsze, gdy skanowanie się zatrzymuje. To funkcja eksperymentalna - zgłaszaj proszę wszelkie problemy."
+
+msgid "Turn on"
+msgstr "Włącz"

@@ -234,8 +234,11 @@ export function listenView(root) {
     const current = devices.findIndex((d) => d.driver === c.device.driver && d.args === c.device.device_args);
     const sel = select(devices.map((d, i) => [i, d.label]), current >= 0 ? current : 0, (v) => {
       const d = devices[+v];
-      patchConfig({ device: { driver: d.driver, device_args: d.args } });
+      // Another dongle may sit on another antenna - its Bias-T starts off again.
+      patchConfig({ device: { driver: d.driver, device_args: d.args, bias_tee: false } });
+      renderDevice();
     });
+    const bias = biasTeeToggle(c.device.bias_tee, (v) => { patchConfig({ device: { bias_tee: v } }); renderDevice(); });
     const bw = h('input', { type: 'number', min: 0.25, max: 61.44, step: 0.01, value: (c.device.sample_rate_hz / 1e6).toFixed(2), onchange: (e) => patchConfig({ device: { sample_rate_hz: +e.target.value * 1e6 } }) });
     // Experimental: more dongles scanning together - each takes its share of the capture windows.
     const extra = c.device.extra_devices || [];
@@ -252,8 +255,9 @@ export function listenView(root) {
         setExtra(extra.map((e, j) => (j === i ? { driver: d.driver, device_args: d.args } : e)));
       });
       const del = h('button.icon.ghost', { title: t('Remove'), onclick: () => setExtra(extra.filter((_, j) => j !== i)) }, icon('x'));
-      extraInputs.push(s, del);
-      return h('label.field', t('Dongle {n}', { n: i + 2 }), h('div.row', s, del));
+      const xBias = biasTeeToggle(!!x.bias_tee, (v) => setExtra(extra.map((e, j) => (j === i ? { ...e, bias_tee: v } : e))));
+      extraInputs.push(s, del, xBias.querySelector('input'));
+      return h('div.col', { style: { gap: '6px' } }, h('label.field', t('Dongle {n}', { n: i + 2 }), h('div.row', s, del)), xBias);
     });
     const used = new Set([`${c.device.driver}|${c.device.device_args}`, ...extra.map((x) => `${x.driver}|${x.device_args}`)]);
     const add = h('button.ghost.small', {
@@ -263,13 +267,14 @@ export function listenView(root) {
         setExtra([...extra, { driver: d.driver, device_args: d.args }]);
       },
     }, icon('plus'), t('Scan with another dongle (experimental)'));
-    deviceInputs = [sel, bw, add, ...extraInputs];
+    deviceInputs = [sel, bw, bias.querySelector('input'), add, ...extraInputs];
     mount(device,
       h('div.card-head', h('h2', t('SDR device'))),
       h('div.fields',
         h('label.field', t('Device'), sel),
-        h('label.field', t('Capture width (MHz)'), bw),
-        ...extraRows),
+        h('label.field', t('Capture width (MHz)'), bw)),
+      bias,
+      ...extraRows,
       extra.length ? h('span.faint.small', t('The scan plan is split between all dongles - each scans its own share of the windows, so a full cycle is that much shorter. You hear one dongle at a time; the others keep recording.')) : null,
       add,
       h('span.faint.small.lockhint', t('Stop the scanner to change the device or capture width.')),
@@ -278,6 +283,22 @@ export function listenView(root) {
       isWindows() ? h('button.ghost.small', { onclick: () => driverHelp() }, t('Dongle not detected? Driver (Zadig) instructions')) : null);
     lockDevice(S.live && S.live.running);
   }
+  // Experimental, off by default: DC on the antenna cable can damage what's on it.
+  function biasTeeToggle(on, set) {
+    return toggle(t('Bias-T (antenna power)'), on, async (v, e) => {
+      if (v && !(await confirmBiasTee())) { e.target.checked = false; return; }
+      set(v);
+    }, { hint: on ? t('On while scanning - powers an LNA or active antenna') : t('Experimental') });
+  }
+
+  async function confirmBiasTee() {
+    return (await modal(t('Turn on Bias-T?'), h('div.col', { style: { gap: '10px' } },
+      h('p', t('Bias-T sends about 4.5 V DC up the antenna cable to power an LNA or an active antenna.')),
+      h('p', t('Turn it on only when such a device is connected and your dongle supports it (e.g. RTL-SDR Blog V3/V4). A DC-shorted antenna, a splitter or other equipment on the cable can be damaged - and so can the dongle.')),
+      h('p.small.muted', t('FalconSDR switches it off whenever scanning stops. This is experimental - please report any problems.'))),
+    [[t('Cancel'), false, 'ghost'], [t('Turn on'), true, 'danger solid']])) === true;
+  }
+
   function lockDevice(running) {
     deviceInputs.forEach((el) => { el.disabled = !!running; });
     const hint = device.querySelector('.lockhint');

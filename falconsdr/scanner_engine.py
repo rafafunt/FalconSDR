@@ -724,6 +724,10 @@ class ScannerEngine(threading.Thread):
     def device_args(self) -> str:
         return str((self._device or {}).get("device_args", "")) if self._device else self.config.device.device_args
 
+    @property
+    def bias_tee(self) -> bool:
+        return bool(self._device.get("bias_tee")) if self._device else self.config.device.bias_tee
+
     def _open_backend(self, allow_simulated_fallback: bool) -> None:
         dev = self.config.device
         driver, device_args = self.driver, self.device_args
@@ -731,12 +735,12 @@ class ScannerEngine(threading.Thread):
         if allow_simulated_fallback or driver == "simulated":
             raw_backend = create_backend(
                 driver, device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db,
-                debug_mode=self.config.debug_mode,
+                debug_mode=self.config.debug_mode, bias_tee=self.bias_tee,
             )
         else:
             # Reconnect after real hardware was seen: keep failing, never fall
             # back to simulation (gotcha 8/10).
-            raw_backend = open_real_backend(driver, device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db)
+            raw_backend = open_real_backend(driver, device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db, self.bias_tee)
         # Hardware reads happen on their own thread (gotcha 11), so nothing in
         # this loop can delay them; it proxies the backend's interface.
         self._backend = AcquisitionThread(raw_backend, self._chunk_size(), debug=self.config.debug_mode)
@@ -744,6 +748,8 @@ class ScannerEngine(threading.Thread):
         _checkpoint(f"_open_backend: constructed (label={self._backend.label})")
         self._applied_gain_mode, self._applied_gain_db = dev.gain_mode, dev.gain_db
         self.signals.gain_range_changed.emit(*self._backend.gain_range_db)
+        if self.bias_tee and self._backend.label != "simulated":
+            self.signals.log.emit(tr("Bias-T is on: the dongle powers its antenna input (until scanning stops)."))
         if self._backend.label == "simulated" and driver != "simulated":
             self.signals.log.emit(tr("SoapySDR not found/configured - running in SIMULATION mode."))
         # Whether one tick's worth of samples fits in a single readStream() call.

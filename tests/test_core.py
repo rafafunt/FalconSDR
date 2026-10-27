@@ -359,6 +359,93 @@ class RtlSdrListTest(unittest.TestCase):
         self.assertTrue(all("," not in d["label"] for d in devs))  # Controller.devices() joins with commas
 
 
+class BiasTeeTest(unittest.TestCase):
+    """Bias-T powers the antenna: on only when asked, only once the device is
+    fully set up, re-asserted on retune, and always off again on close."""
+
+    def test_native_rtlsdr(self) -> None:
+        from unittest import mock
+        from falconsdr import sdr_backend
+        calls = []
+
+        class FakeRtl:
+            fail_gains = False
+
+            def __init__(self, **_kw):
+                pass
+
+            def set_bias_tee(self, on):
+                calls.append(on)
+
+            def get_gains(self):
+                if FakeRtl.fail_gains:
+                    raise OSError("usb gone")
+                return [0, 496]
+
+            def set_gain(self, _g):
+                pass
+
+            def close(self):
+                calls.append("close")
+
+        with mock.patch.object(sdr_backend, "HAVE_RTLSDR_NATIVE", True), \
+                mock.patch.object(sdr_backend, "RtlSdr", FakeRtl, create=True), \
+                mock.patch.object(sdr_backend.SoapyBackend, "_wait_for_reopen_cooldown", staticmethod(lambda: None)), \
+                mock.patch.object(sdr_backend.SoapyBackend, "_record_close_time", staticmethod(lambda: None)):
+            b = sdr_backend.RtlSdrBackend("", 2_400_000, "manual", 30.0)
+            self.assertNotIn(True, calls)  # default: never on
+            b.close()
+            calls.clear()
+            b = sdr_backend.RtlSdrBackend("", 2_400_000, "manual", 30.0, bias_tee=True)
+            self.assertEqual(calls, [False, True])  # off while setting up, on at the very end
+            b.set_frequency(121_500_000)
+            self.assertEqual(calls[-1], True)
+            b.close()
+            self.assertEqual(calls[-2:], [False, "close"])
+            calls.clear()
+            FakeRtl.fail_gains = True  # a failed open must never leave it powered
+            with self.assertRaises(OSError):
+                sdr_backend.RtlSdrBackend("", 2_400_000, "manual", 30.0, bias_tee=True)
+            self.assertNotIn(True, calls)
+
+    def test_soapy(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+        from falconsdr import sdr_backend
+        writes = []
+
+        class FakeDevice:
+            def __init__(self, _args):
+                pass
+
+            def writeSetting(self, k, v):
+                writes.append((k, v))
+
+            def __getattr__(self, name):  # every other Soapy call: accept and do nothing
+                return lambda *a, **k: SimpleNamespace(minimum=lambda: 0.0, maximum=lambda: 49.6)
+
+        soapy = SimpleNamespace(Device=FakeDevice)
+        with mock.patch.object(sdr_backend, "HAVE_SOAPY", True), \
+                mock.patch.object(sdr_backend, "SoapySDR", soapy, create=True), \
+                mock.patch.object(sdr_backend, "SOAPY_SDR_RX", 0, create=True), \
+                mock.patch.object(sdr_backend, "SOAPY_SDR_CF32", "CF32", create=True), \
+                mock.patch.object(sdr_backend, "SdrIoDiagLogger", lambda: None), \
+                mock.patch.object(sdr_backend.SoapyBackend, "_wait_for_reopen_cooldown", staticmethod(lambda: None)), \
+                mock.patch.object(sdr_backend.SoapyBackend, "_record_close_time", staticmethod(lambda: None)):
+            b = sdr_backend.SoapyBackend("rtlsdr", "biastee=true", 2_400_000, "manual", 30.0)
+            self.assertNotIn("true", [v for _k, v in writes])  # neither by default nor smuggled in via device_args
+            b.close()
+            writes.clear()
+            b = sdr_backend.SoapyBackend("rtlsdr", "", 2_400_000, "manual", 30.0, bias_tee=True)
+            self.assertEqual(writes[-2:], [("biastee", "true"), ("bias_tee", "true")])
+            self.assertNotIn(("offset_tuning", "true"), writes)
+            writes.clear()
+            b.set_frequency(121_500_000)
+            self.assertEqual(writes, [("biastee", "true"), ("bias_tee", "true")])
+            b.close()
+            self.assertEqual(writes[-3:], [("biastee", "false"), ("bias_tee", "false"), ("offset_tuning", "false")])
+
+
 class MultiDongleTest(unittest.TestCase):
     def test_scan_plan_is_split_without_overlap_and_lanes_keep_their_weight(self) -> None:
         from falconsdr.channelizer import plan_windows

@@ -82,8 +82,11 @@ class DeviceConfig:
     gain_mode: str = "sw_auto"
 
     gain_db: float = 30.0
+    # Experimental: DC power on the antenna input for an LNA/active antenna.
+    # Off by default; only while scanning - sdr_backend switches it off on close.
+    bias_tee: bool = False
     # Experimental: more dongles scanning at the same time, each
-    # {"driver", "device_args"} like the two fields above; the scan plan is
+    # {"driver", "device_args", "bias_tee"} like the fields above; the scan plan is
     # split between all of them (scanner_engine._partition_windows).
     extra_devices: list = field(default_factory=list)
 

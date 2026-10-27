@@ -212,7 +212,7 @@ catalog loads; wrap them in a function called at point of use
     a `raw_iq/` subfolder, excluded from the audio library.
 16. **Windows/macOS get real RTL-SDR via `RtlSdrBackend`** (native
     librtlsdr/`pyrtlsdrlib` — SoapySDR has no pip wheel there). Matches
-    `SoapyBackend`'s contract: bias-tee off, raises instead of short-reads,
+    `SoapyBackend`'s contract: bias-tee as configured (off by default - gotcha 47), raises instead of short-reads,
     same CF32 scaling `(i - 127.4) / 128` (so a threshold means the same
     dBFS cross-platform). `open_real_backend()` picks Soapy vs native based
     on driver string/what's installed; `"auto"` tries Soapy then native,
@@ -600,6 +600,17 @@ catalog loads; wrap them in a function called at point of use
     virtual busy airband (36 random 1-4 s transmissions in 45 s): 1/2/4
     dongles recorded 14/28/50 % of them, no duplicates - the default 5 s
     linger is what holds a single dongle back.
+
+47. **Bias-T (DC on the antenna input) is experimental, off by default and
+    per dongle** (`DeviceConfig.bias_tee`, an extra dongle's `bias_tee` key).
+    Both backends open with it off, switch it on only as the very last step
+    of a successful open (a failed open never leaves the antenna powered),
+    re-assert it on every retune, and switch it off in `close()` - the V4
+    keeps the state across opens. Soapy "on" writes only `biastee`/
+    `bias_tee`, never `offset_tuning` (that changes tuning on other tuners);
+    "off" writes all three. `device_args` can never turn it on (filtered).
+    The UI asks for confirmation (damage warning) and resets it to off when
+    a different dongle is picked.
 
 ## Testing without touching the user's real config/recordings
 

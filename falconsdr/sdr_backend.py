@@ -64,17 +64,21 @@ class SdrBackend(ABC):
     gain_range_db: tuple[float, float] = DEFAULT_GAIN_RANGE_DB
 
 
-# Bias-tee must never power the antenna. On the RTL-SDR Blog V4 "offset
-# tuning" is the bias-tee line, and the state persists across opens - so all
-# three keys (names differ between SoapyRTLSDR versions) are forced off on
-# every (re)configure.
+# Bias-tee powers the antenna input - only when the user switched it on for
+# this dongle (DeviceConfig.bias_tee, off by default), and off again on
+# close: on the RTL-SDR Blog V4 the state persists across opens. Off = all
+# three keys (names differ between SoapyRTLSDR versions; on the V4 "offset
+# tuning" is the bias-tee line) on every (re)configure; on = the two real
+# bias-tee keys - offset tuning changes how other tuners tune.
 _BIAS_TEE_ARG_KEYS = ("biastee", "bias_tee", "offset_tuning")
+_BIAS_TEE_ON_KEYS = ("biastee", "bias_tee")
 
 
 class SoapyBackend(SdrBackend):
     label = "soapysdr"
 
-    def __init__(self, driver: str, device_args: str, sample_rate: float, gain_mode: str, gain_db: float):
+    def __init__(self, driver: str, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
+                 bias_tee: bool = False):
         if not HAVE_SOAPY:
             raise RuntimeError("The python3-soapysdr module is not installed")
         self._wait_for_reopen_cooldown()
@@ -87,14 +91,15 @@ class SoapyBackend(SdrBackend):
                     k, v = kv.split("=", 1)
                     k = k.strip()
                     if k in _BIAS_TEE_ARG_KEYS:
-                        # Never power the antenna - see _BIAS_TEE_ARG_KEYS.
+                        # Only the bias_tee setting powers the antenna - see _BIAS_TEE_ARG_KEYS.
                         continue
                     args[k] = v.strip()
         # A "k=v,k=v" string, not a dict: Ubuntu 26.04's python3-soapysdr
         # (0.8.1-7build1) silently matches no device when given a dict.
         args_str = ",".join(f"{k}={v}" for k, v in args.items())
         self.device = SoapySDR.Device(args_str)
-        self._disable_bias_tee()
+        self.bias_tee = False  # on only once the device is fully set up (end of __init__)
+        self._apply_bias_tee()
         self.sample_rate = sample_rate
         self.device.setSampleRate(SOAPY_SDR_RX, 0, sample_rate)
         try:
@@ -122,18 +127,22 @@ class SoapyBackend(SdrBackend):
         # Grown in read() so a whole chunk fits in one readStream() call.
         self._buf = np.empty(65536, dtype=np.complex64)
         self._io_diag = SdrIoDiagLogger()
+        if bias_tee:
+            self.bias_tee = True
+            self._apply_bias_tee()
 
-    def _disable_bias_tee(self) -> None:
-        for key in _BIAS_TEE_ARG_KEYS:
+    def _apply_bias_tee(self, on: bool | None = None) -> None:
+        on = self.bias_tee if on is None else on
+        for key in _BIAS_TEE_ON_KEYS if on else _BIAS_TEE_ARG_KEYS:
             try:
-                self.device.writeSetting(key, "false")
+                self.device.writeSetting(key, "true" if on else "false")
             except Exception:
                 pass
 
     def set_frequency(self, freq_hz: float) -> None:
         self.device.setFrequency(SOAPY_SDR_RX, 0, freq_hz)
         # Some driver builds re-derive the bias-tee on retune - re-assert it.
-        self._disable_bias_tee()
+        self._apply_bias_tee()
 
     def set_gain(self, gain_mode: str, gain_db: float) -> None:
         if gain_mode == "auto":
@@ -188,6 +197,7 @@ class SoapyBackend(SdrBackend):
             self.device.closeStream(self.stream)
         except Exception:
             pass
+        self._apply_bias_tee(False)  # never leave the antenna powered once FalconSDR lets go
         self._record_close_time()
 
     @staticmethod
@@ -238,7 +248,8 @@ class RtlSdrBackend(SdrBackend):
     """
     label = RTLSDR_NATIVE_DRIVER
 
-    def __init__(self, device_args: str, sample_rate: float, gain_mode: str, gain_db: float):
+    def __init__(self, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
+                 bias_tee: bool = False):
         if not HAVE_RTLSDR_NATIVE:
             raise RuntimeError("The pyrtlsdr/pyrtlsdrlib modules are not installed")
         SoapyBackend._wait_for_reopen_cooldown()
@@ -250,6 +261,7 @@ class RtlSdrBackend(SdrBackend):
             self.device = RtlSdr(serial_number=args["serial"])
         else:
             self.device = RtlSdr()
+        self.bias_tee = False  # on only once the device is fully set up (below)
         try:
             self.device.set_bias_tee(False)
             self.sample_rate = sample_rate
@@ -263,11 +275,14 @@ class RtlSdrBackend(SdrBackend):
             raise
         self._carry = np.empty(0, dtype=np.uint8)
         self._io_diag = SdrIoDiagLogger()
+        if bias_tee:
+            self.bias_tee = True
+            self.device.set_bias_tee(True)
 
     def set_frequency(self, freq_hz: float) -> None:
         self.device.center_freq = int(freq_hz)
         # See SoapyBackend.set_frequency() - re-asserted on every retune.
-        self.device.set_bias_tee(False)
+        self.device.set_bias_tee(self.bias_tee)
         # Leftover bytes belong to the previous frequency.
         self._carry = np.empty(0, dtype=np.uint8)
 
@@ -295,6 +310,10 @@ class RtlSdrBackend(SdrBackend):
         return iq.view(np.complex64)
 
     def close(self) -> None:
+        try:
+            self.device.set_bias_tee(False)  # never leave the antenna powered once FalconSDR lets go
+        except Exception:
+            pass
         try:
             self.device.close()
         except Exception:
@@ -351,7 +370,8 @@ def enumerate_devices() -> list[dict]:
     return devices
 
 
-def open_real_backend(driver: str, device_args: str, sample_rate: float, gain_mode: str, gain_db: float) -> SdrBackend:
+def open_real_backend(driver: str, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
+                      bias_tee: bool = False) -> SdrBackend:
     """Opens real hardware only - never falls back to SimulatedBackend.
 
     "auto" tries SoapySDR first (Linux's native path), then librtlsdr
@@ -359,18 +379,18 @@ def open_real_backend(driver: str, device_args: str, sample_rate: float, gain_mo
     opens through librtlsdr on a machine without SoapySDR, so the same
     config.json works across platforms."""
     if driver == RTLSDR_NATIVE_DRIVER or (driver == "rtlsdr" and not HAVE_SOAPY):
-        return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db)
+        return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee)
     if driver and driver != "auto":
-        return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db)
+        return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
     if not HAVE_SOAPY and HAVE_RTLSDR_NATIVE:
-        return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db)
+        return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee)
     try:
-        return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db)
+        return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
     except Exception as soapy_exc:
         if not HAVE_RTLSDR_NATIVE:
             raise
         try:
-            return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db)
+            return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee)
         except Exception:
             raise soapy_exc
 
@@ -648,7 +668,7 @@ class AcquisitionThread:
 
 def create_backend(
     driver: str, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
-    debug_mode: bool = False,
+    debug_mode: bool = False, bias_tee: bool = False,
 ) -> SdrBackend:
     if driver == "simulated":
         backend = SimulatedBackend(sample_rate)
@@ -659,7 +679,7 @@ def create_backend(
         # Simulate only in debug mode (gotcha 8): a device that failed to open
         # must show an error, not look like a working scan.
         try:
-            return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db)
+            return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
         except Exception:
             if not debug_mode:
                 raise
@@ -668,4 +688,4 @@ def create_backend(
             return backend
 
     # An explicitly chosen device that fails must always raise.
-    return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db)
+    return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
