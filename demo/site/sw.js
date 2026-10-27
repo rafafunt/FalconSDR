@@ -49,11 +49,19 @@ let uiLang = 'en';
 const log = [];
 let logId = 0;
 
+// One tuner per dongle (config.device + device.extra_devices), like the app's
+// one ScannerEngine per dongle: each scans every n-th window. Slots are shared,
+// so a transmission is recorded once; the speaker follows sim.primary.
 const sim = {
-  running: false, state: 'IDLE', windows: [], win: -1, winUntil: 0, lastVisit: new Map(), cycle: null,
-  slots: new Map(), primary: null, firstStart: null, ignored: new Set(), solo: null, manual: null, rawIq: false, hold: false, schedSig: '', schedAt: 0,
+  running: false, windows: [], tuners: [],
+  slots: new Map(), primary: null, firstStart: null, solo: null, manual: null, rawIq: false, schedSig: '', schedAt: 0,
   capLogged: new Map(),
 };
+const newTuner = (k) => ({ k, windows: [], win: -1, winUntil: 0, lastVisit: new Map(), cycle: null, hold: false, ignored: new Set(), on: new Set(), state: 'SCANNING' });
+const STATE_RANK = ['SIGNAL_DETECTED', 'LINGER', 'SCANNING'];
+const sdrPrefix = (T) => (sim.tuners.length > 1 ? `SDR ${T.k + 1}: ` : '');
+// The dongle whose status, spectrum, Skip and Hold the UI means: the one being heard.
+const shownTuner = () => (sim.slots.get(sim.primary) || {}).tuner || sim.tuners[0];
 const listeners = new Set();
 let audioT = 0, keepaliveT = 0;
 
@@ -315,11 +323,12 @@ function rebuild(logIt = true) {
   }
   closeAllSlots();
   sim.windows = windows;
-  sim.win = -1;
-  sim.lastVisit.clear();
-  sim.state = 'SCANNING';
-  sim.winUntil = 0;
-  if (logIt || sim.running) addLog(tr('Wideband scanning: {channels} channels in {windows} capture window(s) ({mhz:.2f} MHz each){extra}.', { channels: chans.length, windows: windows.length, mhz: width / 1e6, extra: '' }));
+  const n = 1 + (st.config.device.extra_devices || []).length;
+  sim.tuners = Array.from({ length: n }, (_, k) => newTuner(k));
+  windows.forEach((w, i) => sim.tuners[i % n].windows.push(w));  // every n-th window, like the app
+  if (logIt || sim.running) {
+    for (const T of sim.tuners) addLog(sdrPrefix(T) + tr('Wideband scanning: {channels} channels in {windows} capture window(s) ({mhz:.2f} MHz each){extra}.', { channels: chans.length, windows: T.windows.length, mhz: width / 1e6, extra: '' }));
+  }
 }
 
 function level(src, ch) {
@@ -331,30 +340,30 @@ function level(src, ch) {
 }
 const trigger = (ch) => opt(ch.band, 'trigger_level_dbfs', st.config.trigger_level_dbfs);
 
-function actives(w) {
-  return w.matches.filter(({ src, ch }) => !sim.ignored.has(ch.f) && onAir(src) && level(src, ch) >= trigger(ch));
+function actives(T, w) {
+  return w.matches.filter(({ src, ch }) => !T.ignored.has(ch.f) && onAir(src) && level(src, ch) >= trigger(ch));
 }
 
-function nextWindow(t) {
-  sim.ignored.clear();
-  if (!sim.windows.length) { sim.win = -1; return; }
-  sim.win = (sim.win + 1) % sim.windows.length;
-  const last = sim.lastVisit.get(sim.win);
-  sim.cycle = last ? t - last : null;
-  sim.lastVisit.set(sim.win, t);
-  const w = sim.windows[sim.win];
-  sim.winUntil = t + (opt(w.band, 'tuning_time_ms', st.config.timing.tuning_time_ms) + st.config.timing.scanning_dwell_ms) / 1000;
-  sim.state = 'SCANNING';
+function nextWindow(T, t) {
+  T.ignored.clear();
+  if (!T.windows.length) { T.win = -1; return; }
+  T.win = (T.win + 1) % T.windows.length;
+  const last = T.lastVisit.get(T.win);
+  T.cycle = last ? t - last : null;
+  T.lastVisit.set(T.win, t);
+  const w = T.windows[T.win];
+  T.winUntil = t + (opt(w.band, 'tuning_time_ms', st.config.timing.tuning_time_ms) + st.config.timing.scanning_dwell_ms) / 1000;
+  T.state = 'SCANNING';
 }
 
-function openSlot(m, t) {
+function openSlot(m, t, T) {
   const c = st.config;
   const recording = c.recording.enabled && (c.recording.max_concurrent_recordings === 0 || [...sim.slots.values()].filter((s) => s.rec).length < c.recording.max_concurrent_recordings);
   if (c.recording.enabled && !recording && Date.now() - (sim.capLogged.get(m.ch.f) || 0) > 30e3) {
     sim.capLogged.set(m.ch.f, Date.now());
     addLog(tr('Limit of {n} simultaneous recordings reached - {freq:.4f} MHz not recorded', { n: c.recording.max_concurrent_recordings, freq: m.ch.f / 1e6 }));
   }
-  const slot = { f: m.ch.f, src: m.src, ch: m.ch, rec: recording, start: Date.now(), startT: t, lastOn: t, parts: [], keys: new Set(), lvl: level(m.src, m.ch) };
+  const slot = { tuner: T, f: m.ch.f, src: m.src, ch: m.ch, rec: recording, start: Date.now(), startT: t, lastOn: t, parts: [], keys: new Set(), lvl: level(m.src, m.ch) };
   const p = m.src.conv && srcState(m.src).playing;
   if (p) addPart(slot, p);
   sim.slots.set(slot.f, slot);
@@ -377,31 +386,45 @@ function closeSlot(slot) {
 
 function closeAllSlots() { [...sim.slots.values()].forEach(closeSlot); }
 
-function step(t) {
-  if (!sim.windows.length) { sim.state = 'SCANNING'; return; }
-  if (sim.win < 0) nextWindow(t);
-  const w = sim.windows[sim.win];
-  if (!sim.slots.size) {
-    if (t < sim.winUntil) return;
-    const found = actives(w);
-    if (!found.length) { if (!sim.hold) nextWindow(t); return; }
-    found.forEach((m) => openSlot(m, t));
-  } else {
-    for (const m of actives(w)) if (!sim.slots.has(m.ch.f)) openSlot(m, t);
+function stepTuner(T, t) {
+  T.on = new Set();
+  if (!T.windows.length) { T.state = 'SCANNING'; return; }  // more dongles than windows: this one idles
+  if (T.win < 0) nextWindow(T, t);
+  const w = T.windows[T.win];
+  const mine = () => [...sim.slots.values()].filter((s) => s.tuner === T);
+  const found = actives(T, w).filter((m) => !sim.slots.has(m.ch.f));  // never a second dongle on the same transmission
+  if (!mine().length) {
+    if (t < T.winUntil) return;
+    if (!found.length) { if (!T.hold) nextWindow(T, t); return; }
   }
-  const on = new Set(actives(w).map((m) => m.ch.f));
-  for (const slot of [...sim.slots.values()]) {
-    if (on.has(slot.f)) { slot.lastOn = t; slot.lvl = level(slot.src, slot.ch); }
+  found.forEach((m) => openSlot(m, t, T));
+  T.on = new Set(actives(T, w).map((m) => m.ch.f));
+  for (const slot of mine()) {
+    if (T.on.has(slot.f)) { slot.lastOn = t; slot.lvl = level(slot.src, slot.ch); }
     else if (t - slot.lastOn > opt(slot.ch.band, 'linger_time_ms', st.config.timing.linger_time_ms) / 1000) closeSlot(slot);
   }
-  if (!sim.slots.size) { if (sim.hold) sim.state = 'SCANNING'; else nextWindow(t); return; }
-  if (!sim.primary || !sim.slots.has(sim.primary) || (!on.has(sim.primary) && on.size)) {
-    const best = [...sim.slots.values()].sort((a, b) => (on.has(b.f) - on.has(a.f)) || (b.lvl - a.lvl))[0];
+  if (!mine().length) { if (T.hold) T.state = 'SCANNING'; else nextWindow(T, t); return; }
+  T.state = mine().some((s) => T.on.has(s.f)) ? 'SIGNAL_DETECTED' : 'LINGER';
+}
+
+function step(t) {
+  for (const T of sim.tuners) stepTuner(T, t);
+  // The speaker keeps its transmission while it lasts, then goes to whatever is on air - on any dongle.
+  const slots = [...sim.slots.values()];
+  if (!slots.length) return;
+  const onAirNow = (s) => s.tuner.on.has(s.f);
+  const cur = sim.slots.get(sim.primary);
+  if (!cur || (!onAirNow(cur) && slots.some(onAirNow))) {
+    const best = slots.sort((a, b) => (onAirNow(b) - onAirNow(a)) || (b.lvl - a.lvl))[0];
     sim.primary = best.f;
     const p = best.src.conv && srcState(best.src).playing;
     if (sim.manual && p) { addPart(sim.manual, p); sim.manual.firstF ||= best.f; }
   }
-  sim.state = on.size ? 'SIGNAL_DETECTED' : 'LINGER';
+}
+
+function simState() {
+  if (!sim.running) return 'IDLE';
+  return sim.tuners.map((T) => T.state).sort((a, b) => STATE_RANK.indexOf(a) - STATE_RANK.indexOf(b))[0] || 'SCANNING';
 }
 
 function startScanner() {
@@ -409,6 +432,10 @@ function startScanner() {
   sim.running = true;
   sim.firstStart ??= nowS();
   rebuild(true);
+  const devs = [st.config.device, ...(st.config.device.extra_devices || [])];
+  sim.tuners.forEach((T) => {
+    if (devs[T.k] && devs[T.k].bias_tee) addLog(sdrPrefix(T) + tr('Bias-T is on: the dongle powers its antenna input (until scanning stops).'));
+  });
   save();
 }
 
@@ -416,10 +443,8 @@ function stopScanner() {
   closeAllSlots();
   if (sim.manual) stopManual();
   sim.running = false;
-  sim.state = 'IDLE';
-  sim.win = -1;
+  sim.tuners.forEach((T) => { T.win = -1; T.hold = false; });
   sim.rawIq = false;
-  sim.hold = false;
   save();
 }
 
@@ -427,11 +452,13 @@ function stopScanner() {
 // carry on. A skipped channel is ignored until the scanner leaves the window.
 function skip(lockout) {
   if (!sim.running) throw new Error(tr('Scanner is not running'));
-  sim.hold = false;  // Skip means "leave", as in the app
   const slot = sim.slots.get(sim.primary);
-  if (!slot) { nextWindow(nowS()); return; }
+  const T = slot ? slot.tuner : sim.tuners[0];
+  if (!T) return;
+  T.hold = false;  // Skip means "leave", as in the app
+  if (!slot) { nextWindow(T, nowS()); return; }
   closeSlot(slot);
-  sim.ignored.add(slot.f);
+  T.ignored.add(slot.f);
   if (lockout) {
     const today = new Date();
     st.blacklist = [...st.blacklist, { freq_hz: slot.f, margin_hz: st.config.default_blacklist_margin_hz, label: 'Auto-lockout (SKIP)', date_added: `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}` }];
@@ -439,7 +466,7 @@ function skip(lockout) {
     save();
   }
   if (sim.slots.size) sim.primary = [...sim.slots.values()].sort((a, b) => b.lvl - a.lvl)[0].f;
-  else nextWindow(nowS());
+  if (![...sim.slots.values()].some((s) => s.tuner === T)) nextWindow(T, nowS());
 }
 
 function stopManual() {
@@ -724,7 +751,8 @@ async function peaks(q) {
 
 // ------------------------------------------------------------------ live snapshot
 function spectrum() {
-  const w = sim.windows[sim.win];
+  const T = shownTuner();
+  const w = T && T.windows[T.win];
   if (!sim.running || !w) return null;
   const sr = st.config.device.sample_rate_hz, f0 = w.center - sr / 2, f1 = w.center + sr / 2, n = 512;
   const p = new Float64Array(n);
@@ -748,17 +776,24 @@ function live(since = Infinity) {
   const nm = new Map(st.channels.map((c) => [c.freq_hz, c.name]));
   const nameOf = (f) => nm.get(f) || [...nm].find(([cf]) => Math.abs(cf - f) < 2000)?.[1] || '';
   const slots = [...sim.slots.values()].sort((a, b) => (b.f === sim.primary) - (a.f === sim.primary));
-  const w = sim.windows[sim.win];
+  const T = shownTuner();
+  const w = T && T.windows[T.win];
+  const placeholder = (W) => [[W.chans[0].f, W.chans.length > 1 ? tr('{count} channels in window', { count: W.chans.length }) : nameOf(W.chans[0].f)]];
   const primary = sim.slots.get(sim.primary);
   let lvl = -60 + Math.random() * 2;
   if (primary) lvl = onAir(primary.src) ? primary.lvl : lvl;  // the hold after a transmission shows the noise
   else if (w) for (const { src, ch } of w.matches) if (onAir(src)) lvl = Math.max(lvl, level(src, ch));
   const d = new Date();
   return {
-    state: sim.state, level: Math.round(lvl * 10) / 10,
-    frequencies: sim.running ? (slots.length ? slots.map((s) => [s.f, nameOf(s.f)]) : w ? [[w.chans[0].f, w.chans.length > 1 ? tr('{count} channels in window', { count: w.chans.length }) : nameOf(w.chans[0].f)]] : []) : [],
-    recording: slots.some((s) => s.rec), manual_recording: !!sim.manual, raw_iq: sim.rawIq, hold: sim.hold,
-    cycle_time: sim.running ? sim.cycle : null, gain_range: (DEVICES.find((d) => d.driver === st.config.device.driver) || DEVICES[0]).gain, running: sim.running, stopping: false,
+    state: simState(), level: Math.round(lvl * 10) / 10,
+    frequencies: sim.running ? (slots.length ? slots.map((s) => [s.f, nameOf(s.f)]) : w ? placeholder(w) : []) : [],
+    recording: slots.some((s) => s.rec), manual_recording: !!sim.manual, raw_iq: sim.rawIq, hold: sim.tuners.some((x) => x.hold),
+    ...(sim.running && sim.tuners.length > 1 ? { dongles: sim.tuners.map((x) => {
+      const own = slots.filter((s) => s.tuner === x);
+      const W = x.windows[x.win];
+      return { state: x.state, frequencies: own.length ? own.map((s) => [s.f, nameOf(s.f)]) : W ? placeholder(W) : [] };
+    }) } : {}),
+    cycle_time: sim.running && T ? T.cycle : null, gain_range: (DEVICES.find((d) => d.driver === st.config.device.driver) || DEVICES[0]).gain, running: sim.running, stopping: false,
     solo_band: sim.solo, schedule_active: activeIndices(st.config), clock: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
     spectrum: spectrum(), log: log.filter((e) => e.id > since), audio_rate: RATE,
     demo_birdie: !!(primary && primary.src.birdie),
@@ -819,7 +854,8 @@ const ROUTES = {
   'POST /api/scanner/blacklist': () => { skip(true); return live(); },
   'POST /api/scanner/hold': async (req) => {
     if (!sim.running) throw new Error(tr('Scanner is not running'));
-    sim.hold = !!(await body(req)).enabled;
+    const on = !!(await body(req)).enabled;
+    if (on) { const T = shownTuner(); if (T) T.hold = true; } else sim.tuners.forEach((T) => { T.hold = false; });  // like the app
     return live();
   },
   'POST /api/scanner/manual_record': async (req) => {
