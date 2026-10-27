@@ -2599,8 +2599,8 @@ msgstr "Bias-T podaje ok. 4,5 V napięcia stałego na kabel antenowy, żeby zasi
 msgid "Turn it on only when such a device is connected and your dongle supports it (e.g. RTL-SDR Blog V3/V4). A DC-shorted antenna, a splitter or other equipment on the cable can be damaged - and so can the dongle."
 msgstr "Włącz tylko wtedy, gdy takie urządzenie jest podłączone, a Twój dongle to obsługuje (np. RTL-SDR Blog V3/V4). Antena zwierająca DC, rozgałęźnik lub inny sprzęt na kablu może się uszkodzić - podobnie jak sam dongle."
 
-msgid "FalconSDR switches it off whenever scanning stops. This is experimental - please report any problems."
-msgstr "FalconSDR wyłącza je zawsze, gdy skanowanie się zatrzymuje. To funkcja eksperymentalna - zgłaszaj proszę wszelkie problemy."
-
 msgid "Turn on"
 msgstr "Włącz"
+
+msgid "FalconSDR switches it off whenever scanning stops."
+msgstr "FalconSDR wyłącza je zawsze, gdy skanowanie się zatrzymuje."

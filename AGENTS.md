@@ -601,16 +601,17 @@ catalog loads; wrap them in a function called at point of use
     dongles recorded 14/28/50 % of them, no duplicates - the default 5 s
     linger is what holds a single dongle back.
 
-47. **Bias-T (DC on the antenna input) is experimental, off by default and
-    per dongle** (`DeviceConfig.bias_tee`, an extra dongle's `bias_tee` key).
+47. **Bias-T (DC on the antenna input) is off by default and per dongle**
+    (verified on a real RTL-SDR Blog V4: its LED follows the switch) (`DeviceConfig.bias_tee`, an extra dongle's `bias_tee` key).
     Both backends open with it off, switch it on only as the very last step
     of a successful open (a failed open never leaves the antenna powered),
     re-assert it on every retune, and switch it off in `close()` - the V4
     keeps the state across opens. Soapy "on" writes only `biastee`/
     `bias_tee`, never `offset_tuning` (that changes tuning on other tuners);
     "off" writes all three. `device_args` can never turn it on (filtered).
-    The UI asks for confirmation (damage warning) and resets it to off when
-    a different dongle is picked.
+    The UI asks for confirmation (damage warning; Cancel is the red,
+    focused button - owner's call) and resets it to off when a different
+    dongle is picked.
 
 ## Testing without touching the user's real config/recordings
 

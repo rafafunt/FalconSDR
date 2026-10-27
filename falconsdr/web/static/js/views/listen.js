@@ -283,20 +283,21 @@ export function listenView(root) {
       isWindows() ? h('button.ghost.small', { onclick: () => driverHelp() }, t('Dongle not detected? Driver (Zadig) instructions')) : null);
     lockDevice(S.live && S.live.running);
   }
-  // Experimental, off by default: DC on the antenna cable can damage what's on it.
+  // Off by default: DC on the antenna cable can damage what's on it.
   function biasTeeToggle(on, set) {
     return toggle(t('Bias-T (antenna power)'), on, async (v, e) => {
       if (v && !(await confirmBiasTee())) { e.target.checked = false; return; }
       set(v);
-    }, { hint: on ? t('On while scanning - powers an LNA or active antenna') : t('Experimental') });
+    }, { hint: on ? t('On while scanning - powers an LNA or active antenna') : null });
   }
 
   async function confirmBiasTee() {
     return (await modal(t('Turn on Bias-T?'), h('div.col', { style: { gap: '10px' } },
       h('p', t('Bias-T sends about 4.5 V DC up the antenna cable to power an LNA or an active antenna.')),
       h('p', t('Turn it on only when such a device is connected and your dongle supports it (e.g. RTL-SDR Blog V3/V4). A DC-shorted antenna, a splitter or other equipment on the cable can be damaged - and so can the dongle.')),
-      h('p.small.muted', t('FalconSDR switches it off whenever scanning stops. This is experimental - please report any problems.'))),
-    [[t('Cancel'), false, 'ghost'], [t('Turn on'), true, 'danger solid']])) === true;
+      h('p.small.muted', t('FalconSDR switches it off whenever scanning stops.'))),
+    // The safe choice is the prominent one, and last - the button a dialog focuses (Enter).
+    [[t('Turn on'), true, 'ghost'], [t('Cancel'), false, 'danger solid']])) === true;
   }
 
   function lockDevice(running) {

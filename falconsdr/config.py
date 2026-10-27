@@ -82,7 +82,7 @@ class DeviceConfig:
     gain_mode: str = "sw_auto"
 
     gain_db: float = 30.0
-    # Experimental: DC power on the antenna input for an LNA/active antenna.
+    # DC power on the antenna input for an LNA/active antenna.
     # Off by default; only while scanning - sdr_backend switches it off on close.
     bias_tee: bool = False
     # Experimental: more dongles scanning at the same time, each
