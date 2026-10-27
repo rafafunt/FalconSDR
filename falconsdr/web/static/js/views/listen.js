@@ -239,7 +239,10 @@ export function listenView(root) {
     const bw = h('input', { type: 'number', min: 0.25, max: 61.44, step: 0.01, value: (c.device.sample_rate_hz / 1e6).toFixed(2), onchange: (e) => patchConfig({ device: { sample_rate_hz: +e.target.value * 1e6 } }) });
     // Experimental: more dongles scanning together - each takes its share of the capture windows.
     const extra = c.device.extra_devices || [];
-    const choices = devices.filter((d) => d.driver !== 'auto');  // an extra dongle must be a specific one
+    // An extra dongle must be a specific one - and never a simulation next to real hardware (fake
+    // transmissions in the library, part of the band no longer really listened to).
+    const sim = c.device.driver === 'simulated';
+    const choices = devices.filter((d) => d.driver !== 'auto' && (d.driver === 'simulated') === sim);
     const setExtra = (list) => { patchConfig({ device: { extra_devices: list } }); renderDevice(); };
     const extraInputs = [];
     const extraRows = extra.map((x, i) => {
