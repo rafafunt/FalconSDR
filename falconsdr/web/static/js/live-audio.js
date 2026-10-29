@@ -1,10 +1,15 @@
 // Live audio: one long fetch() of raw mono PCM16 (X-Sample-Rate header) from
 // /api/audio, each chunk scheduled back to back as an AudioBufferSourceNode.
 // Works over plain http:// to an IP (no AudioWorklet, which needs HTTPS).
-// Keeps ~0.25 s of latency and resyncs after gaps (no transmission = no data).
+// Keeps ~0.4 s of latency and resyncs after gaps (no transmission = no data). 0.25 s was
+// too little to ride out the server's occasional ~220 ms stalls (tested in a browser, gotcha 51).
 
-const LATENCY_S = 0.25;
+const LATENCY_S = 0.4;
 const MAX_AHEAD_S = 1.2;
+// The lead is held near LATENCY_S by playing up to 3 % slower/faster, never by jumping: a resync
+// used to fire while the lead was merely low (< 20 ms, audio still playing) and inserted 250 ms of
+// silence - after a server hiccup, again and again (measured: 6 such gaps in 4 s at the headphones).
+const MAX_RATE_CHANGE = 0.03;
 
 export const liveAudio = {
   ctx: null,
@@ -82,12 +87,22 @@ export const liveAudio = {
         src.buffer = buf;
         src.connect(this.gain);
         const now = this.ctx.currentTime;
-        if (this.t < now + 0.02 || this.t > now + MAX_AHEAD_S) this.t = now + LATENCY_S;
+        // Really ran dry (or a new transmission after silence) / far too far ahead: start over.
+        if (this.t <= now || this.t > now + MAX_AHEAD_S) this.t = now + LATENCY_S;
+        const lead = this.t - now;
+        const speed = 1 + Math.max(-MAX_RATE_CHANGE, Math.min(MAX_RATE_CHANGE, (lead - LATENCY_S) * 0.5));
+        src.playbackRate.value = speed;
         src.start(this.t);
-        this.t += buf.duration;
+        this.t += buf.duration / speed;
       }
-    } catch { /* aborted or dropped - reconnect below */ }
+    } catch (e) {
+      if (!ctrl.signal.aborted) console.warn('live audio stream:', e);  // dropped - reconnect below
+    }
+    // Close this response for good before a reconnect: an error that left it open kept the
+    // connection, and every retry took another of the browser's 6 per server - the page froze.
+    const dropped = !ctrl.signal.aborted;
+    ctrl.abort();
     if (this.ctrl === ctrl) this.ctrl = null;
-    if (this.playing && !ctrl.signal.aborted) setTimeout(() => { if (this.playing && !this.ctrl) this._stream(); }, 1000);
+    if (this.playing && dropped) setTimeout(() => { if (this.playing && !this.ctrl) this._stream(); }, 1000);
   },
 };

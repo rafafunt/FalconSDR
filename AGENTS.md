@@ -664,6 +664,20 @@ catalog loads; wrap them in a function called at point of use
     side: count arrival gaps of the `/api/audio` PCM stream (>=120 ms), not
     the "missing audio" ratio, which the queue's catch-up bursts distort.
 
+51. **Test a `live-audio.js` change in a real browser, never only `node --check`**:
+    `tests/live_audio/run.sh <live-audio.js> <scenario> <seconds> <tag>` plays a test-server
+    tone (`clean`, `stall_catchup`, `stall_loss`, `real`, ...) through headless Chrome into a
+    temporary PipeWire null sink (you hear nothing), records it and `analyze.py` counts
+    silences, waveform jumps, `/api/audio` streams opened and console lines. A shipped
+    `const rate` shadowing the sample-rate `rate` threw on every chunk (only at run time);
+    each retry left its response open, the browser's 6 connections per server filled up
+    and the whole page froze. Hence: the loop always `abort()`s its response before a
+    reconnect. The jitter buffer: resync only when really dry (`this.t <= now` - `<`
+    alone missed the first chunk at t = 0 and started with no lead), otherwise up to 3 %
+    slower/faster play keeps the 0.4 s lead; the old "lead < 20 ms -> jump 250 ms ahead"
+    inserted 250 ms silences, again and again after one server stall (measured at the
+    headphones). `real` scenario: old 6 silences / 125 s, new 0.
+
 52. **Never load a whole recording into memory** (`audio_analysis._stream_samples`
     reads one `BLOCK_FRAMES` block at a time; `analyze_wav` keeps only an RMS per
     50 ms, `compute_waveform_peaks` a peak per small window). A WFM station that
