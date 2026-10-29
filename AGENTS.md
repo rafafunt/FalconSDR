@@ -263,7 +263,7 @@ catalog loads; wrap them in a function called at point of use
     `FILENAME_REGEX` is the single source of truth for every consumer.
     MP3 files need the same regex to also match `\.mp3$`, and the stdlib
     `wave` module can't decode mp3 at all — `audio_analysis.py` decodes via
-    ffmpeg to an in-memory WAV first (`_mp3_to_wav_bytes()`). Duration must
+    ffmpeg to a temporary WAV in `APP_DATA_DIR` first (`_mp3_to_wav_file()`, deleted after; not /tmp - that can be RAM). Duration must
     come from actual bytes read, not the WAV header's declared frame count —
     ffmpeg's non-seekable-pipe muxer writes a sentinel `0x7FFFFFFF` there.
 20. **Legal disclaimers are tracked per UI language**

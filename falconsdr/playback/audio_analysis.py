@@ -9,15 +9,17 @@ clipping and suspiciously short squelch "bursts".
 """
 from __future__ import annotations
 
-import io
 import math
+import os
 import subprocess
+import tempfile
 import wave
 from pathlib import Path
 
 import numpy as np
 
 from falconsdr.audio_transcode import NO_WINDOW, ffmpeg_exe, system_env
+from falconsdr.playback.config import APP_DATA_DIR
 from falconsdr.playback.models import QualityMetrics
 
 WINDOW_SEC = 0.05          # window for computing the RMS envelope
@@ -30,18 +32,27 @@ SHORT_RECORDING_SEC = 1.0
 SHORT_RECORDING_PENALTY = 15.0
 
 
-def _mp3_to_wav_bytes(path: Path) -> bytes:
-    """Decodes an mp3 to an in-memory WAV with ffmpeg (``wave`` can't read
-    mp3; PyAV is only part of the optional transcription extra). Raises on
-    any failure - callers treat it as an unreadable file."""
+def _mp3_to_wav_file(path: Path) -> Path:
+    """Decodes an mp3 with ffmpeg into a temporary WAV on disk (``wave`` can't read mp3; PyAV is
+    only part of the optional transcription extra) and returns its path - the caller deletes it.
+    On disk, not in memory: a recording of hours is hundreds of MB decoded, and (unlike a pipe)
+    the file gets a true frame count in its header. Raises on any failure - callers treat it as
+    an unreadable file."""
     ffmpeg = ffmpeg_exe()
     if ffmpeg is None:
         raise RuntimeError("ffmpeg not found")
-    proc = subprocess.run(
-        [ffmpeg, "-v", "error", "-i", str(path), "-f", "wav", "-"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, creationflags=NO_WINDOW, env=system_env(),
-    )
-    return proc.stdout
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)  # not /tmp: that can be a RAM disk
+    fd, name = tempfile.mkstemp(suffix=".wav", prefix="decode-", dir=APP_DATA_DIR)
+    os.close(fd)
+    try:
+        subprocess.run(
+            [ffmpeg, "-v", "error", "-y", "-i", str(path), "-f", "wav", name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True, creationflags=NO_WINDOW, env=system_env(),
+        )
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
+    return Path(name)
 
 
 _SAMPLE_FORMATS = {2: (np.int16, 0.0, 32768.0), 1: (np.uint8, 128.0, 128.0), 4: (np.int32, 0.0, 2147483648.0)}
@@ -55,10 +66,18 @@ def _stream_samples(path: Path, window_sec: float = 0.0, fine_windows: int = 0):
     drops below the trigger level was once 850 MB; loading it as float64 took ~8 GB and the
     kernel killed the server on every start). Every block but the last holds whole windows:
     ``window_sec`` long, or the file split into about ``fine_windows`` of them."""
-    # mp3 is decoded to an in-memory WAV, so one parser handles both.
-    pcm = _mp3_to_wav_bytes(path) if path.suffix.lower() == ".mp3" else None
-    source = io.BytesIO(pcm) if pcm is not None else str(path)
-    with wave.open(source, "rb") as wf:
+    # mp3 is decoded to a temporary WAV, so one parser handles both.
+    decoded = _mp3_to_wav_file(path) if path.suffix.lower() == ".mp3" else None
+    source = decoded or path
+    try:
+        yield from _wav_blocks(source, window_sec, fine_windows)
+    finally:
+        if decoded is not None:
+            decoded.unlink(missing_ok=True)
+
+
+def _wav_blocks(path: Path, window_sec: float, fine_windows: int):
+    with wave.open(str(path), "rb") as wf:
         n_channels = wf.getnchannels()
         sampwidth = wf.getsampwidth()
         framerate = wf.getframerate() or 1
@@ -67,8 +86,7 @@ def _stream_samples(path: Path, window_sec: float = 0.0, fine_windows: int = 0):
         dtype, offset, full_scale = _SAMPLE_FORMATS[sampwidth]
         frame_bytes = sampwidth * n_channels
         if fine_windows:  # the header's count can be a placeholder (gotcha 19): trust the size too
-            size = len(pcm) if pcm is not None else path.stat().st_size
-            window = max(1, min(wf.getnframes(), size // frame_bytes) // fine_windows)
+            window = max(1, min(wf.getnframes(), path.stat().st_size // frame_bytes) // fine_windows)
         else:
             window = max(1, int(framerate * window_sec))
         block = window * max(1, BLOCK_FRAMES // window)

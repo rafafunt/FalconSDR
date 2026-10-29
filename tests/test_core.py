@@ -665,6 +665,24 @@ class AudioAnalysisStreamingTest(unittest.TestCase):
             self.assertGreater(whole[0].clipping_ratio, 0)
             self.assertAlmostEqual(whole[0].duration_sec, 70_001 / 12500)
 
+    def test_mp3_is_decoded_to_a_temp_file_that_is_removed(self) -> None:
+        from falconsdr.audio_transcode import ffmpeg_exe, transcode_to_mp3
+        from falconsdr.playback import audio_analysis as aa
+        from falconsdr.playback.config import APP_DATA_DIR
+        if ffmpeg_exe() is None:
+            self.skipTest("no ffmpeg")
+        mp3 = transcode_to_mp3(self._wav(25_000))
+        self.assertIsNotNone(mp3)
+        quality, peaks = aa.analyze_wav(mp3), aa.compute_waveform_peaks(mp3, 400)
+        self.assertTrue(quality.readable)
+        self.assertAlmostEqual(quality.duration_sec, 2.0, delta=0.15)
+        self.assertEqual(peaks.size, 400)
+        self.assertEqual(list(APP_DATA_DIR.glob("decode-*.wav")), [])  # nothing left behind
+        broken = Path(tempfile.mkdtemp()) / "x.mp3"
+        broken.write_bytes(b"not an mp3")
+        self.assertFalse(aa.analyze_wav(broken).readable)
+        self.assertEqual(list(APP_DATA_DIR.glob("decode-*.wav")), [])  # nor after a failed decode
+
     def test_only_one_block_is_in_memory(self) -> None:
         from unittest import mock
         from falconsdr.playback import audio_analysis as aa

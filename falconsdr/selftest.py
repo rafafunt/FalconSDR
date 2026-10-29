@@ -59,7 +59,7 @@ def _checks():
         import wave
         import numpy as np
         from falconsdr.audio_transcode import ffmpeg_exe, transcode_to_mp3
-        from falconsdr.playback.audio_analysis import _mp3_to_wav_bytes
+        from falconsdr.playback.audio_analysis import analyze_wav
         exe = ffmpeg_exe()
         if exe is None:
             raise RuntimeError("no ffmpeg (system or imageio-ffmpeg)")
@@ -74,7 +74,8 @@ def _checks():
             mp3_path = transcode_to_mp3(wav_path)
             if mp3_path is None:
                 raise RuntimeError(f"{exe} could not encode MP3")
-            if len(_mp3_to_wav_bytes(mp3_path)) < 1000:
+            decoded = analyze_wav(mp3_path)
+            if not decoded.readable or decoded.duration_sec < 0.5:
                 raise RuntimeError("MP3 decoded to nothing")
         return f"encode + decode ok ({Path(exe).name})"
 
