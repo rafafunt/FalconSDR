@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Dict
 
-from falconsdr.config import atomic_write_text
+from falconsdr.config import atomic_write_text, dumps_chunked
 from falconsdr.playback.config import QUALITY_CACHE_FILE
 from falconsdr.playback.models import QualityMetrics
 
@@ -30,7 +30,7 @@ class QualityCache:
 
     def save(self) -> None:
         try:
-            atomic_write_text(self.cache_file, json.dumps(self._data))
+            atomic_write_text(self.cache_file, dumps_chunked(self._data))
         except OSError as exc:
             logger.warning("Failed to save the quality cache: %s", exc)
 

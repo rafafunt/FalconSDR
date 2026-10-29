@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Dict
 
-from falconsdr.config import atomic_write_text
+from falconsdr.config import atomic_write_text, dumps_chunked
 from falconsdr.playback.config import TRANSCRIPTION_CACHE_FILE
 from falconsdr.playback.models import TranscriptionResult
 
@@ -32,7 +32,7 @@ class TranscriptionCache:
 
     def save(self) -> None:
         try:
-            atomic_write_text(self.cache_file, json.dumps(self._data, ensure_ascii=False))
+            atomic_write_text(self.cache_file, dumps_chunked(self._data, ensure_ascii=False))
         except OSError as exc:
             logger.warning("Failed to save the transcription cache: %s", exc)
 

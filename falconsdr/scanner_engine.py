@@ -10,8 +10,10 @@ serviced at once, each in its own _Slot.
 from __future__ import annotations
 
 import datetime as dt
+import gc
 import math
 import os
+import sys
 import threading
 import time
 import traceback
@@ -66,6 +68,54 @@ _REFLECTION_MAX_SLOTS_CHECKED = 8
 # overran CHUNK_SECONDS - a CPU deficit, not the scheduling starvation
 # _maybe_boost_priority deals with.
 _DEBUG_TIMING = os.environ.get("FALCONSDR_DEBUG_LIVE_AUDIO") == "1"
+if _DEBUG_TIMING:
+    _gc_started = [0.0]
+
+    def _log_gc_pause(phase: str, info: dict) -> None:
+        """A collection stops every thread (GIL): on a big heap one is a gap in the audio."""
+        if phase == "start":
+            _gc_started[0] = time.perf_counter()
+        elif (time.perf_counter() - _gc_started[0]) * 1000 >= 20:
+            print(f"[gc {time.strftime('%H:%M:%S')}] gen{info['generation']} pause "
+                  f"{(time.perf_counter() - _gc_started[0]) * 1000:.0f}ms collected={info['collected']}", flush=True)
+
+    gc.callbacks.append(_log_gc_pause)
+
+
+class _StallSampler(threading.Thread):
+    """Debug (_DEBUG_TIMING): every 5 ms notes where the engine thread - and the
+    slot pool's threads - are, so a tick that overruns can say what it was doing.
+    Far fewer samples than elapsed/5 ms means something held the GIL in C code."""
+
+    def __init__(self, target_ident: int):
+        super().__init__(name="stall-sampler", daemon=True)
+        self._target = target_ident
+        self._samples: deque = deque(maxlen=800)  # (t, engine stack, pool frames)
+
+    @staticmethod
+    def _stack(frame, depth: int) -> tuple:
+        out = []
+        while frame is not None and len(out) < depth:
+            out.append(f"{os.path.basename(frame.f_code.co_filename)}:{frame.f_lineno}:{frame.f_code.co_name}")
+            frame = frame.f_back
+        return tuple(out)
+
+    def run(self) -> None:
+        me = threading.get_ident()
+        while True:
+            time.sleep(0.005)
+            frames, now = sys._current_frames(), time.monotonic()
+            pool_ids = [t.ident for t in threading.enumerate() if t.name.startswith("ThreadPoolExecutor")]
+            pool = tuple(self._stack(frames[i], 1)[0] for i in pool_ids if i in frames and i != me)
+            self._samples.append((now, self._stack(frames.get(self._target), 4), pool))
+
+    def report(self, since: float, elapsed: float) -> None:
+        from collections import Counter
+        taken = [s for s in list(self._samples) if s[0] >= since]
+        eng = Counter(" < ".join(s[1][:3]) for s in taken)
+        pool = Counter(f for s in taken for f in s[2])
+        print(f"[stall {time.strftime('%H:%M:%S')}] tick {elapsed * 1000:.0f}ms, {len(taken)} samples (expected ~{elapsed / 0.005:.0f}); "
+              f"engine: {eng.most_common(4)} pool: {pool.most_common(3)}", flush=True)
 # A single backend.read() this slow is logged on its own line: real stalls
 # were rare and discrete (up to 8 s), which the per-second summary washes out.
 _READ_STALL_LOG_THRESHOLD_S = 0.5
@@ -660,6 +710,10 @@ class ScannerEngine(threading.Thread):
             _checkpoint(msg)
 
     def run(self) -> None:
+        self._stall_sampler = None
+        if _DEBUG_TIMING:
+            self._stall_sampler = _StallSampler(threading.get_ident())
+            self._stall_sampler.start()
         self._logged_checkpoints.clear()
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -1380,6 +1434,8 @@ class ScannerEngine(threading.Thread):
             self._tick_over_budget += 1
         self._tick_max_s = max(self._tick_max_s, elapsed)
         now = time.monotonic()
+        if elapsed > 0.15 and self._stall_sampler is not None:
+            self._stall_sampler.report(now - elapsed, elapsed)
         if now - self._tick_report_at < 1.0:
             return
         print(

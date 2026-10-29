@@ -34,6 +34,13 @@ def _migrate_from_smartscanatc() -> None:
         pass
 
 
+def dumps_chunked(data: dict, **kwargs) -> str:
+    """json.dumps of a big dict, one entry per call. A single json.dumps() runs
+    in C with the GIL held for the whole dump: ~200 ms for 46k recordings, which
+    stalled the scan loop and the audio (the gaps in live listening)."""
+    return "{" + ",".join(json.dumps(k, **kwargs) + ":" + json.dumps(v, **kwargs) for k, v in list(data.items())) + "}"
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     """Write-then-rename, so a crash/power cut mid-write never leaves a
     truncated file behind - a half-written config.json used to load as

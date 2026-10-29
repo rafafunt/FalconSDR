@@ -29,7 +29,7 @@ from falconsdr.playback.audio_analysis import analyze_wav, compute_waveform_peak
 from falconsdr.playback.config import APP_DATA_DIR, UTC_TZ
 from falconsdr.playback.favorites_store import FavoritesStore
 from falconsdr.playback.models import MANUAL_FREQ_KHZ, QualityMetrics, Recording, TranscriptionResult
-from falconsdr.playback.organizer import iter_all_recordings, organize, parse_filename
+from falconsdr.playback.organizer import organize, parse_filename
 from falconsdr.playback.quality_cache import QualityCache
 from falconsdr.playback.transcription_cache import TranscriptionCache
 
@@ -72,6 +72,7 @@ class Library:
         self._leases: dict[str, tuple[str, float]] = {}  # relpath -> (worker, expires monotonic)
         self._failed: set[str] = set()   # errored this session - not re-queued automatically
         self._dirty = False
+        self._dir_mtimes: dict[Path, int] = {}  # folder -> st_mtime_ns at the last rescan
         self._peaks: dict[str, list[float]] = {}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -99,9 +100,12 @@ class Library:
             if not self._dirty:
                 return
             self._dirty = False
-            self.transcripts.save()
-            self.quality.save()
-            atomic_write_text(MIRRORED_FILE, json.dumps(sorted(self._mirrored)))
+            mirrored = sorted(self._mirrored)
+        # Outside the lock: serializing the caches takes a while, and add_file()
+        # (called from the scan engine) waits for the lock.
+        self.transcripts.save()
+        self.quality.save()
+        atomic_write_text(MIRRORED_FILE, json.dumps(mirrored))
 
     def _load_mirrored(self) -> set[str]:
         try:
@@ -155,27 +159,51 @@ class Library:
                 self._recs, self._blobs = {}, {}
             return
         open_now = {p.resolve() for p in self._open_paths()}
+        open_names = {p.name for p in open_now}
         found: dict[str, Recording] = {}
         with self._lock:
             known = dict(self._recs)
-        for path in iter_all_recordings(root):
-            if path.resolve() in open_now:
-                continue
-            rel = self._rel(path)
-            old = known.get(rel)
+        known_by_dir: dict[str, list[str]] = {}
+        for rel in known:
+            known_by_dir.setdefault(rel.rpartition("/")[0], []).append(rel)
+        # Only folders whose listing changed (a file added, removed or renamed changes the folder's
+        # mtime) are read file by file - usually just today's. A full pass over 46k files every
+        # 2 minutes took ~3 s of CPU and starved the scan loop: a series of gaps in live audio.
+        mtimes: dict[Path, int] = {}
+        folders = [root, *sorted(p for p in root.iterdir() if p.is_dir())]
+        for folder in folders:
             try:
-                st = path.stat()
+                mtime = folder.stat().st_mtime_ns
             except OSError:
                 continue
-            if old is not None and old.key == f"{path}|{st.st_size}|{int(st.st_mtime)}":
-                found[rel] = old
+            prefix = "" if folder == root else folder.name
+            if self._dir_mtimes.get(folder) == mtime:
+                found.update((rel, known[rel]) for rel in known_by_dir.get(prefix, []))
+                mtimes[folder] = mtime
                 continue
-            rec = self._make(path)
-            if rec is not None:
-                found[rel] = rec
+            complete = True
+            for path in sorted([*folder.glob("*.wav"), *folder.glob("*.mp3")]):
+                if path.name in open_names and path.resolve() in open_now:
+                    complete = False  # look again next time: it is listed once closed
+                    continue
+                rel = path.relative_to(root).as_posix()
+                old = known.get(rel)
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                if old is not None and old.key == f"{path}|{st.st_size}|{int(st.st_mtime)}":
+                    found[rel] = old
+                    continue
+                rec = self._make(path)
+                if rec is not None:
+                    found[rel] = rec
+            if complete:
+                mtimes[folder] = mtime
         with self._lock:
             self._recs = found
             self._blobs = {rel: b for rel, b in self._blobs.items() if rel in found}
+        self._dir_mtimes = mtimes
 
     def add_file(self, path: Path) -> None:
         """A recording just closed (engine) or arrived (upload)."""

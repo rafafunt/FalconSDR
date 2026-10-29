@@ -110,6 +110,37 @@ class AutostartTest(unittest.TestCase):
 
 
 class LibraryTest(_LibCase):
+    def test_rescan_reads_only_folders_whose_listing_changed(self) -> None:
+        import os
+        from unittest import mock
+        a = _wav(self.root, "2026-10-01/2026-10-01_12-00-00_130875.wav")
+        _wav(self.root, "2026-10-02/2026-10-02_12-00-00_124625.wav")
+        self.lib.rescan()
+        self.assertEqual(len(self.lib._recs), 2)
+        stat_calls = []
+        real_stat = Path.stat
+        with mock.patch.object(Path, "stat", lambda p, **kw: (stat_calls.append(p), real_stat(p, **kw))[1]):
+            self.lib.rescan()  # nothing changed: folders are stat'ed, not their files
+        self.assertEqual(len(self.lib._recs), 2)
+        self.assertNotIn(a, stat_calls)
+        b = _wav(self.root, "2026-10-02/2026-10-02_13-00-00_124625.wav")  # new file
+        a.unlink()  # removed file
+        for folder in (a.parent, b.parent):  # same-second changes: make the mtime differ for sure
+            st = folder.stat()
+            os.utime(folder, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+        self.lib.rescan()
+        self.assertEqual(sorted(self.lib._recs), ["2026-10-02/2026-10-02_12-00-00_124625.wav",
+                                                  "2026-10-02/2026-10-02_13-00-00_124625.wav"])
+
+    def test_a_folder_with_an_open_recording_is_read_again_next_time(self) -> None:
+        c = _wav(self.root, "2026-10-03/2026-10-03_12-00-00_130875.wav")
+        self.open = {c}
+        self.lib.rescan()
+        self.assertEqual(self.lib._recs, {})
+        self.open = set()  # closed - but the folder's listing did not change since
+        self.lib.rescan()
+        self.assertEqual(list(self.lib._recs), ["2026-10-03/2026-10-03_12-00-00_130875.wav"])
+
     def test_open_files_and_paths_outside_the_library_are_never_exposed(self) -> None:
         _wav(self.root, "2026-01-01/" + NAME.format(khz=121500))
         writing = _wav(self.root, "2026-01-01/" + NAME.format(khz=118000))
@@ -290,6 +321,15 @@ class SquelchTest(unittest.TestCase):
         self.assertIsNone(ScannerEngine._effective_squelch_dbfs(fake, SimpleNamespace(band=VfoRangeConfig())))
         cfg.squelch_enabled = True  # band without its own value follows the global one
         self.assertEqual(ScannerEngine._effective_squelch_dbfs(fake, SimpleNamespace(band=VfoRangeConfig())), -54.0)
+
+
+class DumpsChunkedTest(unittest.TestCase):
+    def test_same_json_as_dumps_for_the_caches(self) -> None:
+        from falconsdr.config import dumps_chunked
+        data = {"a|1|2": {"text": "zażółć gęślą", "n": 1.5, "ok": True, "x": None}, "b": {}, 'q"uote': {"t": "\n"}}
+        for kwargs in ({}, {"ensure_ascii": False}):
+            self.assertEqual(json.loads(dumps_chunked(data, **kwargs)), data)
+        self.assertEqual(dumps_chunked({}), "{}")
 
 
 class SoftwareAgcTest(unittest.TestCase):

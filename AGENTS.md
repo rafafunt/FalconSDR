@@ -646,6 +646,24 @@ catalog loads; wrap them in a function called at point of use
     `patch_config` skips the rebuild for `_READ_LIVE_KEYS` (global
     trigger/squelch), which the engine reads every tick.
 
+50. **Anything that holds the GIL for ~100 ms in the receiver process is an
+    audible gap in live audio** (the scan loop, the acquisition thread's
+    return from `read()` and the audio stream all wait for it) - a
+    saturated dongle or CPU is *not* the only cause. Found by py-spy
+    (`--gil --threads`) on the running server: `Library._maintain` ran
+    `json.dumps` of the 46k-entry quality/transcription caches in one C
+    call (~220 ms, every save) and `rescan()` called `Path.resolve()` three
+    times per file. Fixed with `config.dumps_chunked()` (one entry per call
+    so the interpreter can switch threads), saving outside `Library._lock`,
+    and no per-file `resolve()` in `rescan()`; gaps >=200 ms went from 3.7 to
+    0.4 per minute. Never `json.dumps()` a big structure in a background
+    thread; chunk it. `FALCONSDR_DEBUG_LIVE_AUDIO=1` now also prints GC
+    pauses >= 20 ms (`[gc ...]`) and, for a tick > 150 ms, where the engine
+    thread was (`[stall ...]`, sampled every 5 ms; far fewer samples than
+    elapsed/5 ms = the GIL was held in C code). Measure gaps from the client
+    side: count arrival gaps of the `/api/audio` PCM stream (>=120 ms), not
+    the "missing audio" ratio, which the queue's catch-up bursts distort.
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch
