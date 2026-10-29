@@ -343,10 +343,11 @@ export function recordingsView(root) {
         timeText,
         h('span.spacer'),
         it.manual ? null : act(icon('plus'), t('Save frequency'), () => saveFrequency(it), t('Add this frequency to the Memory List')),
-        ...(isAviation(it.freq_khz) ? [act(h('img', { src: 'img/fr24.svg', alt: '', style: { width: '18px', height: '18px', background: '#1f2937', borderRadius: '4px', padding: '2px' } }), 'FR24',
-          () => openMap(`https://www.flightradar24.com/${ymd}/${hm}/20x/${loc.home_lat},${loc.home_lon}/9`), t('Flight replay at this moment')),
-          act(h('img', { src: 'img/adsbexchange.png', alt: '', style: { width: '16px', height: '16px' } }), 'ADSBx',
-          () => openMap(`https://globe.adsbexchange.com/?replay=${ymd}-${hm}&lat=${loc.home_lat}&lon=${loc.home_lon}&zoom=8.8`), t('Flight replay at this moment'))] : []),
+        // Plain names, no logos: both are trademarks (Flightradar24 terms 10.3; ADS-B Exchange forbids using
+        // its icon without the wordmark). The name stays visible on phones too - two same icons would be indistinguishable.
+        ...(isAviation(it.freq_khz) ? [
+          site('Flightradar24', `https://www.flightradar24.com/${ymd}/${hm}/20x/${loc.home_lat},${loc.home_lon}/9`),
+          site('ADS-B Exchange', `https://globe.adsbexchange.com/?replay=${ymd}-${hm}&lat=${loc.home_lat}&lon=${loc.home_lon}&zoom=8.8`)] : []),
         h('a.btn.ghost', { href: `/api/recording?id=${encodeURIComponent(it.id)}&download=1`, title: t('Download'), 'aria-label': t('Download') }, icon('download')),
         h('button.icon.ghost.danger', { title: t('Delete'), 'aria-label': t('Delete'), onclick: () => remove([it.id]) }, icon('trash'))),
       h('div.col', { style: { gap: '8px' } },
@@ -361,6 +362,11 @@ export function recordingsView(root) {
         textBox));
     updatePlayButton();
     requestAnimationFrame(drawWave);
+  }
+
+  function site(name, url) {
+    return h('button.ghost', { onclick: () => openMap(url), title: `${name} - ${t('Flight replay at this moment')}`, 'aria-label': name },
+      icon('external'), h('span.lbl.keep', name));
   }
 
   // Icon + label; on phones only the icon shows (the label stays for screen readers and the tooltip).

@@ -339,6 +339,7 @@ button.day.on { color: var(--on-accent); background: var(--accent); }
   .player { bottom: calc(60px + env(safe-area-inset-bottom)); gap: 8px; padding: 10px 12px; }
   .player .transcript { max-height: 4.8em; overflow: auto; font-size: 14px; }
   .player .lbl { display: none; }
+  .player .lbl.keep { display: inline; }
   .player .row { gap: 4px; }
   .wave { height: 44px; }
 }
