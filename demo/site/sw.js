@@ -304,30 +304,107 @@ function scanList() {
   return out.filter((x) => !blacklisted(x.f)).sort((a, b) => a.f - b.f).filter((x, i, a) => !i || x.f - a[i - 1].f > 1000);
 }
 
+// ------------------------------------------------------------------ antenna range (falconsdr/antenna_range.py)
+const OPEN_END = 2 ** 40;
+const rangeOf = (d) => {
+  const lo = Math.max(0, +d.range_start_hz || 0), hi = +d.range_stop_hz > 0 ? +d.range_stop_hz : OPEN_END;
+  return hi < lo ? [hi, lo] : [lo, hi];
+};
+const deviceRanges = () => [st.config.device, ...(st.config.device.extra_devices || [])].map(rangeOf);
+const isLimited = (rs) => rs.some(([lo, hi]) => lo > 0 || hi < OPEN_END);
+
+// What the user wants scanned that no dongle's range reaches (only when every dongle has a range).
+function uncovered() {
+  const rs = deviceRanges();
+  if (!isLimited(rs) || rs.some(([lo, hi]) => lo === 0 && hi === OPEN_END)) return [];
+  const merged = [];
+  for (const [lo, hi] of [...rs].sort((x, y) => x[0] - y[0])) {
+    const last = merged[merged.length - 1];
+    if (last && lo <= last[1]) last[1] = Math.max(last[1], hi); else merged.push([lo, hi]);
+  }
+  const gaps = (start, stop) => {
+    const out = [];
+    let at = start;
+    for (const [lo, hi] of merged) {
+      if (hi < at) continue;
+      if (lo > stop) break;
+      if (lo > at) out.push([at, lo - 1]);
+      at = Math.max(at, hi + 1);
+    }
+    if (at <= stop) out.push([at, stop]);
+    return out;
+  };
+  const [bands, ml] = scanSelection(st.config);
+  const items = [];
+  for (const b of bands) {
+    const [start, stop] = [b.start_hz, b.stop_hz].sort((x, y) => x - y), missing = gaps(start, stop);
+    if (missing.length) items.push({ kind: 'band', label: b.label, start_hz: start, stop_hz: stop, gaps: missing });
+  }
+  if (ml) {
+    const outside = st.channels.filter((c) => c.enabled && !merged.some(([lo, hi]) => lo <= c.freq_hz && c.freq_hz <= hi)).map((c) => c.freq_hz).sort((x, y) => x - y);
+    if (outside.length) items.push({ kind: 'channels', count: outside.length, examples: outside.slice(0, 3) });
+  }
+  return items;
+}
+
+function makeWindow(chans) {
+  const w = { lo: chans[0].f, hi: chans[chans.length - 1].f, chans, matches: [] };
+  w.center = (w.lo + w.hi) / 2;
+  w.band = chans[0].band;
+  for (const src of SOURCES) {
+    const ch = chans.find((x) => Math.abs(x.f - src.f) <= x.half);
+    if (ch) w.matches.push({ src, ch });
+  }
+  return w;
+}
+
 function rebuild(logIt = true) {
   const chans = scanList();
   const width = st.config.device.sample_rate_hz, usable = width * 0.9;
-  const windows = [];
+  const groups = [];
   for (const ch of chans) {
-    const w = windows[windows.length - 1];
-    if (w && ch.f - w.lo <= usable) { w.chans.push(ch); w.hi = ch.f; } else windows.push({ lo: ch.f, hi: ch.f, chans: [ch] });
+    const g = groups[groups.length - 1];
+    if (g && ch.f - g[0].f <= usable) g.push(ch); else groups.push([ch]);
   }
-  for (const w of windows) {
-    w.center = (w.lo + w.hi) / 2;
-    w.band = w.chans[0].band;
-    w.matches = [];
-    for (const src of SOURCES) {
-      const ch = w.chans.find((x) => Math.abs(x.f - src.f) <= x.half);
-      if (ch) w.matches.push({ src, ch });
-    }
-  }
-  closeAllSlots();
-  sim.windows = windows;
   const n = 1 + (st.config.device.extra_devices || []).length;
-  sim.tuners = Array.from({ length: n }, (_, k) => newTuner(k));
-  windows.forEach((w, i) => sim.tuners[i % n].windows.push(w));  // every n-th window, like the app
+  const ranges = deviceRanges();
+  const limited = isLimited(ranges);
+  const share = Array.from({ length: n }, () => []);  // each dongle's groups of channels
+  if (limited) {
+    // Like split_by_range: a channel goes to one dongle whose range holds it (taking turns, window by
+    // window, if several do), to none otherwise; a half-owned window keeps just its channels.
+    const turn = new Map();
+    for (const g of groups) {
+      const by = new Map();
+      for (const ch of g) {
+        const who = ranges.map((r, k) => (r[0] <= ch.f && ch.f <= r[1] ? k : -1)).filter((k) => k >= 0);
+        if (!who.length) continue;
+        const key = who.join();
+        if (!by.has(key)) by.set(key, { who, chans: [] });
+        by.get(key).chans.push(ch);
+      }
+      for (const [key, { who, chans: cs }] of by) {
+        const k = turn.get(key) || 0;
+        turn.set(key, k + 1);
+        share[who[k % who.length]].push(cs);
+      }
+    }
+  } else groups.forEach((g, i) => share[i % n].push(g));  // every n-th window, like the app
+  closeAllSlots();
+  sim.tuners = share.map((gs, k) => {
+    const T = newTuner(k);
+    T.windows = gs.map(makeWindow);
+    return T;
+  });
+  sim.windows = sim.tuners.flatMap((T) => T.windows);
   if (logIt || sim.running) {
-    for (const T of sim.tuners) addLog(sdrPrefix(T) + tr('Wideband scanning: {channels} channels in {windows} capture window(s) ({mhz:.2f} MHz each){extra}.', { channels: chans.length, windows: T.windows.length, mhz: width / 1e6, extra: '' }));
+    for (const T of sim.tuners) {
+      addLog(sdrPrefix(T) + tr('Wideband scanning: {channels} channels in {windows} capture window(s) ({mhz:.2f} MHz each){extra}.', { channels: chans.length, windows: T.windows.length, mhz: width / 1e6, extra: '' }));
+      const [low, high] = ranges[T.k];
+      if (limited && !T.windows.length && (low > 0 || high < OPEN_END)) {
+        addLog(sdrPrefix(T) + tr('Nothing for this receiver to scan inside its antenna range ({low}-{high} MHz).', { low: +(low / 1e6).toPrecision(6), high: high >= OPEN_END ? '...' : +(high / 1e6).toPrecision(6) }));
+      }
+    }
   }
 }
 
@@ -794,7 +871,7 @@ function live(since = Infinity) {
       return { state: x.state, frequencies: own.length ? own.map((s) => [s.f, nameOf(s.f)]) : W ? placeholder(W) : [] };
     }) } : {}),
     cycle_time: sim.running && T ? T.cycle : null, gain_range: (DEVICES.find((d) => d.driver === st.config.device.driver) || DEVICES[0]).gain, running: sim.running, stopping: false,
-    solo_band: sim.solo, schedule_active: activeIndices(st.config), clock: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    solo_band: sim.solo, schedule_active: activeIndices(st.config), uncovered: uncovered(), clock: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
     spectrum: spectrum(), log: log.filter((e) => e.id > since), audio_rate: RATE,
     demo_birdie: !!(primary && primary.src.birdie),
   };

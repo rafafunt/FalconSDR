@@ -621,6 +621,8 @@ catalog loads; wrap them in a function called at point of use
     edit, no restart), the engine order is `Controller._devices()`'s. What no dongle
     reaches (only when *every* dongle has a range) is `live["uncovered"]`, shown as a
     notice in the Listen hero; edge probes past a band are dropped if outside the range.
+    The online demo's simulator (`demo/site/sw.js`: `rebuild`, `uncovered`) mirrors
+    `split_by_range`/`uncovered` - change both together, then rebuild and redeploy the demo.
 
 47. **Bias-T (DC on the antenna input) is off by default and per dongle**
     (verified on a real RTL-SDR Blog V4: its LED follows the switch) (`DeviceConfig.bias_tee`, an extra dongle's `bias_tee` key).

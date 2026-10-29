@@ -10,6 +10,9 @@ services, military UHF…) and get a searchable library of conversations.
 It runs in your web browser: on the computer the SDR is plugged into, or as a
 headless receiver you listen to from any phone or PC on your network.
 
+**Try it first, no receiver needed:** the real interface on a simulated
+receiver at [falconsdr.com](https://falconsdr.com).
+
 > Listening to and recording some radio services is restricted or illegal in
 > many countries - see [Legal](#legal).
 
@@ -31,10 +34,10 @@ headless receiver you listen to from any phone or PC on your network.
 - Blacklist for carriers and interference, one click from the live view.
 - AM, NFM, WFM and SSB demodulation; software or hardware gain control.
 - Experimental: several dongles at once - the scan plan is split between
-  them, so each band is revisited that many times more often. Each dongle can
-  get an optional **antenna range** (SDR device card), so one on a 2 m antenna
-  scans only 144-146 MHz and one on a 70 cm antenna only 430-440 MHz; what no
-  range reaches is listed on the Listen page instead of being scanned badly.
+  them, so each band is revisited that many times more often.
+- Optional **antenna range** per dongle (SDR device card): one on a 2 m
+  antenna scans only 144-146 MHz, one on a 70 cm antenna only 430-440 MHz.
+  What no range reaches is listed on the Listen page.
 - Optional, experimental digital voice: DMR and Yaesu System Fusion (C4FM)
   through [dsd-fme](https://github.com/lwvmobile/dsd-fme), installed from
   Settings → Digital voice. Encrypted calls stay muted.
@@ -100,13 +103,11 @@ Detects your distribution and installs the matching package:
 curl -fsSL https://raw.githubusercontent.com/rafafunt/FalconSDR/master/packaging/install.sh | bash
 ```
 
-Debian/Ubuntu get the `.deb`, Fedora/openSUSE the `.rpm`, Arch the
-AUR package, anything else (glibc-based, x86_64/aarch64) the AppImage.
-`packaging/install.sh
---from-source` installs from a git checkout instead (the SoapySDR-capable
-path for HackRF/LimeSDR/Airspy/... - not in the packaged builds; also
-the fallback for other CPU architectures, musl-based distros such as
-Alpine, and releases whose asset for your format isn't published yet).
+Debian/Ubuntu get the `.deb`, Fedora/openSUSE the `.rpm`, Arch the AUR
+package, anything else the AppImage. Add `--from-source` to install from a
+git checkout instead: the way to get SoapySDR support (HackRF, LimeSDR,
+Airspy, …) and the fallback for other CPU architectures or musl distros
+such as Alpine.
 
 ### Ubuntu / Debian - .deb package
 
@@ -228,8 +229,9 @@ The interface opens at `http://127.0.0.1:8765`.
 
 ### Updating and removing
 
-Install the newer `.deb` or Windows installer over the old one - settings,
-channels and recordings are kept. Remove with `sudo apt remove falconsdr` or
+Quit FalconSDR, then install the newer `.deb` or Windows installer over the
+old one - settings, channels and recordings are kept. Start it again
+afterwards (a copy left running through the update shows errors). Remove with `sudo apt remove falconsdr` or
 Windows *Settings → Apps*; your recordings and settings stay on disk (see
 [Where things are stored](#where-things-are-stored)).
 
