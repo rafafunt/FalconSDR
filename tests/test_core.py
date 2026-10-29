@@ -430,23 +430,29 @@ class AsyncStreamTest(unittest.TestCase):
         fake.rtlsdr_read_async_cb_t = ctypes.CFUNCTYPE(None, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_int, ctypes.py_object)
         return backend, {"rtlsdr": ModuleType("rtlsdr"), "rtlsdr.librtlsdr": fake}
 
-    def _lib(self, result=0):
+    def _lib(self, result=0, fail_after_data=False, ignore_cancel=False):
         import ctypes
         import threading
 
         class Lib:
             def __init__(self):
-                self.cancelled, self.started, self.resets = threading.Event(), 0, 0
+                self.cancelled, self.release = threading.Event(), threading.Event()
+                self.started, self.resets, self.lengths = 0, 0, []
 
             def rtlsdr_reset_buffer(self, dev):
                 self.resets += 1
 
             def rtlsdr_read_async(self, dev, cb, ctx, num, length):
                 self.started += 1
+                self.lengths.append(length)
                 if result < 0:
                     return result
                 buf = (ctypes.c_ubyte * length).from_buffer_copy(bytes([7]) * length)
-                while not self.cancelled.is_set():
+                if fail_after_data:
+                    cb(ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte)), length, ctx)
+                    return -5
+                stop = self.release if ignore_cancel else self.cancelled
+                while not stop.is_set():
                     cb(ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte)), length, ctx)
                     time.sleep(0.002)
                 self.cancelled.clear()
@@ -476,7 +482,7 @@ class AsyncStreamTest(unittest.TestCase):
             self.assertEqual(len(backend._stream_chunks), 0)
             self.assertEqual(int(backend.read_raw(1000)[0]), 5)         # hopping again: blocking reads
 
-    def test_stream_off_when_disabled_and_failure_is_an_error(self) -> None:
+    def test_stream_off_when_disabled(self) -> None:
         import sys
         from unittest import mock
         lib = self._lib()
@@ -485,13 +491,68 @@ class AsyncStreamTest(unittest.TestCase):
             for _ in range(12):
                 backend.read_raw(1000)
             self.assertEqual(lib.started, 0)
-        failing = self._lib(result=-5)
-        backend, modules = self._backend(failing)
+
+    def test_a_stream_that_cannot_start_falls_back_to_blocking_reads(self) -> None:
+        import sys
+        from unittest import mock
+        lib = self._lib(result=-5)
+        backend, modules = self._backend(lib)
         with mock.patch.dict(sys.modules, modules):
             for _ in range(8):
                 backend.read_raw(1000)
-            with self.assertRaises(RuntimeError):
+            raw = backend.read_raw(1000)   # the stream fails at once: this read must still succeed
+            self.assertEqual((raw.size, int(raw[-1])), (2000, 5))
+            for _ in range(20):
+                self.assertEqual(int(backend.read_raw(1000)[-1]), 5)
+            self.assertEqual((lib.started, backend._async), (1, False))   # and it is not tried again
+
+    def test_a_stream_that_dies_after_delivering_is_an_error(self) -> None:
+        import sys
+        from unittest import mock
+        lib = self._lib(fail_after_data=True)   # one buffer, then the device is gone
+        backend, modules = self._backend(lib)
+        with mock.patch.dict(sys.modules, modules):
+            for _ in range(8):
                 backend.read_raw(1000)
+            backend.read_raw(1000)
+            with self.assertRaises(RuntimeError):
+                for _ in range(200):
+                    backend.read_raw(1000)
+
+    def test_buffer_size_follows_the_sample_rate(self) -> None:
+        import sys
+        from unittest import mock
+        for rate, expected in ((2_400_000.0, 65536), (250_000.0, 6656)):
+            lib = self._lib()
+            backend, modules = self._backend(lib)
+            backend.sample_rate = rate
+            with mock.patch.dict(sys.modules, modules):
+                for _ in range(9):
+                    backend.read_raw(1000)
+                backend._stop_stream()
+            self.assertEqual(lib.lengths, [expected])
+            self.assertEqual(expected % 512, 0)
+
+    def test_close_does_not_free_the_device_under_a_stuck_stream(self) -> None:
+        import sys
+        from types import SimpleNamespace
+        from unittest import mock
+        from falconsdr import sdr_backend as sb
+        lib = self._lib(ignore_cancel=True)
+        backend, modules = self._backend(lib)
+        closed = []
+        backend.device.close = lambda: closed.append(True)
+        with mock.patch.dict(sys.modules, modules), mock.patch.object(sb, "_STREAM_STOP_TIMEOUT_S", 0.2):
+            for _ in range(9):
+                backend.read_raw(1000)
+            backend.close()
+            self.assertEqual(closed, [])   # the stream thread still runs: the handle stays
+            lib.release.set()
+            time.sleep(0.05)
+            backend2, _ = self._backend(self._lib())
+            backend2.device.close = lambda: closed.append(True)
+            backend2.close()
+            self.assertEqual(closed, [True])   # no stream: closed as usual
 
     def test_stats_tell_a_loss_from_a_late_callback(self) -> None:
         from falconsdr.sdr_backend import _StreamStats
@@ -619,10 +680,8 @@ class IqUncoveredTimeTest(unittest.TestCase):
             thread.set_frequency(131_900_000)
             for _ in range(12):
                 thread.read(1000)
-            self.assertEqual(thread._freq_hz, 131_900_000.0)
             self.assertGreaterEqual(thread._iq_lost_s, 0.07)   # the hiccup...
             self.assertLess(thread._iq_lost_s, 0.15)           # ...but neither the retune nor its slow first read
-            self.assertGreaterEqual(thread._gaps, 1)
         finally:
             thread.close()
 

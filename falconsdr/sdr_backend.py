@@ -239,9 +239,14 @@ _RTLSDR_LUT = ((np.arange(256, dtype=np.float32) - 127.4) / 128.0).astype(np.flo
 # Bulk transfers not a multiple of the 512 B USB packet cause overflows on
 # some libusb backends; read() rounds up and carries the remainder over.
 _RTLSDR_READ_GRANULE_BYTES = 512
-_ASYNC_BUFFERS = 15                # 15 x 64 KiB = ~200 ms of IQ at 2.4 MS/s may wait in the USB queue
-_ASYNC_BUFFER_BYTES = 65536        # (a multiple of 512)
+_ASYNC_BUFFERS = 15                # 15 transfers = ~200 ms of IQ may wait in the USB queue
+_ASYNC_BUFFER_S = 0.0136           # one transfer = this much IQ (65536 bytes at 2.4 MS/s)
+_STREAM_STOP_TIMEOUT_S = 3.0
 _ASYNC_AFTER_READS = 8             # blocking reads on one frequency before the stream takes over
+
+
+class _StreamNotStarted(RuntimeError):
+    """The async stream ended before it delivered anything."""
 
 
 class _StreamStats:
@@ -356,13 +361,20 @@ class RtlSdrBackend(SdrBackend):
         outstanding, so the dongle's FIFO overflows - ~1.5 % of the samples lost, a splice in the IQ
         every 30 ms (audible as a buzz, and the audio stream runs short of real time)."""
         if self._async and self._stream_thread is None and self._sync_reads >= _ASYNC_AFTER_READS:
-            self._start_stream()
+            try:
+                self._start_stream()
+            except Exception as exc:  # e.g. the library can't do it: keep scanning with blocking reads
+                self._give_up_streaming(exc)
         need = 2 * num_samples - self._carry.size
         read_start = time.monotonic()
         if need > 0:
+            raw = None
             if self._stream_thread is not None:
-                raw = self._read_stream(need)
-            else:
+                try:
+                    raw = self._read_stream(need)
+                except _StreamNotStarted as exc:
+                    self._give_up_streaming(exc)
+            if raw is None:
                 self._sync_reads += 1
                 request = -(-need // _RTLSDR_READ_GRANULE_BYTES) * _RTLSDR_READ_GRANULE_BYTES
                 try:
@@ -379,6 +391,21 @@ class RtlSdrBackend(SdrBackend):
         return data[:used]
 
     # -- async stream ----------------------------------------------------
+    def _give_up_streaming(self, reason: Exception) -> None:
+        """The stream could not start (it never delivered a byte): from now on blocking reads only.
+        Raising instead would make the engine reconnect and fail again, forever, on such a machine."""
+        print(f"[rtlsdr] async stream unavailable ({reason}) - using blocking reads", flush=True)
+        self._async = False
+        self._stream_thread = None
+        with self._stream_cond:
+            self._stream_chunks.clear()
+
+    @staticmethod
+    def _async_buffer_bytes(sample_rate: float) -> int:
+        """One transfer = ~13.6 ms of IQ whatever the rate (a multiple of 512): fixed 64 KiB would
+        make 250 kS/s arrive in 131 ms bursts."""
+        return max(4096, min(262144, round(sample_rate * 2 * _ASYNC_BUFFER_S / 512) * 512))
+
     def _start_stream(self) -> None:
         from rtlsdr.librtlsdr import librtlsdr, rtlsdr_read_async_cb_t
         dev_p = self.device.dev_p
@@ -387,6 +414,7 @@ class RtlSdrBackend(SdrBackend):
             self._stream_error, self._stream_stopping = None, False
         self._stream_stats = _StreamStats(self.sample_rate)
         stats = self._stream_stats
+        buffer_bytes = self._async_buffer_bytes(self.sample_rate)
 
         def on_data(buf, length, _ctx):  # runs in the stream thread, GIL held: copy and queue only
             data = ctypes.string_at(buf, length)
@@ -399,7 +427,7 @@ class RtlSdrBackend(SdrBackend):
         callback = self._stream_cb
 
         def run() -> None:
-            result = librtlsdr.rtlsdr_read_async(dev_p, callback, self, _ASYNC_BUFFERS, _ASYNC_BUFFER_BYTES)
+            result = librtlsdr.rtlsdr_read_async(dev_p, callback, self, _ASYNC_BUFFERS, buffer_bytes)
             with self._stream_cond:
                 if not self._stream_stopping:
                     self._stream_error = result if result < 0 else -1  # ended by itself = the device is gone
@@ -417,7 +445,7 @@ class RtlSdrBackend(SdrBackend):
         from rtlsdr.librtlsdr import librtlsdr
         with self._stream_cond:
             self._stream_stopping = True
-        deadline = time.monotonic() + 3.0
+        deadline = time.monotonic() + _STREAM_STOP_TIMEOUT_S
         while thread.is_alive() and time.monotonic() < deadline:
             librtlsdr.rtlsdr_cancel_async(self.device.dev_p)  # fails until the stream is really running: retry
             thread.join(0.05)
@@ -438,6 +466,8 @@ class RtlSdrBackend(SdrBackend):
                     parts.append(chunk)
                     got += len(chunk)
                     continue
+                if self._stream_error is not None and self._stream_stats.samples == 0:
+                    raise _StreamNotStarted(f"error {self._stream_error}")
                 if self._stream_error is not None:
                     raise RuntimeError(f"RTL-SDR stream failed - device disconnected or not responding ({self._stream_error})")
                 remaining = deadline - time.monotonic()
@@ -457,16 +487,18 @@ class RtlSdrBackend(SdrBackend):
     def close(self) -> None:
         try:
             self._stop_stream()
+            stream_stuck = False
         except Exception:
-            pass
+            stream_stuck = True
         try:
             self.device.set_bias_tee(False)  # never leave the antenna powered once FalconSDR lets go
         except Exception:
             pass
-        try:
-            self.device.close()
-        except Exception:
-            pass
+        if not stream_stuck:  # freeing the device under a running rtlsdr_read_async could crash the process
+            try:
+                self.device.close()
+            except Exception:
+                pass
         SoapyBackend._record_close_time()
 
     @staticmethod
@@ -604,26 +636,6 @@ class SimulatedBackend(SdrBackend):
         pass
 
 
-class _LatencyProbe(threading.Thread):
-    """Debug mode: sleeps 5 ms in a loop and reports every wake-up that is late by 20 ms or more.
-    If it is late at the same moment the acquisition thread is, the whole process was held up (the
-    GIL or the host's CPU), not the dongle's USB transfer."""
-
-    def __init__(self) -> None:
-        super().__init__(name="latency-probe", daemon=True)
-        self.stop_evt = threading.Event()
-
-    def run(self) -> None:
-        while not self.stop_evt.is_set():
-            start = time.monotonic()
-            time.sleep(0.005)
-            late = time.monotonic() - start - 0.005
-            if late >= 0.020:
-                now = time.time()
-                print(f"[latency {time.strftime('%H:%M:%S', time.localtime(now))}.{int(now * 1000) % 1000:03d}] "
-                      f"a 5 ms sleep woke up {late * 1000:.0f} ms late", flush=True)
-
-
 class AcquisitionThread:
     """Reads the backend back-to-back on its own thread into a bounded queue
     (gotcha 11), so slow processing can never delay the next hardware read.
@@ -667,9 +679,6 @@ class AcquisitionThread:
         self._settle_lost_s = 0.0
         self._iq_lost_s = 0.0
         self._iq_streamed_s = 0.0
-        self._gaps = 0
-        self._gap_log_s = float(os.environ.get("FALCONSDR_DEBUG_IQ_GAP_MS", "10")) / 1000.0
-        self._freq_hz = 0.0
         # Bumped on every applied retune/gain change - see _run().
         self._generation = 0
         # Only this thread touches the backend: set_frequency()/set_gain()
@@ -677,9 +686,6 @@ class AcquisitionThread:
         # a retune for 11.7 s (priority inversion).
         self._pending_command: tuple | None = None
         self._command_done = threading.Event()
-        self._probe = _LatencyProbe() if debug else None
-        if self._probe is not None:
-            self._probe.start()
         self._thread = threading.Thread(target=self._run, name="sdr-acquisition", daemon=True)
         self._thread.start()
 
@@ -729,7 +735,7 @@ class AcquisitionThread:
             f"queue_depth={len(self._queue)}/{self._max_queued} "
             f"iq_uncovered(steady)={self._iq_lost_s:.2f}s of {self._iq_streamed_s:.0f}s "
             f"({100.0 * self._iq_lost_s / max(1e-9, self._iq_streamed_s):.2f}%) "
-            f"gaps>={self._gap_log_s * 1000:.0f}ms={self._gaps} retune_settling={self._settle_lost_s:.1f}s"
+            f"retune_settling={self._settle_lost_s:.1f}s"
             f"{self._stream_report()}",
             flush=True,
         )
@@ -762,16 +768,6 @@ class AcquisitionThread:
             return
         self._iq_lost_s += lost
         self._iq_streamed_s += self._chunk_duration_s
-        if lost >= self._gap_log_s:
-            self._gaps += 1
-            if self._debug:
-                now = time.time()
-                print(
-                    f"[iq-gap {time.strftime('%H:%M:%S', time.localtime(now))}.{int(now * 1000) % 1000:03d}] "
-                    f"no IQ for ~{lost * 1000:.0f} ms at {self._freq_hz / 1e6:.3f} MHz, "
-                    f"{self._reads_since_cmd} reads after the last retune (queue {len(self._queue)}/{self._max_queued})",
-                    flush=True,
-                )
 
     def _run(self) -> None:
         self._boost_priority()
@@ -786,7 +782,6 @@ class AcquisitionThread:
                 try:
                     if kind == "freq":
                         self._backend.set_frequency(*args)
-                        self._freq_hz = float(args[0])
                     else:
                         self._backend.set_gain(*args)
                 except BaseException as exc:  # noqa: BLE001 - propagated to the waiting caller below
@@ -882,8 +877,6 @@ class AcquisitionThread:
 
     def close(self) -> None:
         self._stop_evt.set()
-        if self._probe is not None:
-            self._probe.stop_evt.set()
         with self._cond:
             self._cond.notify_all()
         self._thread.join(timeout=2.0)

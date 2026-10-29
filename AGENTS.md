@@ -710,13 +710,9 @@ catalog loads; wrap them in a function called at point of use
     a few visits). Each `Library._select` loops over 46k recordings under the GIL; with a
     dozen handler threads the acquisition thread waited ~120 ms for its turn = an audible gap
     in live audio and a recording with small pieces missing (`StaticJsTest` now catches the
-    pattern). Debug mode (receiver) prints what to look at: `[iq-gap hh:mm:ss.mmm]` = the
-    read thread found no IQ for N ms while parked on one frequency (sync reads: time
-    between two reads is dropped by the dongle; the first 8 reads after a retune are not
-    counted); `[latency ...]` = a 5 ms sleep in a probe thread woke up late - at the same
-    moments as the gaps it means the *process* was held up (GIL/CPU), not the USB transfer;
-    the `health:` line sums it as `iq_uncovered(steady)`. Find the GIL holder with
-    `py-spy record --gil --threads --format raw` in a throwaway venv.
+    pattern). To see such a stall: the `health:` line in debug mode sums the time that no IQ
+    covers (`iq_uncovered(steady)` for blocking reads, `async_stream(last)` for the stream), and
+    `py-spy record --gil --threads --format raw` in a throwaway venv names the GIL holder.
 
 54. **`RtlSdrBackend` (librtlsdr: Windows, macOS, the .deb, the receiver) switches from blocking
     reads to an async stream once the scanner has stayed on a frequency for 8 reads**
@@ -732,7 +728,11 @@ catalog loads; wrap them in a function called at point of use
     is ignored. `AcquisitionThread._note_read_start` is blind while `backend.streaming` (reads
     leave the queue in 13.6 ms steps); `stream_stats()` / `async_stream(...)` in the health line
     is the loss figure then. SoapySDR needs none of this (its drivers stream on their own).
-    Not tried on Windows.
+    A stream that ends before delivering a byte (the library refuses) makes `read_raw` fall back to
+    blocking reads for good (`_give_up_streaming`) - raising would make the engine reconnect and
+    fail again forever. Transfers are ~13.6 ms of IQ whatever the sample rate
+    (`_async_buffer_bytes`), and `close()` leaves the device open if the stream thread will not
+    stop (freeing it under a running `rtlsdr_read_async` can crash). Not tried on Windows.
 
 ## Testing without touching the user's real config/recordings
 
