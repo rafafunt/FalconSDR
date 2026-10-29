@@ -664,6 +664,17 @@ catalog loads; wrap them in a function called at point of use
     side: count arrival gaps of the `/api/audio` PCM stream (>=120 ms), not
     the "missing audio" ratio, which the queue's catch-up bursts distort.
 
+52. **Never load a whole recording into memory** (`audio_analysis._stream_samples`
+    reads one `BLOCK_FRAMES` block at a time; `analyze_wav` keeps only an RMS per
+    50 ms, `compute_waveform_peaks` a peak per small window). A WFM station that
+    never falls below the trigger is *one* transmission: the 88.0 MHz recording
+    ran 9.5 h = 850 MB, and when it closed (a restart) the library thread loaded
+    it as float64 + `frames ** 2` = ~8 GB. The 6 GB container was OOM-killed
+    ~20 s after every start (systemd `Restart=always` -> a loop of 25 restarts;
+    the UI froze, "lost connection", the frequency vanished). Found by
+    `py-spy dump` in a throwaway venv while the RSS grew. Any new code that
+    reads recordings (stats, export, ...) must also work block by block.
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch

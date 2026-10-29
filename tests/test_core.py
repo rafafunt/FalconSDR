@@ -332,6 +332,45 @@ class DumpsChunkedTest(unittest.TestCase):
         self.assertEqual(dumps_chunked({}), "{}")
 
 
+class AudioAnalysisStreamingTest(unittest.TestCase):
+    """A recording can last hours; analysis reads it block by block (an 850 MB one was loaded
+    whole, took ~8 GB and got the server OOM-killed on every start)."""
+
+    def _wav(self, frames: int, channels: int = 1) -> Path:
+        import wave
+        import numpy as np
+        rng = np.random.default_rng(3)
+        x = (rng.normal(0, 2000, frames * channels) * np.repeat(1 + (np.arange(frames) // 3000 % 5), channels)).clip(-32768, 32767)
+        x[5000:5400] = 32767  # some clipping
+        path = Path(tempfile.mkdtemp()) / "t.wav"
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(channels); w.setsampwidth(2); w.setframerate(12500)
+            w.writeframes(x.astype("<i2").tobytes())
+        return path
+
+    def test_block_size_does_not_change_the_result(self) -> None:
+        from unittest import mock
+        from falconsdr.playback import audio_analysis as aa
+        for channels in (1, 2):
+            path = self._wav(70_001, channels)
+            whole = (aa.analyze_wav(path), aa.compute_waveform_peaks(path, 400))
+            with mock.patch.object(aa, "BLOCK_FRAMES", 1300), mock.patch.object(aa, "PEAK_RESOLUTION", 70_001):
+                blocks = (aa.analyze_wav(path), aa.compute_waveform_peaks(path, 400))
+            self.assertEqual(whole[0], blocks[0])
+            self.assertEqual(whole[1].tolist(), blocks[1].tolist())
+            self.assertGreater(whole[0].clipping_ratio, 0)
+            self.assertAlmostEqual(whole[0].duration_sec, 70_001 / 12500)
+
+    def test_only_one_block_is_in_memory(self) -> None:
+        from unittest import mock
+        from falconsdr.playback import audio_analysis as aa
+        path = self._wav(70_001)
+        with mock.patch.object(aa, "BLOCK_FRAMES", 1300):
+            sizes = [len(block) for block, *_ in aa._stream_samples(path, aa.WINDOW_SEC)]
+        self.assertLessEqual(max(sizes), 1300)
+        self.assertEqual(sum(sizes), 70_001)
+
+
 class SoftwareAgcTest(unittest.TestCase):
     """Fake clock, one peak per 30 ms tick like the scan loop."""
 

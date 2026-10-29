@@ -44,59 +44,66 @@ def _mp3_to_wav_bytes(path: Path) -> bytes:
     return proc.stdout
 
 
-def _read_samples(path: Path) -> tuple[np.ndarray, int, float]:
+_SAMPLE_FORMATS = {2: (np.int16, 0.0, 32768.0), 1: (np.uint8, 128.0, 128.0), 4: (np.int32, 0.0, 2147483648.0)}
+PEAK_RESOLUTION = 4_000_000  # waveform: at most this many windows per file; up to 4M frames (5+ min) exact
+BLOCK_FRAMES = 1 << 20     # ~1M frames (8 MB as float64) in memory at a time
+
+
+def _stream_samples(path: Path, window_sec: float = 0.0, fine_windows: int = 0):
+    """Yields ``(mono float64 block, full_scale, window, framerate)`` - one block in memory at a
+    time, never the whole file: a recording can last for hours (a broadcast station that never
+    drops below the trigger level was once 850 MB; loading it as float64 took ~8 GB and the
+    kernel killed the server on every start). Every block but the last holds whole windows:
+    ``window_sec`` long, or the file split into about ``fine_windows`` of them."""
     # mp3 is decoded to an in-memory WAV, so one parser handles both.
-    source = io.BytesIO(_mp3_to_wav_bytes(path)) if path.suffix.lower() == ".mp3" else str(path)
+    pcm = _mp3_to_wav_bytes(path) if path.suffix.lower() == ".mp3" else None
+    source = io.BytesIO(pcm) if pcm is not None else str(path)
     with wave.open(source, "rb") as wf:
         n_channels = wf.getnchannels()
         sampwidth = wf.getsampwidth()
         framerate = wf.getframerate() or 1
-        n_frames = wf.getnframes()
-        raw = wf.readframes(n_frames)
-
-    # Duration from the bytes actually read: ffmpeg writing to a pipe puts a
-    # placeholder (0x7FFFFFFF) in the header's frame count (gotcha 19).
-    actual_n_frames = len(raw) // max(1, sampwidth * n_channels)
-    duration_sec = actual_n_frames / framerate
-
-    if sampwidth == 2:
-        data = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
-        full_scale = 32768.0
-    elif sampwidth == 1:
-        data = np.frombuffer(raw, dtype=np.uint8).astype(np.float64) - 128.0
-        full_scale = 128.0
-    elif sampwidth == 4:
-        data = np.frombuffer(raw, dtype=np.int32).astype(np.float64)
-        full_scale = 2147483648.0
-    else:
-        raise ValueError(f"Unsupported sample width: {sampwidth} bytes")
-
-    if n_channels > 1 and data.size:
-        usable = (data.size // n_channels) * n_channels
-        data = data[:usable].reshape(-1, n_channels).mean(axis=1)
-
-    return data, full_scale, duration_sec
+        if sampwidth not in _SAMPLE_FORMATS:
+            raise ValueError(f"Unsupported sample width: {sampwidth} bytes")
+        dtype, offset, full_scale = _SAMPLE_FORMATS[sampwidth]
+        frame_bytes = sampwidth * n_channels
+        if fine_windows:  # the header's count can be a placeholder (gotcha 19): trust the size too
+            size = len(pcm) if pcm is not None else path.stat().st_size
+            window = max(1, min(wf.getnframes(), size // frame_bytes) // fine_windows)
+        else:
+            window = max(1, int(framerate * window_sec))
+        block = window * max(1, BLOCK_FRAMES // window)
+        while True:
+            raw = wf.readframes(block)
+            usable = len(raw) // frame_bytes * frame_bytes
+            if not usable:
+                return
+            data = np.frombuffer(raw[:usable], dtype=dtype).astype(np.float64) - offset
+            if n_channels > 1:
+                data = data.reshape(-1, n_channels).mean(axis=1)
+            yield data, full_scale, window, framerate
 
 
 def compute_waveform_peaks(path: Path, n_buckets: int = 400) -> np.ndarray | None:
     """Peak amplitude (0..1) per time bucket for the Recordings page's
     waveform, normalized to the recording's own loudest bucket (gotcha 34).
     None for an unreadable or empty file - "no data", unlike real silence."""
+    fine: list[np.ndarray] = []  # a peak per window of a few frames, so a long file stays small
     try:
-        data, full_scale, _ = _read_samples(path)
+        for data, full_scale, window, _ in _stream_samples(path, fine_windows=PEAK_RESOLUTION):
+            usable = data.size - data.size % window
+            if usable:
+                fine.append(np.abs(data[:usable]).reshape(-1, window).max(axis=1) / full_scale)
+            if usable < data.size:
+                fine.append(np.array([np.abs(data[usable:]).max() / full_scale]))
     except Exception:
         return None
-    if data.size == 0:
+    if not fine:
         return None
-
-    n_buckets = max(1, min(n_buckets, data.size))
-    edge = data.size - (data.size % n_buckets)
-    if edge == 0:
-        edge = data.size
-        n_buckets = 1
-    trimmed = np.abs(data[:edge]) / full_scale
-    peaks = trimmed.reshape(n_buckets, -1).max(axis=1)
-    peak_max = float(peaks.max()) if peaks.size else 0.0
+    peaks = np.concatenate(fine)
+    n_buckets = max(1, min(n_buckets, peaks.size))
+    edge = peaks.size - (peaks.size % n_buckets)
+    peaks = peaks[:edge].reshape(n_buckets, -1).max(axis=1)
+    peak_max = float(peaks.max())
     if peak_max > 1e-4:
         peaks = peaks / peak_max
     return np.clip(peaks, 0.0, 1.0).astype(np.float32)
@@ -104,21 +111,33 @@ def compute_waveform_peaks(path: Path, n_buckets: int = 400) -> np.ndarray | Non
 
 def analyze_wav(path: Path) -> QualityMetrics:
     """Computes quality metrics for a single wav file."""
+    rms_parts: list[np.ndarray] = []
+    clip_parts: list[np.ndarray] = []   # clipped samples per window
+    n_frames, window_len, framerate_seen = 0, 0, 0
     try:
-        data, full_scale, duration_sec = _read_samples(path)
+        for data, full_scale, window, framerate in _stream_samples(path, WINDOW_SEC):
+            first = n_frames == 0
+            n_frames += data.size
+            framerate_seen = framerate
+            if first:
+                window_len = min(window, data.size)  # a file shorter than one window is a single window
+            n_windows = data.size // window_len
+            if not n_windows:
+                continue
+            frames = data[: n_windows * window_len].reshape(n_windows, window_len)
+            rms_parts.append(np.sqrt(np.mean(frames ** 2, axis=1)))
+            clip_parts.append(np.sum(np.abs(frames) >= CLIP_THRESHOLD_FRAC * full_scale, axis=1))
     except Exception:
         return QualityMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, readable=False)
 
-    if data.size == 0:
+    # Duration from the bytes actually read: ffmpeg writing to a pipe puts a
+    # placeholder (0x7FFFFFFF) in the header's frame count (gotcha 19).
+    duration_sec = n_frames / framerate_seen if n_frames else 0.0
+    if not n_frames:
         return QualityMetrics(0.0, 0.0, 0.0, 0.0, 0.0, duration_sec)
 
-    framerate_estimate = max(1.0, data.size / duration_sec) if duration_sec else 12500.0
-    window = max(1, int(framerate_estimate * WINDOW_SEC))
-    window = min(window, data.size)
-    n_windows = max(1, data.size // window)
-    trimmed = data[: n_windows * window]
-    frames = trimmed.reshape(n_windows, window)
-    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    rms = np.concatenate(rms_parts)
+    clipped = np.concatenate(clip_parts)
 
     # Exact-zero windows are squelch gaps (gotcha 6), not receiver noise -
     # left in, they pull the noise floor to 0 and the SNR to nonsense.
@@ -127,7 +146,6 @@ def analyze_wav(path: Path) -> QualityMetrics:
         # All zeros: use everything rather than an empty selection.
         real_mask = np.ones_like(rms, dtype=bool)
     real_rms = rms[real_mask]
-    real_data = frames[real_mask].reshape(-1)
 
     noise_floor = float(np.percentile(real_rms, NOISE_PERCENTILE))
     signal_level = float(np.percentile(real_rms, SIGNAL_PERCENTILE))
@@ -135,8 +153,7 @@ def analyze_wav(path: Path) -> QualityMetrics:
     eps = 1e-6
     snr_db = 20.0 * math.log10(max(signal_level, eps) / max(noise_floor, eps))
 
-    clip_thresh = CLIP_THRESHOLD_FRAC * full_scale
-    clipping_ratio = float(np.mean(np.abs(real_data) >= clip_thresh)) if real_data.size else 0.0
+    clipping_ratio = float(clipped[real_mask].sum() / (real_rms.size * window_len))
 
     snr_component = max(0.0, min(snr_db, SNR_FOR_100)) / SNR_FOR_100 * 100.0
     clip_penalty = min(clipping_ratio * CLIP_PENALTY_SCALE, 40.0)
