@@ -10,7 +10,7 @@ services, military UHF…) and get a searchable library of conversations.
 It runs in your web browser: on the computer the SDR is plugged into, or as a
 headless receiver you listen to from any phone or PC on your network.
 
-**Try it first, no receiver needed:** the real interface on a simulated
+**You can try UI and UX also in virtual ether (simulated transmissions) before downloading:** the real interface on a simulated
 receiver at [falconsdr.com](https://falconsdr.com).
 
 > Listening to and recording some radio services is restricted or illegal in
