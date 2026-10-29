@@ -65,8 +65,9 @@ headless receiver you listen to from any phone or PC on your network.
   talking. Set your approximate location once in Settings → Location.
 - Statistics: busiest frequencies, activity by hour, weekday and day.
 - Optional speech-to-text with [Whisper](https://github.com/SYSTRAN/faster-whisper)
-  (installed from the app). It can run on a different, faster computer than
-  the one scanning.
+  (installed from the app; one model, `large-v3`, for every language - an
+  English aviation model can be added in the settings). It can run on a
+  different, faster computer than the one scanning.
 
 **Server and multiple computers**
 - `--server` mode for a small always-on Linux receiver (mini PC, home
@@ -345,8 +346,8 @@ bundled `librtlsdr`. The Windows/Linux packages list every bundled component
 and its license in `THIRD-PARTY-LICENSES.txt` (ffmpeg in them is a GPLv3
 build). Transcription software and Whisper models are not bundled: they are
 downloaded on the user's own request from their publishers (faster-whisper,
-CTranslate2 and the default models `Systran/faster-whisper-large-v3` and
-`jacktol/whisper-medium.en-fine-tuned-for-ATC-faster-whisper` are MIT-licensed).
+CTranslate2 and the default model `Systran/faster-whisper-large-v3` are MIT-licensed, as
+is the optional English aviation model `jacktol/whisper-medium.en-fine-tuned-for-ATC-faster-whisper`).
 Neither is the digital voice decoder: on request, the app downloads
 [dsd-fme](https://github.com/lwvmobile/dsd-fme) and
 [mbelib](https://github.com/lwvmobile/mbelib) from their authors (the

@@ -137,8 +137,8 @@ export function settingsView(root, hash) {
     const advanced = h('details',
       h('summary.small.muted', { style: { cursor: 'pointer' } }, t('Whisper models and options')),
       h('div.col', { style: { marginTop: '12px' } },
-        setting(t('General model'), t('Used for Polish and other languages.'), h('input', { value: tc.generic_model, onchange: (e) => patchConfig({ transcription: { generic_model: e.target.value.trim() } }) })),
-        setting(t('English ATC model'), t('Fine-tuned for English air traffic control.'), h('input', { value: tc.english_atc_model, style: { width: 'min(420px, 100%)' }, onchange: (e) => patchConfig({ transcription: { english_atc_model: e.target.value.trim() } }) })),
+        setting(t('Main model'), t('Transcribes every recording and detects its language - English too, unless an English model is set below.'), h('input', { value: tc.generic_model, onchange: (e) => patchConfig({ transcription: { generic_model: e.target.value.trim() } }) })),
+        setting(t('English model (optional)'), t('Only for English, e.g. tuned for air traffic control. Empty: the main model does English too - one download, less memory.'), h('input', { value: tc.english_atc_model, placeholder: 'jacktol/whisper-medium.en-fine-tuned-for-ATC-faster-whisper', style: { width: 'min(420px, 100%)' }, onchange: (e) => patchConfig({ transcription: { english_atc_model: e.target.value.trim() } }) })),
         setting(t('Run on'), '', select([['auto', t('Automatic (GPU if available)')], ['cuda', 'GPU (CUDA)'], ['cpu', 'CPU']], tc.device, (v) => patchConfig({ transcription: { device: v } }))),
         setting(t('Expected languages'), t('ISO codes, e.g. en, pl. Detection picks between these.'), langs),
         setting(t('Skip recordings shorter than'), t('Seconds - a squelch crackle is not worth transcribing.'), numberInput(tc.min_duration_sec, (v) => patchConfig({ transcription: { min_duration_sec: Math.max(0, v) } }), { min: 0, step: 0.1 }))));

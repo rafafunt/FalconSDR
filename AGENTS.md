@@ -246,7 +246,9 @@ catalog loads; wrap them in a function called at point of use
     tries a plain `pip install` into the running interpreter first; only
     falls back to a `--system-site-packages` venv (`venv_paths.VENV_DIR`) on
     a PEP-668 `externally-managed-environment` error — that fallback is the
-    only path needing a restart. A worker without Whisper never claims
+    only path needing a restart. One model is the default: `generic_model` (large-v3) detects the language and transcribes
+    everything; `english_atc_model` is optional (empty by default) and, when set, only gets English
+    - never assume it exists. A worker without Whisper never claims
     jobs, and an `"error"` result isn't re-queued automatically within the
     same server session (`Library._failed`), or a broken install would
     retry forever.

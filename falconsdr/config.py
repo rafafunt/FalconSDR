@@ -220,8 +220,10 @@ class NoiseReductionConfig:
 @dataclass
 class TranscriptionConfig:
     enabled: bool = True         # automatic background transcription of new recordings (see worker.py)
-    generic_model: str = "large-v3"  # multilingual model (covers Polish transmissions, among others)
-    english_atc_model: str = "jacktol/whisper-medium.en-fine-tuned-for-ATC-faster-whisper"
+    generic_model: str = "large-v3"  # transcribes every language, and detects which one it is
+    # Optional: a model for English only (e.g. "jacktol/whisper-medium.en-fine-tuned-for-ATC-faster-whisper",
+    # tuned for aviation). Empty = generic_model does English too: one download, one model in memory.
+    english_atc_model: str = ""
     device: str = "auto"         # "auto" | "cuda" | "cpu"
     compute_type: str = "auto"   # "auto" -> int8_float16 on GPU, int8 on CPU
     # Languages an uncertain detection is limited to, so radio noise can't

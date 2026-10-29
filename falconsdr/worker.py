@@ -208,7 +208,7 @@ class Worker(threading.Thread):
         self._status = "uninstalling"
         with self._lock:
             tconfig = self._tconfig
-        models = [tconfig.generic_model, tconfig.english_atc_model] if with_models else []
+        models = [m for m in (tconfig.generic_model, tconfig.english_atc_model) if m] if with_models else []
         ok, needs_restart, message = uninstall_transcription(models, lambda line: self._log.append(line[-300:]))
         # Off right away, also when the files only go at the next start.
         self._installed = False if ok else is_transcription_installed()

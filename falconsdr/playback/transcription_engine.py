@@ -188,13 +188,14 @@ def unload_models() -> None:
 
 
 def _get_models(config: TranscriptionConfig):
-    """Lazily loads both models (shared across subsequent calls from the worker thread)."""
+    """Lazily loads the model(s) (shared across subsequent calls from the worker thread). The
+    second one is None unless an English model is configured."""
     global _generic_model, _english_atc_model, _active_config
     with _lock:
         _maybe_retry_gpu_locked()
         if _active_config != config or _generic_model is None:
             _generic_model = _load_model(config.generic_model, config)
-            _english_atc_model = _load_model(config.english_atc_model, config)
+            _english_atc_model = _load_model(config.english_atc_model, config) if config.english_atc_model else None
             _active_config = config
         return _generic_model, _english_atc_model
 
@@ -268,7 +269,7 @@ def transcribe_recording(
             raw_lang, raw_prob, all_probs = generic_model.detect_language(audio=audio, vad_filter=True)
             lang, prob = _resolve_language(raw_lang, raw_prob, all_probs, config.candidate_languages)
 
-        if lang == "en":
+        if lang == "en" and english_atc_model is not None:
             model, engine_id = english_atc_model, config.english_atc_model
         else:
             model, engine_id = generic_model, config.generic_model

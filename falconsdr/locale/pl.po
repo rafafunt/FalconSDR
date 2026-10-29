@@ -1804,17 +1804,17 @@ msgstr "Czyszczenie działa co 10 minut. Dowolny wybór możesz też usunąć r�
 msgid "Whisper models and options"
 msgstr "Modele Whisper i opcje"
 
-msgid "General model"
-msgstr "Model ogólny"
+msgid "Main model"
+msgstr "Model główny"
 
-msgid "Used for Polish and other languages."
-msgstr "Dla polskiego i innych języków."
+msgid "Transcribes every recording and detects its language - English too, unless an English model is set below."
+msgstr "Transkrybuje każde nagranie i rozpoznaje jego język - także angielski, chyba że niżej ustawisz model angielski."
 
-msgid "English ATC model"
-msgstr "Model angielski ATC"
+msgid "English model (optional)"
+msgstr "Model angielski (opcjonalny)"
 
-msgid "Fine-tuned for English air traffic control."
-msgstr "Dostrojony do angielskiej korespondencji lotniczej."
+msgid "Only for English, e.g. tuned for air traffic control. Empty: the main model does English too - one download, less memory."
+msgstr "Tylko dla angielskiego, np. dostrojony do łączności lotniczej. Puste: angielski też robi model główny - jedno pobranie, mniej pamięci."
 
 msgid "Run on"
 msgstr "Uruchamiaj na"
@@ -2613,6 +2613,7 @@ msgstr "Uruchom ponownie teraz"
 
 msgid "Live spectrum and waterfall of the scanned band. The frequency and state are shown in text above."
 msgstr "Widmo i waterfall skanowanego pasma na żywo. Częstotliwość i stan są podane tekstem powyżej."
+
 msgid "Bands with their own trigger level ignore this slider: {names}."
 msgstr "Pasma z własnym progiem wyzwalania ignorują ten suwak: {names}."
 

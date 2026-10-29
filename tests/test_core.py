@@ -388,6 +388,47 @@ class RawReadTest(unittest.TestCase):
             thread.close()
 
 
+class SingleModelTranscriptionTest(unittest.TestCase):
+    """New installs use one model (large-v3) for every language; an English model is optional."""
+
+    def _run(self, english_model: str, language: str) -> list[str]:
+        import sys
+        from types import ModuleType, SimpleNamespace
+        from unittest import mock
+        from falconsdr.config import TranscriptionConfig
+        from falconsdr.playback import transcription_engine as te
+        used: list[str] = []
+
+        def fake_load(model_id, config):
+            def transcribe(audio, **kw):
+                used.append(model_id)
+                return [], SimpleNamespace(duration_after_vad=1.0)
+            return SimpleNamespace(transcribe=transcribe)
+
+        audio_mod = ModuleType("faster_whisper.audio")
+        audio_mod.decode_audio = lambda path: "audio"
+        te.unload_models()
+        try:
+            with mock.patch.dict(sys.modules, {"faster_whisper": ModuleType("faster_whisper"), "faster_whisper.audio": audio_mod}), \
+                    mock.patch.object(te, "_load_model", fake_load) as load:
+                config = TranscriptionConfig(english_atc_model=english_model)
+                te.transcribe_recording(SimpleNamespace(path="x.wav", duration_sec=5.0), config, forced_language=language)
+                te._get_models(config)
+        finally:
+            te.unload_models()
+        return used
+
+    def test_default_is_one_model(self) -> None:
+        from falconsdr.config import TranscriptionConfig
+        self.assertEqual(TranscriptionConfig().english_atc_model, "")
+        self.assertEqual(self._run("", "en"), ["large-v3"])
+        self.assertEqual(self._run("", "pl"), ["large-v3"])
+
+    def test_english_model_only_gets_english(self) -> None:
+        self.assertEqual(self._run("atc-model", "en"), ["atc-model"])
+        self.assertEqual(self._run("atc-model", "pl"), ["large-v3"])
+
+
 class StaticJsTest(unittest.TestCase):
     def test_no_code_hidden_after_a_line_comment(self) -> None:
         """`stmt; // note io.disconnect(); clearInterval(t);` is valid JS and silently drops the rest
