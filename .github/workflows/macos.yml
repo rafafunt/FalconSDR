@@ -11,6 +11,10 @@ on:
         description: Release tag to build and attach the app to
         required: true
         default: v1.3.0
+      ref:
+        description: Branch, tag or commit to build (empty = the tag; set a branch while the release is still a draft)
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -29,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.ref || inputs.tag }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
