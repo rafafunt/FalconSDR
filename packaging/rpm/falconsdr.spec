@@ -1,5 +1,5 @@
 Name:           falconsdr
-Version:        1.2.0
+Version:        1.3.0
 Release:        1%{?dist}
 Summary:        Wideband SDR ATC/radio scanner (self-contained build)
 License:        GPL-3.0-or-later
@@ -113,6 +113,9 @@ fi
 %{_modprobedir}/blacklist-rtl-dvb.conf
 
 %changelog
+* Thu Oct 29 2026 rafafunt - 1.3.0-1
+- 1.3.0: asynchronous RTL-SDR reads (no dropped samples: the #6 buzz and raised pitch), antenna range per dongle, one transcription model by default, smoother live audio.
+
 * Tue Oct 27 2026 rafafunt - 1.2.0-1
 - 1.2.0: Bias-T, several dongles at once (experimental), every dongle listed, DMR add-on certificate fix.
 
