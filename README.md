@@ -31,7 +31,10 @@ headless receiver you listen to from any phone or PC on your network.
 - Blacklist for carriers and interference, one click from the live view.
 - AM, NFM, WFM and SSB demodulation; software or hardware gain control.
 - Experimental: several dongles at once - the scan plan is split between
-  them, so each band is revisited that many times more often.
+  them, so each band is revisited that many times more often. Each dongle can
+  get an optional **antenna range** (SDR device card), so one on a 2 m antenna
+  scans only 144-146 MHz and one on a 70 cm antenna only 430-440 MHz; what no
+  range reaches is listed on the Listen page instead of being scanned badly.
 - Optional, experimental digital voice: DMR and Yaesu System Fusion (C4FM)
   through [dsd-fme](https://github.com/lwvmobile/dsd-fme), installed from
   Settings → Digital voice. Encrypted calls stay muted.

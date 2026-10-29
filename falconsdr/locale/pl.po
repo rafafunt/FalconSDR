@@ -2613,3 +2613,24 @@ msgstr "Uruchom ponownie teraz"
 
 msgid "Bands with their own trigger level ignore this slider: {names}."
 msgstr "Pasma z własnym progiem wyzwalania ignorują ten suwak: {names}."
+
+msgid "Antenna range (MHz)"
+msgstr "Zakres anteny (MHz)"
+
+msgid "no limit"
+msgstr "bez limitu"
+
+msgid "Optional. This dongle scans only inside this range - for one on an antenna made for a single band, e.g. 144 to 146 for 2 m. Empty = no limit."
+msgstr "Opcjonalnie. Ten dongle skanuje tylko w tym zakresie - dla odbiornika z anteną zrobioną pod jedno pasmo, np. 144 do 146 dla 2 m. Puste = bez limitu."
+
+msgid "Memory List channels: {n} (e.g. {freq} MHz)"
+msgstr "Kanały z listy pamięci: {n} (np. {freq} MHz)"
+
+msgid "Not scanned - outside the antenna range of every receiver:"
+msgstr "Nie są skanowane - poza zakresem anteny każdego odbiornika:"
+
+msgid "Change the range under SDR device."
+msgstr "Zmień zakres w sekcji Urządzenie SDR."
+
+msgid "Nothing for this receiver to scan inside its antenna range ({low}-{high} MHz)."
+msgstr "Ten odbiornik nie ma nic do skanowania w swoim zakresie anteny ({low}-{high} MHz)."

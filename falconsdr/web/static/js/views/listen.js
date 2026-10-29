@@ -69,11 +69,14 @@ export function listenView(root) {
   });
 
   const dongleRow = h('div.row.wrap', { style: { gap: '6px' } });
+  // Bands/channels that no dongle's antenna range reaches (live.uncovered, antenna_range.py).
+  const rangeNotice = h('div.notice.hidden', { role: 'status' }, icon('ban'), h('span', { style: { flex: '1 1 260px' } }));
   const hero = h('section.card.hero',
     h('div.row', stateChip, h('span.spacer'), cycleText),
     dongleRow,
     h('div', freqEl, nameEl),
     driverHint,
+    rangeNotice,
     others,
     h('div.col', { style: { gap: '4px' } },
       h('div.meter', meterFill, meterMark),
@@ -131,11 +134,27 @@ export function listenView(root) {
     command('raw_iq', { enabled: !active });
   }
 
+  function renderRangeNotice(live) {
+    const items = (live && live.uncovered) || [];
+    rangeNotice.classList.toggle('hidden', !items.length);
+    if (!items.length) return;
+    const parts = items.map((it) => {
+      if (it.kind === 'channels') return t('Memory List channels: {n} (e.g. {freq} MHz)', { n: it.count, freq: it.examples.map((f) => fmtMHz(f, 3)).join(', ') });
+      const whole = it.gaps.length === 1 && it.gaps[0][0] === it.start_hz && it.gaps[0][1] === it.stop_hz;
+      if (it.label && whole) return it.label;  // the name usually carries the range already
+      const gaps = it.gaps.map(([a, b]) => `${fmtMHz(a, 3)}–${fmtMHz(b, 3)}`).join(', ');
+      return it.label ? `${it.label} (${gaps} MHz)` : `${gaps} MHz`;
+    });
+    rangeNotice.querySelector('span').textContent =
+      `${t('Not scanned - outside the antenna range of every receiver:')} ${parts.join('; ')}. ${t('Change the range under SDR device.')}`;
+  }
+
   function renderLive() {
     const live = S.live;
     if (!live) return;
     stateChip.className = 'chip state ' + stateClass(live);
     driverHint.classList.toggle('hidden', !(live.state === 'RECONNECTING' && isWindows()));
+    renderRangeNotice(live);
     mount(stateChip, h('span.dot'), live.stopping ? t('Stopping…') : stateLabel(live.state));
     const [primary, ...rest] = live.frequencies || [];
     const active = live.state === 'SIGNAL_DETECTED' || live.state === 'LINGER';
@@ -259,7 +278,8 @@ export function listenView(root) {
       const del = h('button.icon.ghost', { title: t('Remove'), onclick: () => setExtra(extra.filter((_, j) => j !== i)) }, icon('x'));
       const xBias = biasTeeToggle(!!x.bias_tee, (v) => setExtra(extra.map((e, j) => (j === i ? { ...e, bias_tee: v } : e))));
       extraInputs.push(s, del, xBias.querySelector('input'));
-      return h('div.col', { style: { gap: '6px' } }, h('label.field', t('Dongle {n}', { n: i + 2 }), h('div.row', s, del)), xBias);
+      const xRange = rangeFields(x.range_start_hz || 0, x.range_stop_hz || 0, (p) => setExtra(extra.map((e, j) => (j === i ? { ...e, ...p } : e))));
+      return h('div.col', { style: { gap: '6px' } }, h('label.field', t('Dongle {n}', { n: i + 2 }), h('div.row', s, del)), xBias, xRange);
     });
     const used = new Set([`${c.device.driver}|${c.device.device_args}`, ...extra.map((x) => `${x.driver}|${x.device_args}`)]);
     const add = h('button.ghost.small', {
@@ -276,6 +296,7 @@ export function listenView(root) {
         h('label.field', t('Device'), sel),
         h('label.field', t('Capture width (MHz)'), bw)),
       bias,
+      rangeFields(c.device.range_start_hz || 0, c.device.range_stop_hz || 0, (p) => { patchConfig({ device: p }); renderDevice(); }),
       ...extraRows,
       extra.length ? h('span.faint.small', t('The scan plan is split between all dongles - each scans its own share of the windows, so a full cycle is that much shorter. You hear one dongle at a time; the others keep recording.')) : null,
       add,
@@ -285,6 +306,19 @@ export function listenView(root) {
       isWindows() ? h('button.ghost.small', { onclick: () => driverHelp() }, t('Dongle not detected? Driver (Zadig) instructions')) : null);
     lockDevice(S.live && S.live.running);
   }
+  // Antenna range: optional and per dongle; 0 in the config = no limit on that side. Applies live
+  // (the scan plan is rebuilt), so unlike the device itself it stays editable while scanning.
+  function rangeFields(startHz, stopHz, set) {
+    const mhz = (hz) => (hz ? String(+(hz / 1e6).toFixed(6)) : '');
+    const field = (hz, label, key) => h('input', {
+      type: 'number', min: 0, step: 0.001, placeholder: t('no limit'), 'aria-label': `${t('Antenna range (MHz)')}: ${label}`, value: mhz(hz),
+      onchange: (e) => set({ [key]: Math.max(0, Math.round((+e.target.value || 0) * 1e6)) }),
+    });
+    return h('div.col', { style: { gap: '4px' } },
+      h('label.field', t('Antenna range (MHz)'), h('div.row', field(startHz, t('From'), 'range_start_hz'), h('span.faint', '–'), field(stopHz, t('To'), 'range_stop_hz'))),
+      h('span.faint.small', t('Optional. This dongle scans only inside this range - for one on an antenna made for a single band, e.g. 144 to 146 for 2 m. Empty = no limit.')));
+  }
+
   // Off by default: DC on the antenna cable can damage what's on it.
   function biasTeeToggle(on, set) {
     return toggle(t('Bias-T (antenna power)'), on, async (v, e) => {

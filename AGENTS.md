@@ -609,6 +609,17 @@ catalog loads; wrap them in a function called at point of use
     dongles recorded 14/28/50 % of them, no duplicates - the default 5 s
     linger is what holds a single dongle back.
 
+    **Antenna range** (`antenna_range.py`; `DeviceConfig.range_start_hz`/`range_stop_hz`, same two
+    keys in an `extra_devices` dict; 0 = open end, default no limit): with any range set,
+    `_rebuild_windows` uses `split_by_range` instead of `_partition_windows` - every engine
+    runs it on the same plan and agrees without talking: each frequency goes to one dongle
+    whose range holds it (taking turns window by window if several do), to none otherwise;
+    a half-owned window keeps its frequencies and is re-centred. No range anywhere =
+    the old path, untouched. Ranges are read from the shared config at every rebuild (live
+    edit, no restart), the engine order is `Controller._devices()`'s. What no dongle
+    reaches (only when *every* dongle has a range) is `live["uncovered"]`, shown as a
+    notice in the Listen hero; edge probes past a band are dropped if outside the range.
+
 47. **Bias-T (DC on the antenna input) is off by default and per dongle**
     (verified on a real RTL-SDR Blog V4: its LED follows the switch) (`DeviceConfig.bias_tee`, an extra dongle's `bias_tee` key).
     Both backends open with it off, switch it on only as the very last step

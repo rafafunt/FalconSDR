@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from . import __version__, autostart, digital_voice, i18n, military_presets, schedule, storage
+from . import __version__, antenna_range, autostart, digital_voice, i18n, military_presets, schedule, storage
 from .audio_transcode import ffmpeg_available
 from .config import DEFAULT_RECORDINGS_DIR, AppConfig, ScheduleEntry, VfoRangeConfig, _from_dict
 from .models import BlacklistEntry, Channel, Modulation, snap_airband_hz
@@ -355,12 +355,20 @@ class Controller:
                 "running": bool(self._engines),
                 "stopping": any(e._stop_evt.is_set() for e in self._engines),
                 "solo_band": self._solo_band,
+                "uncovered": self._uncovered(),
                 "schedule_active": schedule.active_indices(self.config),
                 "clock": time.strftime("%H:%M"),
                 "spectrum": self._spectrum,
                 "log": [e for e in self._log if e["id"] > since_log],
                 "audio_rate": AUDIO_RATE,
             }
+
+    def _uncovered(self) -> list[dict]:
+        """Selected bands/channels outside every dongle's antenna range (antenna_range.py)."""
+        if not antenna_range.is_limited(antenna_range.device_ranges(self.config)):
+            return []
+        bands, memory_on = schedule.scan_selection(self.config)
+        return antenna_range.uncovered(self.config, self.channels, bands, memory_on)
 
     def settings(self) -> dict:
         return {

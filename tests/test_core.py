@@ -807,6 +807,88 @@ class MultiDongleTest(unittest.TestCase):
         ctl._engines = []
 
 
+class AntennaRangeTest(unittest.TestCase):
+    def _plan(self, spans):
+        from falconsdr.channelizer import plan_windows
+        return [w for lo, hi in spans for w in plan_windows(list(range(lo, hi, 25_000)), 2_400_000, 25_000)]
+
+    def test_no_limit_by_default_and_ends_are_normalised(self) -> None:
+        from falconsdr.antenna_range import OPEN_END_HZ, device_range_hz, device_ranges, is_limited
+        cfg = AppConfig()
+        self.assertEqual(device_ranges(cfg), [(0, OPEN_END_HZ)])
+        self.assertFalse(is_limited(device_ranges(cfg)))
+        self.assertEqual(device_range_hz({"range_start_hz": 146_000_000, "range_stop_hz": 144_000_000}), (144_000_000, 146_000_000))
+        self.assertEqual(device_range_hz({"range_start_hz": 430_000_000}), (430_000_000, OPEN_END_HZ))
+        cfg.device.extra_devices = [{"driver": "rtlsdr", "range_stop_hz": 146_000_000}, {"device_args": "no driver"}]
+        self.assertEqual(len(device_ranges(cfg)), 2)  # same filter as Controller._devices()
+
+    def test_each_dongle_scans_only_its_range_and_every_frequency_once(self) -> None:
+        from falconsdr.antenna_range import split_by_range
+        m2, cm70 = (144_000_000, 146_000_000), (430_000_000, 440_000_000)
+        plan = self._plan([(144_000_000, 146_000_000), (430_000_000, 440_000_000), (118_000_000, 120_000_000)])
+        ranges = [m2, cm70]
+        shares = [split_by_range(list(plan), [], k, ranges)[0] for k in range(2)]
+        freqs = [sorted(f for w in share for f in w.freqs) for share in shares]
+        self.assertTrue(freqs[0] and all(m2[0] <= f <= m2[1] for f in freqs[0]))
+        self.assertTrue(freqs[1] and all(cm70[0] <= f <= cm70[1] for f in freqs[1]))
+        wanted = {f for w in plan for f in w.freqs if m2[0] <= f <= m2[1] or cm70[0] <= f <= cm70[1]}
+        self.assertEqual(set(freqs[0]) | set(freqs[1]), wanted)  # 118-120 MHz is in nobody's range: dropped
+        for share in shares:  # a window trimmed to the range is re-centred on what is left
+            for w in share:
+                self.assertTrue(min(w.freqs) <= w.center_hz <= max(w.freqs))
+
+    def test_overlapping_ranges_take_turns_and_unlimited_dongle_gets_the_rest(self) -> None:
+        from falconsdr.antenna_range import OPEN_END_HZ, split_by_range
+        plan = self._plan([(144_000_000, 150_000_000), (430_000_000, 432_000_000)])
+        ranges = [(144_000_000, 150_000_000), (0, OPEN_END_HZ)]
+        a = split_by_range(list(plan), [], 0, ranges)[0]
+        b = split_by_range(list(plan), [], 1, ranges)[0]
+        fa = {f for w in a for f in w.freqs}
+        fb = {f for w in b for f in w.freqs}
+        self.assertFalse(fa & fb)  # nothing scanned twice
+        self.assertEqual(fa | fb, {f for w in plan for f in w.freqs})  # nothing lost
+        self.assertTrue(all(f < 150_000_000 for f in fa) and any(f > 430_000_000 for f in fb))
+        self.assertTrue(any(f < 150_000_000 for f in fb))  # the unlimited one helps inside the overlap
+
+    def test_lane_keeps_weight_and_empty_lane_disappears(self) -> None:
+        from falconsdr.antenna_range import split_by_range
+        from falconsdr.scanner_engine import _Lane
+        lane = _Lane(weight=3.0, windows=self._plan([(430_000_000, 431_000_000)]), is_range=True)
+        _d, mine = split_by_range([], [lane], 1, [(144_000_000, 146_000_000), (430_000_000, 440_000_000)])
+        _d, other = split_by_range([], [lane], 0, [(144_000_000, 146_000_000), (430_000_000, 440_000_000)])
+        self.assertEqual([(ln.weight, ln.is_range) for ln in mine], [(3.0, True)])
+        self.assertEqual(other, [])
+
+    def test_uncovered_is_reported_only_when_every_dongle_is_limited(self) -> None:
+        from falconsdr.antenna_range import uncovered
+        from falconsdr.config import VfoRangeConfig
+        from falconsdr.models import Channel
+        cfg = AppConfig()
+        cfg.device.range_start_hz, cfg.device.range_stop_hz = 144_000_000, 146_000_000
+        airband = VfoRangeConfig(label="Airband", start_hz=118_000_000, stop_hz=136_000_000)
+        two_m = VfoRangeConfig(label="2 m", start_hz=144_000_000, stop_hz=148_000_000)
+        channels = [Channel(freq_hz=145_500_000, name="in"), Channel(freq_hz=433_000_000, name="out"),
+                    Channel(freq_hz=434_000_000, name="off", enabled=False)]
+        items = uncovered(cfg, channels, [airband, two_m], True)
+        self.assertEqual([i["kind"] for i in items], ["band", "band", "channels"])
+        self.assertEqual(items[0]["gaps"], [[118_000_000, 136_000_000]])
+        self.assertEqual(items[1]["gaps"], [[146_000_001, 148_000_000]])  # partly covered: only the rest
+        self.assertEqual((items[2]["count"], items[2]["examples"]), (1, [433_000_000]))
+        self.assertEqual(uncovered(cfg, channels, [], False), [])
+        cfg.device.extra_devices = [{"driver": "rtlsdr", "range_start_hz": 430_000_000, "range_stop_hz": 440_000_000}]
+        self.assertEqual([i["kind"] for i in uncovered(cfg, channels, [airband], True)], ["band"])  # 70 cm channel now covered
+        cfg.device.extra_devices = [{"driver": "rtlsdr"}]  # an unlimited second dongle reaches everything
+        self.assertEqual(uncovered(cfg, channels, [airband], True), [])
+
+    def test_controller_puts_the_uncovered_list_in_the_live_status(self) -> None:
+        from falconsdr.controller import Controller
+        cfg = AppConfig()
+        ctl = Controller(cfg)
+        self.assertEqual(ctl.live()["uncovered"], [])
+        cfg.device.range_start_hz, cfg.device.range_stop_hz = 430_000_000, 440_000_000
+        self.assertTrue(ctl.live()["uncovered"])  # the default 118-136 MHz band is outside the 70 cm antenna
+
+
 class ScheduleTest(unittest.TestCase):
     def test_active_entries_pick_bands_and_survive_a_config_patch(self) -> None:
         import datetime as dt

@@ -92,9 +92,15 @@ class DeviceConfig:
     # DC power on the antenna input for an LNA/active antenna.
     # Off by default; only while scanning - sdr_backend switches it off on close.
     bias_tee: bool = False
+    # Antenna range (antenna_range.py): scan only inside [range_start_hz, range_stop_hz].
+    # 0 = no limit on that side, so by default there is none. Per dongle - an extra
+    # dongle's dict carries the same two keys.
+    range_start_hz: int = 0
+    range_stop_hz: int = 0
     # Experimental: more dongles scanning at the same time, each
-    # {"driver", "device_args", "bias_tee"} like the fields above; the scan plan is
-    # split between all of them (scanner_engine._partition_windows).
+    # {"driver", "device_args", "bias_tee", "range_start_hz", "range_stop_hz"} like the
+    # fields above; the scan plan is split between all of them
+    # (scanner_engine._partition_windows, or antenna_range.split_by_range with a range).
     extra_devices: list = field(default_factory=list)
 
 

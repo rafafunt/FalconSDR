@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from .agc import SoftwareAgc
+from .antenna_range import OPEN_END_HZ, device_ranges, is_limited, split_by_range
 from .audio_transcode import transcode_to_mp3
 from .calibration_log import CalibrationLogger
 from .edge_compensation import EdgeCompensation
@@ -1057,7 +1058,16 @@ class ScannerEngine(threading.Thread):
             if c.name:
                 name_by_khz[round(c.freq_hz / 1000)] = c.name
 
-        if self._share[1] > 1:
+        ranges = device_ranges(self.config)
+        if len(ranges) != self._share[1]:  # the dongle list changed under a running scan: ignore ranges until restart
+            ranges = [(0, OPEN_END_HZ)] * self._share[1]
+        if is_limited(ranges):
+            default_windows, priority_lanes = split_by_range(default_windows, priority_lanes, self._share[0], ranges)
+            low, high = ranges[self._share[0]]
+            if not default_windows and not priority_lanes and (low > 0 or high < OPEN_END_HZ):
+                self.signals.log.emit(tr("Nothing for this receiver to scan inside its antenna range ({low}-{high} MHz).").format(
+                    low=f"{low / 1e6:g}", high="..." if high >= OPEN_END_HZ else f"{high / 1e6:g}"))
+        elif self._share[1] > 1:
             default_windows, priority_lanes = _partition_windows(default_windows, priority_lanes, *self._share)
         with self._lock:
             self._priority_lanes = priority_lanes
