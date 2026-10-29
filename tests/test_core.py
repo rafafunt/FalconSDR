@@ -325,6 +325,33 @@ class SoftwareAgcTest(unittest.TestCase):
         self.assertTrue(steps and steps[0] <= 1.05)
 
 
+class LiveBandOverrideTest(unittest.TestCase):
+    def test_open_window_sees_a_patched_band(self) -> None:
+        """merge_patch replaces config.bands with new objects; the window an
+        open transmission sits on must still pick up the edited trigger."""
+        from types import SimpleNamespace
+        from falconsdr.config import VfoRangeConfig
+        from falconsdr.controller import merge_patch
+        from falconsdr.scanner_engine import ScannerEngine
+        cfg = AppConfig()
+        cfg.bands = [VfoRangeConfig(id="b1", trigger_level_dbfs=-47.0)]
+        engine = SimpleNamespace(config=cfg)
+        win = SimpleNamespace(band=cfg.bands[0])  # as _rebuild_windows() tags it
+        self.assertEqual(ScannerEngine._effective_trigger_dbfs(engine, win), -47.0)
+        merge_patch(cfg, {"bands": [{"id": "b1", "trigger_level_dbfs": -60.0}]})
+        self.assertEqual(ScannerEngine._effective_trigger_dbfs(engine, win), -60.0)
+        merge_patch(cfg, {"bands": []})  # band deleted meanwhile: keep what the window has
+        self.assertEqual(ScannerEngine._effective_trigger_dbfs(engine, win), -47.0)
+
+    def test_power_of_a_dropped_frequency_does_not_raise(self) -> None:
+        import numpy as np
+        from falconsdr.channelizer import channel_powers_from_spectrum
+        bins = np.linspace(-1e6, 1e6, 2001)
+        spectrum = (bins, np.concatenate(([0.0], np.cumsum(np.ones(2000)))))
+        out = channel_powers_from_spectrum(spectrum, 100e6, [100_000_000, 100_050_000], {100_000_000: 12_500.0})
+        self.assertEqual(set(out), {100_000_000, 100_050_000})
+
+
 class AmBlockEdgeTest(unittest.TestCase):
     """Demodulating in 30 ms blocks must equal demodulating the stream in one
     go - a per-block resample_poly sagged the AM envelope at every block edge

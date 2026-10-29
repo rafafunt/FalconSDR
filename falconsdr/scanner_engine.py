@@ -1412,25 +1412,25 @@ class ScannerEngine(threading.Thread):
     # A window tagged with a band uses that band's own trigger/timing/gain/
     # noise reduction where set; None falls back to the global setting.
     def _effective_trigger_dbfs(self, window: ScanWindow | None) -> float:
-        band = window.band if window is not None else None
+        band = _live_band(self.config, window)
         if band is not None and band.trigger_level_dbfs is not None:
             return band.trigger_level_dbfs
         return self.config.trigger_level_dbfs
 
     def _effective_tuning_time_ms(self, window: ScanWindow | None) -> int:
-        band = window.band if window is not None else None
+        band = _live_band(self.config, window)
         if band is not None and band.tuning_time_ms is not None:
             return band.tuning_time_ms
         return self.config.timing.tuning_time_ms
 
     def _effective_linger_time_ms(self, window: ScanWindow | None) -> int:
-        band = window.band if window is not None else None
+        band = _live_band(self.config, window)
         if band is not None and band.linger_time_ms is not None:
             return band.linger_time_ms
         return self.config.timing.linger_time_ms
 
     def _effective_gain(self, window: ScanWindow | None) -> tuple[str, float]:
-        band = window.band if window is not None else None
+        band = _live_band(self.config, window)
         dev = self.config.device
         mode = band.gain_mode if band is not None and band.gain_mode is not None else dev.gain_mode
         db = band.gain_db if band is not None and band.gain_db is not None else dev.gain_db
@@ -1440,7 +1440,7 @@ class ScannerEngine(threading.Thread):
         """None when squelch is off, else effective trigger + offset (offset
         clamped <= 0, so it can never mute during SIGNAL_DETECTED - gotcha 6).
         Mutes live audio and writes silence; never affects LINGER/closing."""
-        band = window.band if window is not None else None
+        band = _live_band(self.config, window)
         enabled = band.squelch_enabled if band is not None and band.squelch_enabled is not None else self.config.squelch_enabled
         if not enabled:
             return None
@@ -1448,7 +1448,7 @@ class ScannerEngine(threading.Thread):
         return self._effective_trigger_dbfs(window) + min(0.0, offset)
 
     def _effective_noise_reduction(self, window: ScanWindow | None) -> tuple[bool, float]:
-        band = window.band if window is not None else None
+        band = _live_band(self.config, window)
         nr = self.config.noise_reduction
         enabled = (
             band.noise_reduction_enabled if band is not None and band.noise_reduction_enabled is not None
@@ -1793,6 +1793,17 @@ class ScannerEngine(threading.Thread):
         if not enabled:
             return audio
         return slot.noise_reducer.process(audio, strength=strength)
+
+
+def _live_band(config, window: ScanWindow | None):
+    """The window's band as it is in the config *now*. window.band is the
+    object from the last rebuild, and a config patch replaces the band
+    objects - so an open transmission would keep the old overrides (trigger,
+    squelch, linger...) until the scan moves to the next window."""
+    band = window.band if window is not None else None
+    if band is None or not band.id:
+        return band
+    return next((b for b in config.bands if b.id == band.id), band)
 
 
 def _strongest(powers: dict[int, float]) -> tuple[int | None, float]:

@@ -52,6 +52,8 @@ def _coerce(current: Any, value: Any) -> Any:
 
 # Lists of dataclasses sent whole: field name -> item type.
 _LIST_TYPES = {"bands": VfoRangeConfig, "entries": ScheduleEntry}
+# Settings the engine reads from the config on every tick: changing them needs no new scan plan.
+_READ_LIVE_KEYS = {"trigger_level_dbfs", "squelch_enabled", "squelch_offset_db"}
 _ACTIVE = ("SIGNAL_DETECTED", "LINGER")
 # With several dongles the status shown is the most telling of their states.
 _STATE_RANK = ["SIGNAL_DETECTED", "LINGER", "RECONNECTING", "SCANNING", "TUNING", "CALCULATE_NEXT_FREQ", "IDLE"]
@@ -407,7 +409,8 @@ class Controller:
             i18n.set_language(self.config.language)
         if self.config.recording.output_dir != old_root:
             threading.Thread(target=self.library.rescan, daemon=True).start()
-        self._rebuild()
+        if not set(patch) <= _READ_LIVE_KEYS:  # a slider drag must not rebuild the scan plan at every step
+            self._rebuild()
 
     def set_channels(self, channels: list[Channel]) -> None:
         self.channels = channels

@@ -115,7 +115,11 @@ def channel_powers_from_spectrum(
     freqs_arr = np.asarray(freqs, dtype=np.float64)
     offsets = freqs_arr - center_hz
     if isinstance(channel_bw_hz, dict):
-        half_bw = np.array([channel_bw_hz[f] for f in freqs], dtype=np.float64) / 2.0
+        bw = [channel_bw_hz.get(f) for f in freqs]
+        if None in bw:  # a rebuild dropped a frequency a stale window / open slot still holds
+            fallback = min(channel_bw_hz.values(), default=12_500.0)
+            bw = [fallback if b is None else b for b in bw]
+        half_bw = np.array(bw, dtype=np.float64) / 2.0
     else:
         half_bw = np.full(freqs_arr.shape, channel_bw_hz / 2.0)
 

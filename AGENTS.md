@@ -635,6 +635,17 @@ catalog loads; wrap them in a function called at point of use
     AGC envelope would remove the rest. The output of the first block is 10
     samples (0.8 ms filter delay) short.
 
+49. **A band's overrides are read through `_live_band(config, window)`, never
+    `window.band` directly.** `merge_patch` replaces `config.bands` with new
+    objects, so a window (held by the loop and by open slots) kept the old
+    trigger/squelch/linger until the scan moved on - editing a band's own
+    trigger during a detection did nothing. Related: `_rebuild_windows()` runs
+    on the HTTP thread and swaps `_channel_bw_map`, so
+    `channel_powers_from_spectrum` must survive a frequency missing from it
+    (it crashed the engine - auto-reconnect hid it as a 3 s gap); and
+    `patch_config` skips the rebuild for `_READ_LIVE_KEYS` (global
+    trigger/squelch), which the engine reads every tick.
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch

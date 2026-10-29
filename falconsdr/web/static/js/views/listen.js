@@ -197,9 +197,11 @@ export function listenView(root) {
     squelch.input.disabled = !c.squelch_enabled;
     const nr = slider({ name: t('Noise reduction strength'), min: 0, max: 100, step: 1, value: Math.round(c.noise_reduction.strength * 100), unit: '%', oninput: (v) => patchConfig({ noise_reduction: { strength: v / 100 } }) });
     nr.input.disabled = !c.noise_reduction.enabled;
+    const ownTrigger = c.bands.filter((b) => b.enabled && b.trigger_level_dbfs != null);
     mount(quick,
       h('div.card-head', h('h2', t('Receiver')), h('span.faint.small', t('Changes apply live'))),
       slider({ name: t('Trigger level'), min: -90, max: 0, step: 1, value: c.trigger_level_dbfs, unit: 'dBFS', oninput: (v) => patchConfig({ trigger_level_dbfs: v }) }),
+      ownTrigger.length ? h('p.faint.small', t('Bands with their own trigger level ignore this slider: {names}.', { names: ownTrigger.map((b) => b.label || bandRange(b)).join(', ') })) : null,
       h('div.col', { style: { gap: '6px' } },
         toggle(t('Squelch'), c.squelch_enabled, (v) => { patchConfig({ squelch_enabled: v }); squelch.input.disabled = !v; }, { hint: t('Mutes the noise tail after a transmission ends') }),
         squelch),

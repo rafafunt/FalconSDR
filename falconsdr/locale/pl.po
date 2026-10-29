@@ -2610,3 +2610,6 @@ msgstr "Transkrypcja odinstalowana - uruchom ponownie FalconSDR na tym komputerz
 
 msgid "Restart now"
 msgstr "Uruchom ponownie teraz"
+
+msgid "Bands with their own trigger level ignore this slider: {names}."
+msgstr "Pasma z własnym progiem wyzwalania ignorują ten suwak: {names}."
