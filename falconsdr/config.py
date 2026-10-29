@@ -92,6 +92,11 @@ class DeviceConfig:
     # DC power on the antenna input for an LNA/active antenna.
     # Off by default; only while scanning - sdr_backend switches it off on close.
     bias_tee: bool = False
+    # RTL-SDR through librtlsdr (Windows, macOS, the packaged Linux build): once the scanner has
+    # stayed on one frequency for a few reads, keep USB transfers queued (rtlsdr_read_async)
+    # instead of one blocking read at a time - between two blocking reads the dongle drops
+    # samples (see sdr_backend.RtlSdrBackend). SoapySDR streams like this on its own.
+    async_read: bool = True
     # Antenna range (antenna_range.py): scan only inside [range_start_hz, range_stop_hz].
     # 0 = no limit on that side, so by default there is none. Per dongle - an extra
     # dongle's dict carries the same two keys.

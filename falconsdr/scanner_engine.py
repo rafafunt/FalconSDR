@@ -790,12 +790,12 @@ class ScannerEngine(threading.Thread):
         if allow_simulated_fallback or driver == "simulated":
             raw_backend = create_backend(
                 driver, device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db,
-                debug_mode=self.config.debug_mode, bias_tee=self.bias_tee,
+                debug_mode=self.config.debug_mode, bias_tee=self.bias_tee, async_read=dev.async_read,
             )
         else:
             # Reconnect after real hardware was seen: keep failing, never fall
             # back to simulation (gotcha 8/10).
-            raw_backend = open_real_backend(driver, device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db, self.bias_tee)
+            raw_backend = open_real_backend(driver, device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db, self.bias_tee, dev.async_read)
         # Hardware reads happen on their own thread (gotcha 11), so nothing in
         # this loop can delay them; it proxies the backend's interface.
         self._backend = AcquisitionThread(raw_backend, self._chunk_size(), debug=self.config.debug_mode)

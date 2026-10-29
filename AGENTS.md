@@ -717,6 +717,22 @@ catalog loads; wrap them in a function called at point of use
     the `health:` line sums it as `iq_uncovered(steady)`. Find the GIL holder with
     `py-spy record --gil --threads --format raw` in a throwaway venv.
 
+54. **`RtlSdrBackend` (librtlsdr: Windows, macOS, the .deb, the receiver) switches from blocking
+    reads to an async stream once the scanner has stayed on a frequency for 8 reads**
+    (`_ASYNC_AFTER_READS`; `DeviceConfig.async_read`, default on). Between two blocking
+    `rtlsdr_read_sync` calls no transfer is pending and the dongle drops samples: measured on the
+    receiver (real dongle, 40 s at 131.9 MHz) **0.78 %** lost with light GIL load and **2.16 %**
+    with a 120 ms Python stall every 1.5 s - a splice every 30 ms (the buzz of issue #6) and a
+    voice pitched up by the lost fraction (the issue's addendum; 5 % = +85 cents). The stream
+    (15 x 64 KiB transfers, ~200 ms of slack) lost **0.00 %** under both loads. It is stopped at
+    every retune and gain step (otherwise 200 ms of the old frequency would sit in the queue), so
+    hopping is unchanged (261.6 vs 261.5 ms per 6-read hop) and a retune after parking costs
+    ~12 ms more. `_stop_stream` retries `rtlsdr_cancel_async` - a cancel before the stream runs
+    is ignored. `AcquisitionThread._note_read_start` is blind while `backend.streaming` (reads
+    leave the queue in 13.6 ms steps); `stream_stats()` / `async_stream(...)` in the health line
+    is the loss figure then. SoapySDR needs none of this (its drivers stream on their own).
+    Not tried on Windows.
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch

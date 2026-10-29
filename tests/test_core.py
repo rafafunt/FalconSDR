@@ -334,6 +334,7 @@ class RawReadTest(unittest.TestCase):
         backend = object.__new__(sb.RtlSdrBackend)
         backend._carry = np.empty(0, dtype=np.uint8)
         backend._io_diag = SimpleNamespace(record_read=lambda *a: None)
+        backend._async, backend._sync_reads, backend._stream_thread = False, 0, None
         pos = [0]
 
         def read_bytes(n):
@@ -386,6 +387,110 @@ class RawReadTest(unittest.TestCase):
             self.assertGreater(calls["raw"], calls["iq"])  # read ahead of what was consumed, converted lazily
         finally:
             thread.close()
+
+
+class AsyncStreamTest(unittest.TestCase):
+    """RtlSdrBackend keeps USB transfers queued once the scanner stays on a frequency."""
+
+    def _backend(self, lib, async_read=True):
+        import sys
+        import threading
+        from collections import deque
+        from types import ModuleType, SimpleNamespace
+        import numpy as np
+        from falconsdr import sdr_backend as sb
+        backend = object.__new__(sb.RtlSdrBackend)
+        backend._carry = np.empty(0, dtype=np.uint8)
+        backend._io_diag = SimpleNamespace(record_read=lambda *a: None)
+        backend._async, backend._sync_reads, backend._stream_thread = async_read, 0, None
+        backend._stream_cb, backend._stream_cond, backend._stream_chunks = None, threading.Condition(), deque()
+        backend._stream_error, backend._stream_stopping = None, False
+        backend.sample_rate, backend.bias_tee = 2_400_000.0, False
+        backend._stream_stats = sb._StreamStats(2_400_000.0)
+        backend.device = SimpleNamespace(dev_p=1, read_bytes=lambda n: np.full(n, 5, dtype=np.uint8),
+                                         set_bias_tee=lambda on: None, set_gain=lambda g: None)
+        fake = ModuleType("rtlsdr.librtlsdr")
+        fake.librtlsdr = lib
+        import ctypes
+        fake.rtlsdr_read_async_cb_t = ctypes.CFUNCTYPE(None, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_int, ctypes.py_object)
+        return backend, {"rtlsdr": ModuleType("rtlsdr"), "rtlsdr.librtlsdr": fake}
+
+    def _lib(self, result=0):
+        import ctypes
+        import threading
+
+        class Lib:
+            def __init__(self):
+                self.cancelled, self.started, self.resets = threading.Event(), 0, 0
+
+            def rtlsdr_reset_buffer(self, dev):
+                self.resets += 1
+
+            def rtlsdr_read_async(self, dev, cb, ctx, num, length):
+                self.started += 1
+                if result < 0:
+                    return result
+                buf = (ctypes.c_ubyte * length).from_buffer_copy(bytes([7]) * length)
+                while not self.cancelled.is_set():
+                    cb(ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte)), length, ctx)
+                    time.sleep(0.002)
+                self.cancelled.clear()
+                return 0
+
+            def rtlsdr_cancel_async(self, dev):
+                self.cancelled.set()
+                return 0
+        return Lib()
+
+    def test_stream_starts_after_a_few_reads_and_stops_at_a_retune(self) -> None:
+        import sys
+        from unittest import mock
+        lib = self._lib()
+        backend, modules = self._backend(lib)
+        with mock.patch.dict(sys.modules, modules):
+            for _ in range(8):
+                raw = backend.read_raw(1000)
+                self.assertEqual((raw.size, int(raw[0])), (2000, 5))   # blocking reads while hopping
+            self.assertEqual(lib.started, 0)
+            raw = backend.read_raw(1000)                                # the 9th: the stream takes over
+            self.assertEqual((raw.size, int(raw[0]), int(raw[-1])), (2000, 5, 7))  # carry of the blocking reads, then the stream
+            self.assertEqual((lib.started, lib.resets), (1, 1))
+            self.assertEqual(backend.read_raw(1000).size, 2000)
+            backend.set_frequency(131_900_000)                          # retune: stream off, old data gone
+            self.assertIsNone(backend._stream_thread)
+            self.assertEqual(len(backend._stream_chunks), 0)
+            self.assertEqual(int(backend.read_raw(1000)[0]), 5)         # hopping again: blocking reads
+
+    def test_stream_off_when_disabled_and_failure_is_an_error(self) -> None:
+        import sys
+        from unittest import mock
+        lib = self._lib()
+        backend, modules = self._backend(lib, async_read=False)
+        with mock.patch.dict(sys.modules, modules):
+            for _ in range(12):
+                backend.read_raw(1000)
+            self.assertEqual(lib.started, 0)
+        failing = self._lib(result=-5)
+        backend, modules = self._backend(failing)
+        with mock.patch.dict(sys.modules, modules):
+            for _ in range(8):
+                backend.read_raw(1000)
+            with self.assertRaises(RuntimeError):
+                backend.read_raw(1000)
+
+    def test_stats_tell_a_loss_from_a_late_callback(self) -> None:
+        from falconsdr.sdr_backend import _StreamStats
+        step = 65536 / 2 / 2_400_000.0   # one 64 KiB transfer
+        ok, late, lossy = _StreamStats(2_400_000.0), _StreamStats(2_400_000.0), _StreamStats(2_400_000.0)
+        t = 0.0
+        for k in range(1000):            # ~13.6 s
+            t += step
+            ok.add(t, 65536)
+            late.add(t + (0.15 if 400 < k < 410 else 0.0), 65536)   # a stalled process, data waited
+            lossy.add(t + (k - 200) * step * 0.1 if k > 200 else t, 65536)  # from k=200 on: 10 % of the time lost
+        self.assertLess(ok.lost_s, 0.005)
+        self.assertLess(late.lost_s, 0.02)
+        self.assertGreater(lossy.lost_s, 0.8)
 
 
 class SingleModelTranscriptionTest(unittest.TestCase):
@@ -447,6 +552,28 @@ class StaticJsTest(unittest.TestCase):
 class IqUncoveredTimeTest(unittest.TestCase):
     """The acquisition thread counts wall time that no IQ covers: reads are synchronous, so the
     time between two reads is time the dongle drops samples (found while hunting audible gaps)."""
+
+    def test_ignores_reads_while_the_backend_streams(self) -> None:
+        import numpy as np
+        from falconsdr.sdr_backend import AcquisitionThread
+
+        class Fake:
+            sample_rate, label, gain_range_db, streaming = 100_000.0, "fake", (0.0, 50.0), True
+
+            def read(self, n):
+                time.sleep(0.030)  # a slow cycle that would count as lost time if it were not a stream
+                return np.zeros(n, dtype=np.complex64)
+
+            def close(self):
+                pass
+
+        thread = AcquisitionThread(Fake(), 1000, debug=False)
+        try:
+            for _ in range(10):
+                thread.read(1000)
+            self.assertEqual((thread._iq_lost_s, thread._iq_streamed_s), (0.0, 0.0))
+        finally:
+            thread.close()
 
     def test_counts_a_slow_cycle_but_not_a_retune(self) -> None:
         import numpy as np

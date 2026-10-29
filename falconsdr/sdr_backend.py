@@ -3,6 +3,7 @@ device for testing without hardware.
 """
 from __future__ import annotations
 
+import ctypes
 import os
 import threading
 import time
@@ -238,20 +239,69 @@ _RTLSDR_LUT = ((np.arange(256, dtype=np.float32) - 127.4) / 128.0).astype(np.flo
 # Bulk transfers not a multiple of the 512 B USB packet cause overflows on
 # some libusb backends; read() rounds up and carries the remainder over.
 _RTLSDR_READ_GRANULE_BYTES = 512
+_ASYNC_BUFFERS = 15                # 15 x 64 KiB = ~200 ms of IQ at 2.4 MS/s may wait in the USB queue
+_ASYNC_BUFFER_BYTES = 65536        # (a multiple of 512)
+_ASYNC_AFTER_READS = 8             # blocking reads on one frequency before the stream takes over
+
+
+class _StreamStats:
+    """How much of a stream's wall time its samples cover. A late callback is not a loss (the data
+    waits in the USB queue), so the lag - wall time since the first callback minus the time the
+    samples received so far span - is taken as its minimum per 2 s block, and the loss is how far
+    that minimum has risen since the first block."""
+
+    def __init__(self, sample_rate: float):
+        self.rate = max(1.0, sample_rate)
+        self.t0: float | None = None
+        self.samples = 0
+        self.first_min: float | None = None
+        self.block_min = float("inf")
+        self.block_end = 0.0
+        self.lost_s = 0.0
+        self.streamed_s = 0.0
+
+    def add(self, now: float, nbytes: int) -> None:
+        if self.t0 is None:
+            self.t0, self.block_end = now, now + 2.0
+        self.samples += nbytes // 2
+        self.block_min = min(self.block_min, (now - self.t0) - self.samples / self.rate)
+        if now >= self.block_end:
+            if self.first_min is None:
+                self.first_min = self.block_min
+            else:
+                self.lost_s = max(self.lost_s, self.block_min - self.first_min)
+            self.streamed_s = now - self.t0
+            self.block_min, self.block_end = float("inf"), now + 2.0
 
 
 class RtlSdrBackend(SdrBackend):
     """RTL-SDR through librtlsdr directly (gotcha 16). Same contract as
     SoapyBackend: bias-tee off on open and every retune, reopen cooldown,
-    read() raises instead of returning short. Its synchronous reads are
-    called back-to-back by AcquisitionThread.
+    read() raises instead of returning short. AcquisitionThread calls read_raw() back to back.
+
+    Blocking reads (rtlsdr_read_sync) leave the dongle without a pending USB transfer between two
+    calls, and it drops samples then (~1-3 % of the time, a splice every 30 ms: a buzz, and a voice
+    pitched up by the lost fraction). So once the scanner has stayed on one frequency for
+    _ASYNC_AFTER_READS reads - a transmission, a recording - a stream (rtlsdr_read_async: 15 x 64 KiB
+    transfers always queued, ~200 ms of slack for a stalled process) takes over. It is stopped at
+    every retune and gain step, which also throws away data of the old frequency; while hopping
+    between windows the plain reads are kept, so scan speed is unchanged.
     """
     label = RTLSDR_NATIVE_DRIVER
 
     def __init__(self, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
-                 bias_tee: bool = False):
+                 bias_tee: bool = False, async_read: bool = True):
         if not HAVE_RTLSDR_NATIVE:
             raise RuntimeError("The pyrtlsdr/pyrtlsdrlib modules are not installed")
+        self._async = bool(async_read)
+        self._sync_reads = 0             # blocking reads since the last retune/gain step
+        self._stream_thread: threading.Thread | None = None
+        self._stream_cb = None           # the ctypes callback must outlive the stream
+        self._stream_cond = threading.Condition()
+        self._stream_chunks: deque[bytes] = deque()
+        self._stream_error: int | None = None
+        self._stream_stopping = False
+        self._stream_stats = _StreamStats(sample_rate)
         SoapyBackend._wait_for_reopen_cooldown()
         args = dict(kv.split("=", 1) for kv in (device_args or "").split(",") if "=" in kv)
         args = {k.strip(): v.strip() for k, v in args.items()}
@@ -280,6 +330,7 @@ class RtlSdrBackend(SdrBackend):
             self.device.set_bias_tee(True)
 
     def set_frequency(self, freq_hz: float) -> None:
+        self._stop_stream()
         self.device.center_freq = int(freq_hz)
         # See SoapyBackend.set_frequency() - re-asserted on every retune.
         self.device.set_bias_tee(self.bias_tee)
@@ -287,6 +338,7 @@ class RtlSdrBackend(SdrBackend):
         self._carry = np.empty(0, dtype=np.uint8)
 
     def set_gain(self, gain_mode: str, gain_db: float) -> None:
+        self._stop_stream()  # a gain step stalls the dongle anyway
         # pyrtlsdr's set_gain() already picks the nearest supported step.
         self.device.set_gain("auto" if gain_mode == "auto" else gain_db)
 
@@ -303,15 +355,21 @@ class RtlSdrBackend(SdrBackend):
         the consumer's side: the conversion takes ~0.4 ms, and during that time no transfer is
         outstanding, so the dongle's FIFO overflows - ~1.5 % of the samples lost, a splice in the IQ
         every 30 ms (audible as a buzz, and the audio stream runs short of real time)."""
+        if self._async and self._stream_thread is None and self._sync_reads >= _ASYNC_AFTER_READS:
+            self._start_stream()
         need = 2 * num_samples - self._carry.size
         read_start = time.monotonic()
         if need > 0:
-            request = -(-need // _RTLSDR_READ_GRANULE_BYTES) * _RTLSDR_READ_GRANULE_BYTES
-            try:
-                # Raises on an unplugged device or a short read, like SoapyBackend.
-                raw = np.ctypeslib.as_array(self.device.read_bytes(request)).copy()
-            except Exception as exc:
-                raise RuntimeError(f"RTL-SDR read failed - device disconnected or not responding ({exc})") from exc
+            if self._stream_thread is not None:
+                raw = self._read_stream(need)
+            else:
+                self._sync_reads += 1
+                request = -(-need // _RTLSDR_READ_GRANULE_BYTES) * _RTLSDR_READ_GRANULE_BYTES
+                try:
+                    # Raises on an unplugged device or a short read, like SoapyBackend.
+                    raw = np.ctypeslib.as_array(self.device.read_bytes(request)).copy()
+                except Exception as exc:
+                    raise RuntimeError(f"RTL-SDR read failed - device disconnected or not responding ({exc})") from exc
             data = np.concatenate((self._carry, raw)) if self._carry.size else raw
         else:
             data = self._carry
@@ -320,7 +378,87 @@ class RtlSdrBackend(SdrBackend):
         self._carry = data[used:]
         return data[:used]
 
+    # -- async stream ----------------------------------------------------
+    def _start_stream(self) -> None:
+        from rtlsdr.librtlsdr import librtlsdr, rtlsdr_read_async_cb_t
+        dev_p = self.device.dev_p
+        with self._stream_cond:
+            self._stream_chunks.clear()
+            self._stream_error, self._stream_stopping = None, False
+        self._stream_stats = _StreamStats(self.sample_rate)
+        stats = self._stream_stats
+
+        def on_data(buf, length, _ctx):  # runs in the stream thread, GIL held: copy and queue only
+            data = ctypes.string_at(buf, length)
+            stats.add(time.monotonic(), length)
+            with self._stream_cond:
+                self._stream_chunks.append(data)
+                self._stream_cond.notify()
+
+        self._stream_cb = rtlsdr_read_async_cb_t(on_data)
+        callback = self._stream_cb
+
+        def run() -> None:
+            result = librtlsdr.rtlsdr_read_async(dev_p, callback, self, _ASYNC_BUFFERS, _ASYNC_BUFFER_BYTES)
+            with self._stream_cond:
+                if not self._stream_stopping:
+                    self._stream_error = result if result < 0 else -1  # ended by itself = the device is gone
+                self._stream_cond.notify_all()
+
+        librtlsdr.rtlsdr_reset_buffer(dev_p)
+        self._stream_thread = threading.Thread(target=run, name="rtlsdr-stream", daemon=True)
+        self._stream_thread.start()
+
+    def _stop_stream(self) -> None:
+        thread = getattr(self, "_stream_thread", None)
+        self._sync_reads = 0
+        if thread is None:
+            return
+        from rtlsdr.librtlsdr import librtlsdr
+        with self._stream_cond:
+            self._stream_stopping = True
+        deadline = time.monotonic() + 3.0
+        while thread.is_alive() and time.monotonic() < deadline:
+            librtlsdr.rtlsdr_cancel_async(self.device.dev_p)  # fails until the stream is really running: retry
+            thread.join(0.05)
+        self._stream_thread = None
+        with self._stream_cond:
+            self._stream_chunks.clear()
+        if thread.is_alive():
+            raise RuntimeError("RTL-SDR stream did not stop - device not responding")
+
+    def _read_stream(self, need: int) -> np.ndarray:
+        parts: list[bytes] = []
+        got = 0
+        deadline = time.monotonic() + 1.0
+        with self._stream_cond:
+            while got < need:
+                if self._stream_chunks:
+                    chunk = self._stream_chunks.popleft()
+                    parts.append(chunk)
+                    got += len(chunk)
+                    continue
+                if self._stream_error is not None:
+                    raise RuntimeError(f"RTL-SDR stream failed - device disconnected or not responding ({self._stream_error})")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("RTL-SDR stream delivered no data - device disconnected or not responding")
+                self._stream_cond.wait(remaining)
+        return np.frombuffer(b"".join(parts), dtype=np.uint8)
+
+    @property
+    def streaming(self) -> bool:
+        return self._stream_thread is not None
+
+    def stream_stats(self) -> tuple[float, float]:
+        """(seconds of the last/current stream that no sample covers, seconds it ran)."""
+        return self._stream_stats.lost_s, self._stream_stats.streamed_s
+
     def close(self) -> None:
+        try:
+            self._stop_stream()
+        except Exception:
+            pass
         try:
             self.device.set_bias_tee(False)  # never leave the antenna powered once FalconSDR lets go
         except Exception:
@@ -382,7 +520,7 @@ def enumerate_devices() -> list[dict]:
 
 
 def open_real_backend(driver: str, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
-                      bias_tee: bool = False) -> SdrBackend:
+                      bias_tee: bool = False, async_read: bool = True) -> SdrBackend:
     """Opens real hardware only - never falls back to SimulatedBackend.
 
     "auto" tries SoapySDR first (Linux's native path), then librtlsdr
@@ -390,18 +528,18 @@ def open_real_backend(driver: str, device_args: str, sample_rate: float, gain_mo
     opens through librtlsdr on a machine without SoapySDR, so the same
     config.json works across platforms."""
     if driver == RTLSDR_NATIVE_DRIVER or (driver == "rtlsdr" and not HAVE_SOAPY):
-        return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee)
+        return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
     if driver and driver != "auto":
         return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
     if not HAVE_SOAPY and HAVE_RTLSDR_NATIVE:
-        return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee)
+        return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
     try:
         return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
     except Exception as soapy_exc:
         if not HAVE_RTLSDR_NATIVE:
             raise
         try:
-            return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee)
+            return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
         except Exception:
             raise soapy_exc
 
@@ -591,9 +729,17 @@ class AcquisitionThread:
             f"queue_depth={len(self._queue)}/{self._max_queued} "
             f"iq_uncovered(steady)={self._iq_lost_s:.2f}s of {self._iq_streamed_s:.0f}s "
             f"({100.0 * self._iq_lost_s / max(1e-9, self._iq_streamed_s):.2f}%) "
-            f"gaps>={self._gap_log_s * 1000:.0f}ms={self._gaps} retune_settling={self._settle_lost_s:.1f}s",
+            f"gaps>={self._gap_log_s * 1000:.0f}ms={self._gaps} retune_settling={self._settle_lost_s:.1f}s"
+            f"{self._stream_report()}",
             flush=True,
         )
+
+    def _stream_report(self) -> str:
+        stats = getattr(self._backend, "stream_stats", None)
+        if stats is None:
+            return ""
+        lost, streamed = stats()
+        return f" async_stream(last)={lost:.2f}s of {streamed:.0f}s ({100.0 * lost / max(1e-9, streamed):.2f}%)"
 
     _SETTLE_READS = 8  # ~240 ms after a retune/gain step the dongle is still catching up
 
@@ -601,6 +747,11 @@ class AcquisitionThread:
         """Debug-mode bookkeeping for the time between two reads (see __init__). Only a steady
         stream (the scanner parked on one frequency: a transmission, a recording) is reported -
         scanning retunes all the time and every retune costs ~100 ms by design."""
+        if getattr(self._backend, "streaming", False):
+            # Reads come out of the stream's queue in 13.6 ms steps: their spacing says nothing
+            # about lost samples (the backend's stream_stats() does).
+            self._prev_read_start = None
+            return
         prev, self._prev_read_start = self._prev_read_start, read_start
         self._reads_since_cmd = 1 if prev is None else self._reads_since_cmd + 1
         if prev is None:
@@ -753,7 +904,7 @@ class AcquisitionThread:
 
 def create_backend(
     driver: str, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
-    debug_mode: bool = False, bias_tee: bool = False,
+    debug_mode: bool = False, bias_tee: bool = False, async_read: bool = True,
 ) -> SdrBackend:
     if driver == "simulated":
         backend = SimulatedBackend(sample_rate)
@@ -764,7 +915,7 @@ def create_backend(
         # Simulate only in debug mode (gotcha 8): a device that failed to open
         # must show an error, not look like a working scan.
         try:
-            return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
+            return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
         except Exception:
             if not debug_mode:
                 raise
@@ -773,4 +924,4 @@ def create_backend(
             return backend
 
     # An explicitly chosen device that fails must always raise.
-    return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
+    return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
