@@ -617,6 +617,19 @@ catalog loads; wrap them in a function called at point of use
     click the highlighted button) and resets it to off when a different
     dongle is picked.
 
+48. **`Demodulator._decimate()` (AM/NFM/SSB) and WFM stage 1 are streamed
+    (`StreamResampler`), never a per-block `resample_poly`.** On a 30 ms
+    block the anti-alias filter sags the signal at both edges; AM's envelope
+    detector turns that into a 33 Hz pulse train = a "motorbike idle" buzz
+    (issue #6; measured +38 dB lines at 33.3 Hz harmonics on a clean carrier,
+    gone after the fix). WFM's audio-rate stage is streamed too. Also
+    `_apply_agc` ramps the gain across the block from the previous block's
+    (a scalar per block = a 33 Hz click train on NFM/WFM speech: -46 -> -62
+    dB vs the tone; a smoothstep ramp measured worse). Not a cause: strong
+    out-of-band signals. Remaining: NR adds ~-72 dB sidebands, a per-sample
+    AGC envelope would remove the rest. The output of the first block is 10
+    samples (0.8 ms filter delay) short.
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch

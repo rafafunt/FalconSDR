@@ -292,6 +292,24 @@ class SquelchTest(unittest.TestCase):
         self.assertEqual(ScannerEngine._effective_squelch_dbfs(fake, SimpleNamespace(band=VfoRangeConfig())), -54.0)
 
 
+class AmBlockEdgeTest(unittest.TestCase):
+    """Demodulating in 30 ms blocks must equal demodulating the stream in one
+    go - a per-block resample_poly sagged the AM envelope at every block edge
+    (a 33 Hz buzz)."""
+
+    def test_blockwise_equals_whole(self):
+        import numpy as np
+        from falconsdr.dsp import Demodulator
+        from falconsdr.models import Modulation
+        fs, chunk = 2_400_000, 72_000
+        t = np.arange(fs) / fs
+        iq = (0.3 * (1 + 0.5 * np.sin(2 * np.pi * 1000 * t))).astype(np.complex64)
+        whole = np.abs(Demodulator(fs)._decimate(iq))
+        d = Demodulator(fs)
+        blocks = np.abs(np.concatenate([d._decimate(iq[i:i + chunk]) for i in range(0, fs, chunk)]))
+        self.assertLess(np.abs(whole[1000:11000] - blocks[1000:11000]).max(), 1e-3)
+
+
 class DigitalVoiceTest(unittest.TestCase):
     def test_stream_resampler_matches_one_call_on_the_whole_stream(self) -> None:
         import numpy as np

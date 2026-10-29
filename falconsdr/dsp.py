@@ -109,6 +109,7 @@ class Demodulator:
         self._mix_index = 0
         self._deemph_zi = np.zeros(1)
         self._agc_envelope = _AGC_MIN_ENVELOPE
+        self._agc_gain: float | None = None  # gain at the end of the previous block
         # Filters built on first use.
         self._ssb_ba = None
         self._ssb_zi = None
@@ -116,6 +117,8 @@ class Demodulator:
         self._voice_lpf_ba = None
         self._voice_lpf_zi = None
         self._stream_resampler: StreamResampler | None = None  # discriminate() only
+        self._decim_resampler: StreamResampler | None = None  # _decimate() / WFM stage 1
+        self._audio_resampler: StreamResampler | None = None  # WFM stage 2 (real audio)
 
     def reset(self) -> None:
         self._prev_phase = 0.0
@@ -123,9 +126,12 @@ class Demodulator:
         self._dc_zi = np.zeros(1)
         self._deemph_zi = np.zeros(1)
         self._agc_envelope = _AGC_MIN_ENVELOPE
+        self._agc_gain = None
         self._ssb_zi = None
         self._ssb_mix_index = 0
         self._voice_lpf_zi = None
+        self._decim_resampler = None
+        self._audio_resampler = None
 
     def _ensure_ssb_filter(self) -> None:
         if self._ssb_ba is not None:
@@ -161,7 +167,14 @@ class Demodulator:
     def _decimate(self, x: np.ndarray) -> np.ndarray:
         # Resample *before* demodulating: resample_poly's anti-alias filter is
         # what keeps neighbouring channels out (gotcha 7). AM/NFM only.
-        return _resample_rate(x, self.sample_rate, self.audio_rate)
+        # Streamed, not per block: resample_poly on a 30 ms block sags the
+        # signal at both block edges = a 33 Hz buzz on AM (gotcha 48).
+        return self._stream_decimate(x, self.audio_rate)
+
+    def _stream_decimate(self, x: np.ndarray, rate: float) -> np.ndarray:
+        if self._decim_resampler is None:
+            self._decim_resampler = StreamResampler(self.sample_rate, rate)
+        return self._decim_resampler.process(x)
 
     def _deemphasize(self, audio: np.ndarray, rate: float, zi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         dt = 1.0 / rate
@@ -172,7 +185,7 @@ class Demodulator:
         # Discriminate at a wide rate (full +/-75 kHz swing), de-emphasize,
         # then narrow the audio down to audio_rate.
         intermediate_rate = min(WFM_DISCRIMINATOR_RATE, int(round(self.sample_rate)))
-        baseband = _resample_rate(iq, self.sample_rate, intermediate_rate)
+        baseband = self._stream_decimate(iq, intermediate_rate)
         phase = np.angle(baseband)
         phase = np.unwrap(np.concatenate(([self._prev_phase], phase)))
         self._prev_phase = phase[-1]
@@ -180,7 +193,9 @@ class Demodulator:
 
         audio, self._deemph_zi = self._deemphasize(composite, intermediate_rate, self._deemph_zi)
         if intermediate_rate != self.audio_rate:
-            audio = _resample_rate(audio, intermediate_rate, self.audio_rate)
+            if self._audio_resampler is None:
+                self._audio_resampler = StreamResampler(intermediate_rate, self.audio_rate)
+            audio = self._audio_resampler.process(audio).real  # complex in, imag stays 0
         return audio
 
     def discriminate(self, iq: np.ndarray, offset_hz: float, rate: int) -> np.ndarray:
@@ -256,7 +271,12 @@ class Demodulator:
         self._agc_envelope += (peak - self._agc_envelope) * coef
         self._agc_envelope = max(self._agc_envelope, _AGC_MIN_ENVELOPE)
         gain = min(_AGC_TARGET_PEAK / self._agc_envelope, _AGC_MAX_GAIN)
-        return audio * gain
+        # Ramp from the previous block's gain: one step per 30 ms block is a
+        # 33 Hz click train while someone speaks (gotcha 48). Smoothstep was
+        # tried and measured worse.
+        start = gain if self._agc_gain is None else self._agc_gain
+        self._agc_gain = gain
+        return audio * np.linspace(start, gain, audio.size + 1, dtype=np.float32)[1:]
 
     def notify_rf_gain_change(self, linear_factor: float) -> None:
         """Pre-scales the envelope by a known RF gain step (SoftwareAgc)
