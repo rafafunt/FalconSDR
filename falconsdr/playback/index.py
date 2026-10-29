@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import asdict, fields
@@ -170,13 +171,15 @@ class Library:
         # mtime) are read file by file - usually just today's. A full pass over 46k files every
         # 2 minutes took ~3 s of CPU and starved the scan loop: a series of gaps in live audio.
         mtimes: dict[Path, int] = {}
-        folders = [root, *sorted(p for p in root.iterdir() if p.is_dir())]
+        # At any depth, like the old glob("**/*.wav"): recordings a user filed under archive/2026-10/ stay listed.
+        folders = [Path(dirpath) for dirpath, _dirs, _files in os.walk(root)]
+        folders.sort()
         for folder in folders:
             try:
                 mtime = folder.stat().st_mtime_ns
             except OSError:
                 continue
-            prefix = "" if folder == root else folder.name
+            prefix = "" if folder == root else folder.relative_to(root).as_posix()
             if self._dir_mtimes.get(folder) == mtime:
                 found.update((rel, known[rel]) for rel in known_by_dir.get(prefix, []))
                 mtimes[folder] = mtime

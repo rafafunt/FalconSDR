@@ -132,6 +132,21 @@ class LibraryTest(_LibCase):
         self.assertEqual(sorted(self.lib._recs), ["2026-10-02/2026-10-02_12-00-00_124625.wav",
                                                   "2026-10-02/2026-10-02_13-00-00_124625.wav"])
 
+    def test_folders_at_any_depth_are_listed_and_follow_changes(self) -> None:
+        import os
+        nested = _wav(self.root, "archive/2026-10/2026-10-03_12-00-00_130875.wav")
+        _wav(self.root, "2026-10-04/2026-10-04_12-00-00_124625.wav")
+        self.lib.rescan()
+        self.assertEqual(sorted(self.lib._recs), ["2026-10-04/2026-10-04_12-00-00_124625.wav",
+                                                  "archive/2026-10/2026-10-03_12-00-00_130875.wav"])
+        self.lib.rescan()  # unchanged: the nested recording is kept
+        self.assertEqual(len(self.lib._recs), 2)
+        _wav(self.root, "archive/2026-10/2026-10-03_13-00-00_130875.wav")
+        st = nested.parent.stat()
+        os.utime(nested.parent, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+        self.lib.rescan()
+        self.assertEqual(len(self.lib._recs), 3)
+
     def test_a_folder_with_an_open_recording_is_read_again_next_time(self) -> None:
         c = _wav(self.root, "2026-10-03/2026-10-03_12-00-00_130875.wav")
         self.open = {c}
