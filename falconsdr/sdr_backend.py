@@ -291,6 +291,18 @@ class RtlSdrBackend(SdrBackend):
         self.device.set_gain("auto" if gain_mode == "auto" else gain_db)
 
     def read(self, num_samples: int) -> np.ndarray:
+        return self.to_iq(self.read_raw(num_samples))
+
+    @staticmethod
+    def to_iq(raw: np.ndarray) -> np.ndarray:
+        """Raw unsigned 8-bit I/Q bytes -> CF32 (the same scaling as SoapyBackend)."""
+        return _RTLSDR_LUT[raw].view(np.complex64)
+
+    def read_raw(self, num_samples: int) -> np.ndarray:
+        """The next 2 * num_samples bytes, unconverted. AcquisitionThread calls this and converts on
+        the consumer's side: the conversion takes ~0.4 ms, and during that time no transfer is
+        outstanding, so the dongle's FIFO overflows - ~1.5 % of the samples lost, a splice in the IQ
+        every 30 ms (audible as a buzz, and the audio stream runs short of real time)."""
         need = 2 * num_samples - self._carry.size
         read_start = time.monotonic()
         if need > 0:
@@ -306,8 +318,7 @@ class RtlSdrBackend(SdrBackend):
         self._io_diag.record_read(time.monotonic() - read_start, 1)
         used = 2 * num_samples
         self._carry = data[used:]
-        iq = _RTLSDR_LUT[data[:used]]
-        return iq.view(np.complex64)
+        return data[:used]
 
     def close(self) -> None:
         try:
@@ -455,6 +466,26 @@ class SimulatedBackend(SdrBackend):
         pass
 
 
+class _LatencyProbe(threading.Thread):
+    """Debug mode: sleeps 5 ms in a loop and reports every wake-up that is late by 20 ms or more.
+    If it is late at the same moment the acquisition thread is, the whole process was held up (the
+    GIL or the host's CPU), not the dongle's USB transfer."""
+
+    def __init__(self) -> None:
+        super().__init__(name="latency-probe", daemon=True)
+        self.stop_evt = threading.Event()
+
+    def run(self) -> None:
+        while not self.stop_evt.is_set():
+            start = time.monotonic()
+            time.sleep(0.005)
+            late = time.monotonic() - start - 0.005
+            if late >= 0.020:
+                now = time.time()
+                print(f"[latency {time.strftime('%H:%M:%S', time.localtime(now))}.{int(now * 1000) % 1000:03d}] "
+                      f"a 5 ms sleep woke up {late * 1000:.0f} ms late", flush=True)
+
+
 class AcquisitionThread:
     """Reads the backend back-to-back on its own thread into a bounded queue
     (gotcha 11), so slow processing can never delay the next hardware read.
@@ -469,6 +500,10 @@ class AcquisitionThread:
 
     def __init__(self, backend: "SdrBackend", chunk_size: int, max_queued: int = 64, debug: bool = False):
         self._backend = backend
+        # A backend whose conversion to IQ is worth keeping out of the read loop (RtlSdrBackend)
+        # offers read_raw()/to_iq(); the queue then holds raw chunks and read() converts them.
+        self._read_chunk = getattr(backend, "read_raw", backend.read)
+        self._to_iq = getattr(backend, "to_iq", None) if hasattr(backend, "read_raw") else None
         self._chunk_size = chunk_size
         self._max_queued = max_queued
         # Prints the RT-priority outcome and health summary (gotcha 29/32).
@@ -486,6 +521,17 @@ class AcquisitionThread:
         self._read_max_s = 0.0
         self._chunk_duration_s = chunk_size / max(1.0, backend.sample_rate)
         self._health_reported_at = time.monotonic()
+        # Wall time that no IQ covers. A sync read leaves the dongle with no transfer pending
+        # between two calls, so it drops samples then: the time from one read's start to the next
+        # minus the chunk's own duration is what was lost. A retune/gain step restarts the chain.
+        self._prev_read_start: float | None = None
+        self._reads_since_cmd = 0
+        self._settle_lost_s = 0.0
+        self._iq_lost_s = 0.0
+        self._iq_streamed_s = 0.0
+        self._gaps = 0
+        self._gap_log_s = float(os.environ.get("FALCONSDR_DEBUG_IQ_GAP_MS", "10")) / 1000.0
+        self._freq_hz = 0.0
         # Bumped on every applied retune/gain change - see _run().
         self._generation = 0
         # Only this thread touches the backend: set_frequency()/set_gain()
@@ -493,6 +539,9 @@ class AcquisitionThread:
         # a retune for 11.7 s (priority inversion).
         self._pending_command: tuple | None = None
         self._command_done = threading.Event()
+        self._probe = _LatencyProbe() if debug else None
+        if self._probe is not None:
+            self._probe.start()
         self._thread = threading.Thread(target=self._run, name="sdr-acquisition", daemon=True)
         self._thread.start()
 
@@ -539,9 +588,39 @@ class AcquisitionThread:
             f"[sdr-acquisition] health: chunks_read={self._chunks_read} "
             f"chunks_DROPPED={self._chunks_dropped} slow_reads={self._read_slow_count} "
             f"(budget {self._chunk_duration_s * 1000:.0f}ms) max_read={self._read_max_s * 1000:.0f}ms "
-            f"queue_depth={len(self._queue)}/{self._max_queued}",
+            f"queue_depth={len(self._queue)}/{self._max_queued} "
+            f"iq_uncovered(steady)={self._iq_lost_s:.2f}s of {self._iq_streamed_s:.0f}s "
+            f"({100.0 * self._iq_lost_s / max(1e-9, self._iq_streamed_s):.2f}%) "
+            f"gaps>={self._gap_log_s * 1000:.0f}ms={self._gaps} retune_settling={self._settle_lost_s:.1f}s",
             flush=True,
         )
+
+    _SETTLE_READS = 8  # ~240 ms after a retune/gain step the dongle is still catching up
+
+    def _note_read_start(self, read_start: float) -> None:
+        """Debug-mode bookkeeping for the time between two reads (see __init__). Only a steady
+        stream (the scanner parked on one frequency: a transmission, a recording) is reported -
+        scanning retunes all the time and every retune costs ~100 ms by design."""
+        prev, self._prev_read_start = self._prev_read_start, read_start
+        self._reads_since_cmd = 1 if prev is None else self._reads_since_cmd + 1
+        if prev is None:
+            return
+        lost = max(0.0, read_start - prev - self._chunk_duration_s)
+        if self._reads_since_cmd <= self._SETTLE_READS:
+            self._settle_lost_s += lost
+            return
+        self._iq_lost_s += lost
+        self._iq_streamed_s += self._chunk_duration_s
+        if lost >= self._gap_log_s:
+            self._gaps += 1
+            if self._debug:
+                now = time.time()
+                print(
+                    f"[iq-gap {time.strftime('%H:%M:%S', time.localtime(now))}.{int(now * 1000) % 1000:03d}] "
+                    f"no IQ for ~{lost * 1000:.0f} ms at {self._freq_hz / 1e6:.3f} MHz, "
+                    f"{self._reads_since_cmd} reads after the last retune (queue {len(self._queue)}/{self._max_queued})",
+                    flush=True,
+                )
 
     def _run(self) -> None:
         self._boost_priority()
@@ -556,6 +635,7 @@ class AcquisitionThread:
                 try:
                     if kind == "freq":
                         self._backend.set_frequency(*args)
+                        self._freq_hz = float(args[0])
                     else:
                         self._backend.set_gain(*args)
                 except BaseException as exc:  # noqa: BLE001 - propagated to the waiting caller below
@@ -566,12 +646,14 @@ class AcquisitionThread:
                     return
                 with self._cond:
                     self._queue.clear()
+                    self._prev_read_start = None  # the retune/gain step itself is no loss to report
                     self._generation += 1
                     my_generation = self._generation
                 self._command_done.set()
             try:
                 read_start = time.monotonic()
-                block = self._backend.read(self._chunk_size)
+                self._note_read_start(read_start)
+                block = self._read_chunk(self._chunk_size)
                 read_elapsed = time.monotonic() - read_start
             except BaseException as exc:  # noqa: BLE001 - propagated verbatim to read(), see there
                 with self._cond:
@@ -621,7 +703,8 @@ class AcquisitionThread:
                 raise self._error
             if not self._queue:
                 raise RuntimeError("SDR acquisition thread stopped")
-            return self._queue.popleft()
+            block = self._queue.popleft()
+        return self._to_iq(block) if self._to_iq is not None else block
 
     def _submit_command(self, kind: str, args: tuple, timeout: float = 2.0) -> None:
         """Hands a retune/gain change to the acquisition thread (see
@@ -648,6 +731,8 @@ class AcquisitionThread:
 
     def close(self) -> None:
         self._stop_evt.set()
+        if self._probe is not None:
+            self._probe.stop_evt.set()
         with self._cond:
             self._cond.notify_all()
         self._thread.join(timeout=2.0)

@@ -323,6 +323,112 @@ class SquelchTest(unittest.TestCase):
         self.assertEqual(ScannerEngine._effective_squelch_dbfs(fake, SimpleNamespace(band=VfoRangeConfig())), -54.0)
 
 
+class RawReadTest(unittest.TestCase):
+    """RtlSdrBackend hands the dongle's bytes over unconverted: converting in the read thread left the
+    dongle without an outstanding transfer for ~0.4 ms per block (1.5 % of the samples lost)."""
+
+    def _backend(self, stream):
+        import numpy as np
+        from types import SimpleNamespace
+        from falconsdr import sdr_backend as sb
+        backend = object.__new__(sb.RtlSdrBackend)
+        backend._carry = np.empty(0, dtype=np.uint8)
+        backend._io_diag = SimpleNamespace(record_read=lambda *a: None)
+        pos = [0]
+
+        def read_bytes(n):
+            out = stream[pos[0]:pos[0] + n]
+            pos[0] += n
+            return out
+        backend.device = SimpleNamespace(read_bytes=read_bytes)
+        return backend
+
+    def test_read_equals_convert_of_read_raw_and_carry_keeps_every_byte(self) -> None:
+        import numpy as np
+        rng = np.random.default_rng(0)
+        stream = rng.integers(0, 256, size=4 * 1000 * 2 + 4096, dtype=np.uint8)
+        a, b = self._backend(stream), self._backend(stream)
+        for _ in range(4):  # 1000 samples = 2000 bytes: not a multiple of the 512-byte read granule
+            raw = a.read_raw(1000)
+            self.assertEqual((raw.dtype, raw.size), (np.uint8, 2000))
+            np.testing.assert_array_equal(a.to_iq(raw), b.read(1000))
+        np.testing.assert_array_equal(  # no byte lost or repeated across blocks
+            np.concatenate([self._backend(stream).read_raw(1000) for _ in range(1)]), stream[:2000])
+
+    def test_acquisition_thread_converts_on_the_consumer_side(self) -> None:
+        import numpy as np
+        from falconsdr.sdr_backend import AcquisitionThread
+        calls = {"raw": 0, "iq": 0}
+
+        class Fake:
+            sample_rate, label, gain_range_db = 2_400_000.0, "fake", (0.0, 50.0)
+
+            def read_raw(self, n):
+                calls["raw"] += 1
+                time.sleep(0.002)
+                return np.full(2 * n, 200, dtype=np.uint8)
+
+            def to_iq(self, raw):
+                calls["iq"] += 1
+                return raw.astype(np.float32).view(np.complex64)
+
+            def read(self, n):
+                raise AssertionError("the read loop must not use the converting read()")
+
+            def close(self):
+                pass
+
+        thread = AcquisitionThread(Fake(), 100)
+        try:
+            iq = thread.read(100)
+            self.assertEqual((iq.dtype, iq.size), (np.complex64, 100))
+            time.sleep(0.05)
+            self.assertGreater(calls["raw"], calls["iq"])  # read ahead of what was consumed, converted lazily
+        finally:
+            thread.close()
+
+
+class IqUncoveredTimeTest(unittest.TestCase):
+    """The acquisition thread counts wall time that no IQ covers: reads are synchronous, so the
+    time between two reads is time the dongle drops samples (found while hunting audible gaps)."""
+
+    def test_counts_a_slow_cycle_but_not_a_retune(self) -> None:
+        import numpy as np
+        from falconsdr.sdr_backend import AcquisitionThread
+        calls, settle = [0], [False]
+
+        class Fake:
+            sample_rate, label, gain_range_db = 100_000.0, "fake", (0.0, 50.0)  # 1000 samples = 10 ms
+
+            def read(self, n):
+                calls[0] += 1
+                slow = calls[0] == 8 or settle[0]  # one hiccup, and the slow 1st read after the retune
+                settle[0] = False
+                time.sleep(0.010 + (0.080 if slow else 0.0))
+                return np.zeros(n, dtype=np.complex64)
+
+            def set_frequency(self, hz):
+                time.sleep(0.150)  # a retune stalls the dongle on purpose
+                settle[0] = True
+
+            def close(self):
+                pass
+
+        thread = AcquisitionThread(Fake(), 1000, debug=False)
+        try:
+            for _ in range(14):
+                thread.read(1000)
+            thread.set_frequency(131_900_000)
+            for _ in range(12):
+                thread.read(1000)
+            self.assertEqual(thread._freq_hz, 131_900_000.0)
+            self.assertGreaterEqual(thread._iq_lost_s, 0.07)   # the hiccup...
+            self.assertLess(thread._iq_lost_s, 0.15)           # ...but neither the retune nor its slow first read
+            self.assertGreaterEqual(thread._gaps, 1)
+        finally:
+            thread.close()
+
+
 class DumpsChunkedTest(unittest.TestCase):
     def test_same_json_as_dumps_for_the_caches(self) -> None:
         from falconsdr.config import dumps_chunked
