@@ -25,11 +25,19 @@ for tag in sys.argv[2:]:
     zc = np.nonzero(np.diff(np.signbit(x)))[0]
     sp = np.diff(zc)
     jumps = int(np.sum((sp < 54.5 * 0.75) | (sp > 54.5 * 1.25)))
+    # pitch: the tone's frequency over 0.5 s windows without a silence in them (playbackRate shifts it)
+    win = sr // 2
+    devs = []
+    for k in range(0, len(x) - win, win):
+        seg = x[k:k + win]
+        if np.mean(np.abs(seg) < 200) < 0.1:
+            devs.append(abs(np.sum(np.diff(np.signbit(seg))) / 2 / (win / sr) / 440.0 - 1) * 100)
+    pitch = max(devs, default=0.0)
     ev = [json.loads(l) for l in open(f"{out}/{tag}.events")] if open(f"{out}/{tag}.events").read() else []
     opened = max((e.get("opened", 0) for e in ev), default=0)
     stalls = sum(1 for e in ev if e["event"] == "stall")
     con = open(f"{out}/{tag}.console").read().strip()
     print(f"{tag}: {dur:.0f} s audio | silences >=3 ms: {len(runs)} (total {sum(runs):.0f} ms, longest {max(runs, default=0):.0f} ms)"
-          f" | waveform jumps: {jumps} | server stalls: {stalls} | /api/audio streams opened: {opened}")
+          f" | pitch off by up to {pitch:.1f} % | waveform jumps: {jumps} | server stalls: {stalls} | /api/audio streams opened: {opened}")
     if con:
         print("     console:", con.replace("\n", " || ")[:400])

@@ -686,8 +686,9 @@ catalog loads; wrap them in a function called at point of use
     each retry left its response open, the browser's 6 connections per server filled up
     and the whole page froze. Hence: the loop always `abort()`s its response before a
     reconnect. The jitter buffer: resync only when really dry (`this.t <= now` - `<`
-    alone missed the first chunk at t = 0 and started with no lead), otherwise up to 3 %
-    slower/faster play keeps the 0.4 s lead; the old "lead < 20 ms -> jump 250 ms ahead"
+    alone missed the first chunk at t = 0 and started with no lead), otherwise up to 1 %
+    slower/faster play keeps the 0.4 s lead (3 % bent the pitch by a quarter tone for seconds
+    after a hiccup; `analyze.py` prints the pitch error); the old "lead < 20 ms -> jump 250 ms ahead"
     inserted 250 ms silences, again and again after one server stall (measured at the
     headphones). `real` scenario: old 6 silences / 125 s, new 0.
 

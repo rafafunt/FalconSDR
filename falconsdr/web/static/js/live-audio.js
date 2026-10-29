@@ -6,10 +6,12 @@
 
 const LATENCY_S = 0.4;
 const MAX_AHEAD_S = 1.2;
-// The lead is held near LATENCY_S by playing up to 3 % slower/faster, never by jumping: a resync
+// The lead is held near LATENCY_S by playing up to 1 % slower/faster, never by jumping: a resync
 // used to fire while the lead was merely low (< 20 ms, audio still playing) and inserted 250 ms of
 // silence - after a server hiccup, again and again (measured: 6 such gaps in 4 s at the headphones).
-const MAX_RATE_CHANGE = 0.03;
+// 1 %, not more: playbackRate shifts the pitch (3 % = a quarter tone, heard as a bent voice for seconds
+// after every hiccup; measured with tests/live_audio: max pitch error 1.4 % -> 0.5 %, still 0 silences).
+const MAX_RATE_CHANGE = 0.01;
 
 export const liveAudio = {
   ctx: null,
