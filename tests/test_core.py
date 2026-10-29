@@ -292,6 +292,39 @@ class SquelchTest(unittest.TestCase):
         self.assertEqual(ScannerEngine._effective_squelch_dbfs(fake, SimpleNamespace(band=VfoRangeConfig())), -54.0)
 
 
+class SoftwareAgcTest(unittest.TestCase):
+    """Fake clock, one peak per 30 ms tick like the scan loop."""
+
+    def _run(self, peaks_db, seconds, gain=40.0):
+        from unittest import mock
+        from falconsdr.agc import SoftwareAgc
+        clock = [1000.0]
+        with mock.patch("falconsdr.agc.time.monotonic", lambda: clock[0]):
+            agc, steps = SoftwareAgc(gain), []
+            for i in range(int(seconds / 0.03)):
+                clock[0] += 0.03
+                new = agc.step(10 ** (peaks_db(i, agc.gain_db) / 20.0), (0.0, 49.6))
+                if new is not None:
+                    steps.append(round(clock[0] - 1000.0, 2))
+        return steps, agc
+
+    def test_noisy_but_steady_level_does_not_step(self) -> None:
+        # Target -6 dBFS; single-chunk peaks swing between -1 and -11 dBFS around it.
+        steps, _ = self._run(lambda i, g: -6.0 + (5.0 if i % 2 else -5.0), 20)
+        self.assertEqual(steps, [])
+
+    def test_sustained_error_is_corrected_within_about_a_second_each_step(self) -> None:
+        # The station really is 10 dB too hot at gain 40: ends near target, in steps >= 1 s apart.
+        steps, agc = self._run(lambda i, g: -6.0 + 10.0 + (g - 40.0), 8)
+        self.assertTrue(steps and all(b - a >= 1.0 for a, b in zip(steps, steps[1:])))
+        self.assertLess(agc.gain_db, 40.0)
+        self.assertAlmostEqual(agc.gain_db, 30.0, delta=3.5)
+
+    def test_near_full_scale_peak_is_acted_on_at_once(self) -> None:
+        steps, _ = self._run(lambda i, g: -0.2, 1.2)  # clipping from the start
+        self.assertTrue(steps and steps[0] <= 1.05)
+
+
 class AmBlockEdgeTest(unittest.TestCase):
     """Demodulating in 30 ms blocks must equal demodulating the stream in one
     go - a per-block resample_poly sagged the AM envelope at every block edge

@@ -326,7 +326,12 @@ catalog loads; wrap them in a function called at point of use
     spurious neighbour detections), so `"sw_auto"` is the default: `_maybe_apply_gain()`/`_maybe_run_software_agc()` send explicit
     `"manual"` values computed from each tick's IQ peak (target ≈ −6 dBFS,
     ±3 dB dead zone, ≥1s between steps) and never touch the hardware AGC.
-    Each step pre-scales every slot's output AGC
+    The step decision uses a peak smoothed over ~1 s (`SMOOTH_TAU_S`), not one
+    chunk's peak: that swings by more than the dead zone by itself, and every
+    step stalls the dongle ~100 ms = an audible gap in live audio (measured
+    on a steady WFM station: ~16 gaps/min -> ~7/min). Only a peak >= 0.97 of
+    full scale (clipping) is acted on unsmoothed, and the smoothed level moves
+    with each step. Each step pre-scales every slot's output AGC
     (`Demodulator.notify_rf_gain_change`) and clears its `level_history` —
     a gain step moves all channels' dB levels together, which
     `_detect_reflections()` would otherwise read as correlation and discard
