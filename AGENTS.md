@@ -689,6 +689,21 @@ catalog loads; wrap them in a function called at point of use
     `py-spy dump` in a throwaway venv while the RSS grew. Any new code that
     reads recordings (stats, export, ...) must also work block by block.
 
+53. **A view's `destroy()` must really run (`recordings.js` `freshTimer`).** A `//`
+    comment in the middle of a line (`audio.load();  // note io.disconnect();
+    clearInterval(t);`) silently commented out the cleanup: every visit to the Recordings
+    page left a 4 s `/api/library` poll running on every other page too (~3 requests/s after
+    a few visits). Each `Library._select` loops over 46k recordings under the GIL; with a
+    dozen handler threads the acquisition thread waited ~120 ms for its turn = an audible gap
+    in live audio and a recording with small pieces missing (`StaticJsTest` now catches the
+    pattern). Debug mode (receiver) prints what to look at: `[iq-gap hh:mm:ss.mmm]` = the
+    read thread found no IQ for N ms while parked on one frequency (sync reads: time
+    between two reads is dropped by the dongle; the first 8 reads after a retune are not
+    counted); `[latency ...]` = a 5 ms sleep in a probe thread woke up late - at the same
+    moments as the gaps it means the *process* was held up (GIL/CPU), not the USB transfer;
+    the `health:` line sums it as `iq_uncovered(steady)`. Find the GIL holder with
+    `py-spy record --gil --threads --format raw` in a throwaway venv.
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch

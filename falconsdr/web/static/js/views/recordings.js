@@ -475,7 +475,9 @@ export function recordingsView(root) {
   loadFacets();
   return {
     destroy() {
-      audio.pause(); audio.src = ''; io.disconnect(); clearInterval(freshTimer); setMediaActions(false);
+      // removeAttribute + load(): `audio.src = ''` would load the page itself
+      audio.pause(); audio.removeAttribute('src'); audio.load();
+      io.disconnect(); clearInterval(freshTimer); setMediaActions(false);
       document.removeEventListener('keydown', onKey); offs.forEach((f) => f());
     },
   };

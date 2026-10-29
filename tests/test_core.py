@@ -388,6 +388,21 @@ class RawReadTest(unittest.TestCase):
             thread.close()
 
 
+class StaticJsTest(unittest.TestCase):
+    def test_no_code_hidden_after_a_line_comment(self) -> None:
+        """`stmt; // note io.disconnect(); clearInterval(t);` is valid JS and silently drops the rest
+        (once left the Recordings page polling the server forever, ~3 requests/s after a few visits)."""
+        import re
+        root = Path(__file__).resolve().parent.parent / "falconsdr" / "web" / "static"
+        bad = []
+        for path in root.rglob("*.js"):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                code = line.split("//", 1)
+                if len(code) == 2 and "://" not in line and re.search(r"\w+\([^)]*\);\s+\w[\w.]*\(.*\);\s*$", code[1]):
+                    bad.append(f"{path.name}:{number}")
+        self.assertEqual(bad, [])
+
+
 class IqUncoveredTimeTest(unittest.TestCase):
     """The acquisition thread counts wall time that no IQ covers: reads are synchronous, so the
     time between two reads is time the dongle drops samples (found while hunting audible gaps)."""
