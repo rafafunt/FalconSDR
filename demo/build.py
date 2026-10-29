@@ -31,9 +31,12 @@ import audio  # noqa: E402
 
 
 def fixtures() -> dict:
+    config = asdict(AppConfig())
+    # The default points into this build's scratch HOME; show the demo's fake filesystem instead.
+    config["recording"]["output_dir"] = "/home/demo/FalconSDR/recordings"
     return {
         "version": __version__,
-        "config": asdict(AppConfig()),
+        "config": config,
         "presets": [{**p.to_dict(), "user": False} for p in military_presets.get_all_presets()],
         "curated": {
             "military": [channel_dict(c) for c in military_presets.MILITARY_CHANNELS],
@@ -48,6 +51,7 @@ def main() -> None:
     shutil.rmtree(DIST, ignore_errors=True)
     shutil.copytree(ROOT / "falconsdr" / "web" / "static", DIST)
     shutil.copytree(DEMO / "site", DIST, dirs_exist_ok=True)
+    shutil.copy(ROOT / "LICENSE", DIST / "LICENSE.txt")  # GPL: the licence travels with the code we serve
     audio.build(DIST / "demo" / "audio")
     (DIST / "demo" / "fixtures.json").write_text(json.dumps(fixtures(), ensure_ascii=False))
     print(f"demo {__version__} -> {DIST}")

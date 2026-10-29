@@ -1,0 +1,7 @@
+/* Plain text pages of the demo site (privacy.html), on top of app.css. */
+.doc { max-width: 46rem; margin: 0 auto; padding: 24px 16px 56px; display: flex; flex-direction: column; gap: 12px; }
+.doc h1 { margin-bottom: 4px; }
+.doc h2 { margin-top: 20px; }
+.doc ul { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; }
+.doc a { text-decoration: underline; }
+.doc .lang-switch { display: flex; gap: 12px; font-size: 14px; }

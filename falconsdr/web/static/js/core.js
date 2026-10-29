@@ -207,7 +207,7 @@ export function debounce(fn, ms = 300) {
 }
 
 export function toast(message, kind = '') {
-  const el = h('div.toast', { class: kind }, message);
+  const el = h('div.toast', { class: kind, role: kind === 'bad' ? 'alert' : null }, message);
   document.getElementById('toasts').append(el);
   setTimeout(() => el.remove(), kind === 'bad' ? 7000 : 3500);
 }
@@ -217,15 +217,26 @@ export function errorToast(e) {
 }
 
 // A modal dialog; resolves with the clicked button's value (or null on Esc/backdrop).
+let modalSeq = 0;
 export function modal(title, body, buttons = [[t('Close'), null]]) {
   return new Promise((resolve) => {
-    const close = (v) => { back.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
+    const opener = document.activeElement;
+    const titleId = `modal-title-${++modalSeq}`;
+    // Everything behind the dialog leaves the tab order and the screen reader's view.
+    const behind = [...document.body.children].filter((el) => el.id !== 'toasts' && !el.inert);
+    const close = (v) => {
+      back.remove(); document.removeEventListener('keydown', onKey);
+      behind.forEach((el) => { el.inert = false; });
+      if (opener && opener.isConnected) opener.focus();
+      resolve(v);
+    };
     const onKey = (e) => { if (e.key === 'Escape') close(null); };
     const back = h('div.modal-back', { onclick: (e) => { if (e.target === back) close(null); } },
-      h('div.modal', { role: 'dialog' },
-        h('h2', title),
+      h('div.modal', { role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId },
+        h('h2', { id: titleId }, title),
         typeof body === 'string' ? h('p', body) : body,
         h('div.actions', buttons.map(([label, value, cls]) => h('button', { class: cls || '', onclick: () => close(value) }, label)))));
+    behind.forEach((el) => { el.inert = true; });
     document.body.append(back);
     document.addEventListener('keydown', onKey);
     const focus = back.querySelector('input, textarea, select') || back.querySelector('.actions button:last-child');

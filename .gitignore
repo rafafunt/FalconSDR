@@ -41,5 +41,6 @@ skills-lock.json
 
 # Online demo build output (demo/build.py)
 demo/dist/
+demo/deploy.env
 demo/.venv/
 demo/voices/

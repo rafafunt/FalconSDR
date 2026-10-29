@@ -2611,6 +2611,8 @@ msgstr "Transkrypcja odinstalowana - uruchom ponownie FalconSDR na tym komputerz
 msgid "Restart now"
 msgstr "Uruchom ponownie teraz"
 
+msgid "Live spectrum and waterfall of the scanned band. The frequency and state are shown in text above."
+msgstr "Widmo i waterfall skanowanego pasma na żywo. Częstotliwość i stan są podane tekstem powyżej."
 msgid "Bands with their own trigger level ignore this slider: {names}."
 msgstr "Pasma z własnym progiem wyzwalania ignorują ten suwak: {names}."
 

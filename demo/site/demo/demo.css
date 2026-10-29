@@ -12,14 +12,14 @@ body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .demo-banner .text { flex: 1 1 320px; min-width: 0; }
 .demo-banner .short { display: none; }
 .demo-banner a.btn, .demo-banner button { font-size: 13px; padding: 6px 12px; min-height: 0; border-radius: 8px; }
-.demo-banner a.btn.primary { background: #0a84ff; color: #fff; font-weight: 600; text-decoration: none; }
+.demo-banner a.btn.primary { background: #0071e3; color: #fff; font-weight: 600; text-decoration: none; }
 .demo-banner button.ghost { color: #f5f5f7; background: rgba(255, 255, 255, .1); }
 .demo-banner button.ghost:hover { background: rgba(255, 255, 255, .18); }
 
 .demo-welcome ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
 .demo-welcome p { margin: 0; }
 
-.demo-pulse { box-shadow: 0 0 0 3px #ff9f0a; animation: demo-pulse 1.4s ease-in-out infinite; }
+.demo-pulse { box-shadow: 0 0 0 3px var(--orange); animation: demo-pulse 1.4s ease-in-out infinite; }
 @keyframes demo-pulse { 50% { box-shadow: 0 0 0 6px rgba(255, 159, 10, .25); } }
 @media (prefers-reduced-motion: reduce) { .demo-pulse { animation: none; } }
 .notice.demo-hint { background: rgba(255, 159, 10, .14); }

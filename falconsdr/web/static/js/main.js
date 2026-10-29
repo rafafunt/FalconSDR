@@ -130,7 +130,10 @@ function shell() {
   const route = () => {
     const key = (location.hash.match(/^#\/(\w+)/) || [])[1] || 'listen';
     const r = ROUTES[key] || ROUTES.listen;
-    nav.querySelectorAll('a').forEach((a) => a.classList.toggle('active', a.dataset.route === key));
+    nav.querySelectorAll('a').forEach((a) => {
+      a.classList.toggle('active', a.dataset.route === key);
+      if (a.dataset.route === key) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
     if (current && current.destroy) current.destroy();
     content.scrollTop = 0;
     current = r.view(content, location.hash);

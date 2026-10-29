@@ -6,6 +6,7 @@ import { liveAudio } from '../js/live-audio.js';
 import { S, cfg, confirmRecording, emit, on, patchConfig } from '../js/state.js';
 
 const DOWNLOAD = 'https://github.com/rafafunt/FalconSDR/releases/latest';
+const SOURCE = 'https://github.com/rafafunt/FalconSDR';
 
 const TEXT = {
   en: {
@@ -31,6 +32,10 @@ const TEXT = {
     recOff: 'Auto-recording is off, so new transmissions aren\'t saved - the list holds sample recordings. With it on, every transmission the scanner stops on lands here, transcribed.',
     recOn: 'Turn on auto-recording',
     credits: 'Voices: Piper TTS with the VCTK (University of Edinburgh) and LibriTTS-R (Google) voices, both CC BY 4.0, and Polish voices under CC0. Music generated for the demo.',
+    license: 'FalconSDR is free software (GNU GPL v3 or later), and so is this demo.',
+    source: 'Source code',
+    licenseText: 'Licence text',
+    privacy: 'Privacy',
     birdie: '{freq} MHz is most likely a birdie: interference made by the receiver itself, a steady carrier with nothing on it. The scanner would sit on it forever. “{skip}” only moves on - it comes back on the next pass. “{bl}” gets rid of it for good (undo in Channels → Blacklist).',
   },
   pl: {
@@ -56,6 +61,10 @@ const TEXT = {
     recOff: 'Automatyczne nagrywanie jest wyłączone, więc nowe transmisje się nie zapisują - na liście są przykładowe nagrania. Po włączeniu trafia tu każda transmisja, na której zatrzyma się skaner, razem z transkrypcją.',
     recOn: 'Włącz automatyczne nagrywanie',
     credits: 'Głosy: Piper TTS z głosami VCTK (University of Edinburgh) i LibriTTS-R (Google), oba na licencji CC BY 4.0, oraz polskimi głosami na CC0. Muzyka wygenerowana na potrzeby demo.',
+    license: 'FalconSDR to wolne oprogramowanie (GNU GPL v3 lub nowsza), tak samo jak to demo.',
+    source: 'Kod źródłowy',
+    licenseText: 'Tekst licencji',
+    privacy: 'Prywatność',
     birdie: '{freq} MHz to najpewniej birdie: zakłócenie wytwarzane przez sam odbiornik, stała nośna bez żadnej treści. Skaner stałby na nim w nieskończoność. „{skip}” tylko przechodzi dalej - przy następnym obiegu wróci. „{bl}” usuwa go na dobre (cofniesz w Kanały → Czarna lista).',
   },
 };
@@ -75,7 +84,9 @@ function renderBanner() {
 async function welcome(fromBanner = false) {
   const x = L();
   const body = h('div.col.demo-welcome', { style: { gap: '12px' } },
-    h('p', x.intro), h('ul', x.tips.map((tip) => h('li', tip))), h('p.muted', x.real), h('p.faint.small', x.credits));
+    h('p', x.intro), h('ul', x.tips.map((tip) => h('li', tip))), h('p.muted', x.real), h('p.faint.small', x.credits),
+    h('p.faint.small', x.license, ' ', ...[[x.source, SOURCE], [x.licenseText, '/LICENSE.txt'], [x.privacy, '/privacy.html']]
+      .flatMap(([label, href], i) => [i ? ' · ' : '', h('a', { href, target: '_blank', rel: 'noopener' }, label)])));
   const buttons = [[x.download, 'download', 'ghost'], [x.start, 'start', 'primary']];
   if (fromBanner) buttons.unshift([x.reset, 'reset', 'ghost danger']);
   const shown = modal(x.title, body, buttons);
@@ -201,6 +212,8 @@ async function inPage() {
 }
 
 async function start() {
+  // The app sets the real language once it has loaded; the banner and this dialog come first.
+  document.documentElement.lang = TEXT[guess] ? guess : 'en';
   renderBanner();
   try { await useServiceWorker(); } catch {
     try { await inPage(); } catch {

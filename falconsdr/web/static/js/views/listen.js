@@ -85,7 +85,7 @@ export function listenView(root) {
     h('div.row.wrap', autoRec, h('span.spacer'), iqBtn));
 
   // ---------------------------------------------------------- spectrum
-  const canvas = h('canvas', { height: 260 });
+  const canvas = h('canvas', { height: 260, role: 'img', 'aria-label': t('Live spectrum and waterfall of the scanned band. The frequency and state are shown in text above.') });
   const axis = h('div.spectrum-axis');
   const spectrumCard = h('section.card.spectrum-card',
     h('div.card-head', h('h2', t('Spectrum')), h('span.faint.small', t('Yellow line: trigger level'))),

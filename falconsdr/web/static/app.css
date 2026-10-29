@@ -3,7 +3,7 @@
    setting) around one signature element: the "radio stack" - the frequency
    readout styled like an avionics COM display, and the spectrum below it.
    Contrast (WCAG AA): text #1d1d1f/#636366 on #fff = 16.8/5.9:1 (4.9:1 on the #ebebf0 fill); accent #0066cc 5.6:1; dark #f5f5f7/#98989d
-   on #1c1c1e = 15.6/5.6:1; display amber #ffb340 on #0b0d10 = 11.3:1. */
+   on #1c1c1e = 15.6/5.6:1; white on button fills #0066cc/#0071e3/#d70015 = 5.6/4.7/5.5:1 (white on #0a84ff or #ff3b30 is only 3.7/3.5 - don't); display amber #ffb340 on #0b0d10 = 11.3:1. */
 :root {
   --bg: #f2f2f7;
   --surface: #ffffff;
@@ -14,10 +14,11 @@
   --secondary: #636366;
   --tertiary: #aeaeb2;      /* decoration only, never text you must read */
   --accent: #0066cc;
+  --accent-fill: #0066cc;   /* button fill carrying --on-accent text (text-contrast safe) */
   --accent-tint: rgba(0, 102, 204, .11);
   --on-accent: #ffffff;
   --green: #1e7b34;  --green-fill: #34c759;
-  --red: #d70015;    --red-fill: #ff3b30;
+  --red: #d70015;    --red-fill: #ff3b30;  --red-solid: #d70015;  /* white text on it: 5.5:1 */
   --orange: #c93400; --orange-fill: #ff9500;
   --instrument: #0b0d10;    /* always dark: the radio display and spectrum */
   --instrument-line: #23272e;
@@ -34,7 +35,7 @@
   :root {
     --bg: #000000; --surface: #1c1c1e; --fill: #2c2c2e; --fill-strong: #3a3a3c; --separator: #38383a;
     --label: #f5f5f7; --secondary: #98989d; --tertiary: #545458;
-    --accent: #0a84ff; --accent-tint: rgba(10, 132, 255, .18); --on-accent: #ffffff;
+    --accent: #0a84ff; --accent-fill: #0071e3; --accent-tint: rgba(10, 132, 255, .18); --on-accent: #ffffff;
     --green: #30d158; --green-fill: #30d158; --red: #ff453a; --red-fill: #ff453a; --orange: #ff9f0a; --orange-fill: #ff9f0a;
     --instrument: #0b0d10; --instrument-line: #262a31;
     --shadow: none; color-scheme: dark;
@@ -139,10 +140,10 @@ button:hover, .btn:hover { background: var(--fill-strong); text-decoration: none
 button:active, .btn:active { opacity: .7; }
 button:disabled { opacity: .35; cursor: default; }
 button svg.ic { width: 16px; height: 16px; }
-button.primary { background: var(--accent); color: var(--on-accent); }
-button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
+button.primary { background: var(--accent-fill); color: var(--on-accent); }
+button.primary:hover { background: color-mix(in srgb, var(--accent-fill) 88%, #000); }
 button.danger, .btn.danger { color: var(--red); }
-button.danger.solid { background: var(--red-fill); color: #fff; }
+button.danger.solid { background: var(--red-solid); color: #fff; }
 button.ghost, .btn.ghost { background: transparent; }
 button.ghost:hover, .btn.ghost:hover { background: var(--fill); }
 button.icon { padding: 7px; min-width: 32px; }
@@ -233,7 +234,7 @@ label.field > span.hint { color: var(--secondary); font-weight: 400; }
 .meter-legend { display: flex; justify-content: space-between; font: 11px var(--mono); color: #8e8e93; }
 .hero button { background: rgba(255,255,255,.09); color: #f5f5f7; }
 .hero button:hover { background: rgba(255,255,255,.15); }
-.hero button.primary { background: #0a84ff; color: #fff; }
+.hero button.primary { background: #0071e3; color: #fff; }
 .hero button.danger { background: rgba(255,69,58,.18); color: #ff6961; }
 .hero button.on { background: rgba(10,132,255,.25); color: #64d2ff; }
 .hero button.recbtn.on { background: rgba(255,69,58,.22); color: #ff6961; }
@@ -262,7 +263,7 @@ label.field > span.hint { color: var(--secondary); font-weight: 400; }
 .notice svg.ic { color: var(--accent); flex: none; }
 input.time { width: auto; font-family: var(--mono); }
 button.day { min-width: 44px; justify-content: center; color: var(--secondary); background: var(--fill); }
-button.day.on { color: var(--on-accent); background: var(--accent); }
+button.day.on { color: var(--on-accent); background: var(--accent-fill); }
 .band-edit { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr)); gap: 12px; }
 .overrides { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 10px; }
 .override { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 10px; background: var(--bg); }

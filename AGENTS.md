@@ -518,7 +518,7 @@ catalog loads; wrap them in a function called at point of use
 42. **UI design follows the `apple-design` skill's HIG rules** (owner's
     choice): appearance follows the system light/dark setting only — no
     in-app theme switch (`dark-mode.md`: "Avoid offering an app-specific
-    appearance setting"); colors are the semantic tokens in `app.css`
+    appearance setting"); colors are the semantic tokens in `app.css` (white button text only on `--accent-fill`/`--red-solid`, never on `--accent`/`--red-fill`: 3.7/3.5:1)
     (contrast figures in its header — recompute when changing one); touch
     targets ≥44 px under `@media (pointer: coarse)`, kept **last** in the
     file or component rules override it; icon-only buttons get their

@@ -1,0 +1,5 @@
+Contact: https://github.com/rafafunt/FalconSDR/security/advisories/new
+Contact: mailto:rafafunt@gmail.com
+Expires: 2027-10-29T00:00:00.000Z
+Preferred-Languages: en, pl
+Canonical: https://falconsdr.com/.well-known/security.txt
