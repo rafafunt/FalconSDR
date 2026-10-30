@@ -316,14 +316,6 @@ export function recordingsView(root) {
     const pad = (n) => String(n).padStart(2, '0');
     const ymd = `${when.getUTCFullYear()}-${pad(when.getUTCMonth() + 1)}-${pad(when.getUTCDate())}`;
     const hm = `${pad(when.getUTCHours())}:${pad(when.getUTCMinutes())}`;
-    const openMap = (url) => {
-      if (loc.home_lat === null || loc.home_lon === null) {
-        toast(t('Set your receiver location in Settings first.'));
-        location.hash = '#/settings/location';
-        return;
-      }
-      window.open(url, '_blank', 'noopener');
-    };
     const langSel = select([['', t('Detect language')], ['pl', 'Polski'], ['en', 'English']], '', () => {});
     const textBox = h('div.transcript', { class: tr && tr.text ? '' : 'none' }, tr && tr.text ? tr.text : transcriptStatus(tr, it.queued));
     mount(player,
@@ -362,6 +354,16 @@ export function recordingsView(root) {
         textBox));
     updatePlayButton();
     requestAnimationFrame(drawWave);
+  }
+
+  function openMap(url) {
+    const loc = cfg().location;
+    if (loc.home_lat === null || loc.home_lon === null) {
+      toast(t('Set your receiver location in Settings first.'));
+      location.hash = '#/settings/location';
+      return;
+    }
+    window.open(url, '_blank', 'noopener');
   }
 
   function site(name, url) {
