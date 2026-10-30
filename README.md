@@ -70,7 +70,8 @@ receiver at [falconsdr.com](https://falconsdr.com).
 - Optional speech-to-text with [Whisper](https://github.com/SYSTRAN/faster-whisper)
   (installed from the app; one model, `large-v3`, for every language - an
   English aviation model can be added in the settings). It can run on a
-  different, faster computer than the one scanning.
+  different, faster computer than the one scanning; see
+  [what it needs](#transcription-needs-more-than-scanning).
 
 **Server and multiple computers**
 - `--server` mode for a small always-on Linux receiver (mini PC, home
@@ -92,6 +93,48 @@ Other receivers and macOS (experimental builds) should work but haven't been
 tested yet - reports are welcome.
 
 Any antenna works; one cut or tuned for the band you scan works much better.
+
+### Transcription needs more than scanning
+
+Scanning and recording are light - a small mini PC runs them fine. The
+figures below are only for the optional speech-to-text (it can also run on
+another computer, see [Headless receiver](#headless-receiver)). Pick the
+model in Settings → Whisper models.
+
+| Model | RAM (GPU: VRAM) | Word errors, clean / noisy radio |
+|---|---|---|
+| `small` - smallest usable | 1.4 GB (0.8 GB) | 30 % / 51 % |
+| `medium` - best without a GPU | 3.2 GB (1.4 GB) | 23 % / 44 % |
+| `large-v3` - default | 3.9 GB (3.3 GB) | 21 % / 38 % |
+
+How long transcribing takes, as a multiple of the recording's length, for
+short ~6 s recordings (at 2× it keeps up as long as you record less than
+about 30 minutes of audio per hour):
+
+| Model | Mini PC, 4 threads* | Desktop, 8 threads† | Desktop, 24 threads† | Nvidia GPU‡ |
+|---|---|---|---|---|
+| `small` | 1.0× | 0.5× | 0.3× | 0.03× |
+| `medium` | 2.9× | 1.1× | 0.7× | 0.06× |
+| `large-v3` | 6.0× | 2.1× | 1.2× | 0.08× |
+
+- A CPU alone is enough to transcribe while scanning: it only has to keep up
+  with how much you record, and a queue that builds up in a busy spell empties
+  afterwards. An Nvidia GPU makes it 5-20 times faster, which pays off for
+  transcribing hundreds of existing recordings quickly or a very busy band.
+  AMD/Intel GPUs are not used.
+- Scanning plus transcription: at least 4 CPU threads; transcription uses
+  the ones beyond 4 (1, 4 and 20 in the columns above; at least one), so 8 is
+  comfortable.
+- `tiny` and `base` are not usable (45-90 % errors). On a CPU `turbo` is no
+  faster than `large-v3`.
+
+\*ThinkCentre mini PC, 4-core i5-6500T, 1 transcription thread. †Ryzen 9
+3900X limited to 4 and 20 transcription threads; a slower CPU will be slower.
+‡RTX 2070 SUPER. Without language detection (adds ~80 %). Short recordings
+are the slower case per second of audio: nine longer ones (13 s to 7 min)
+ran up to 2× faster (the mini PC: `small` 0.44×, `medium` 1.0×), but needed
+more memory (`medium` peaked at 3.2 GB on the 7-minute one). Rough figures,
+one run each.
 
 ## Installation
 
