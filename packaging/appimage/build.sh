@@ -62,6 +62,8 @@ python3 -m venv "$VENV"
 echo "-- 2/4: PyInstaller (--onedir) --"
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
+source "$SCRIPT_DIR/../linux-native-libs.sh"
+collect_native_libs soft
 (
   cd "$REPO_ROOT"
   "$VENV/bin/pyinstaller" \
@@ -75,6 +77,7 @@ mkdir -p "$BUILD"
     --collect-data pyrtlsdrlib \
     --collect-data imageio_ffmpeg \
     --collect-all pip \
+    "${NATIVE_ARGS[@]}" \
     --distpath "$BUILD/dist" \
     --workpath "$BUILD/work" \
     --specpath "$BUILD" \
@@ -99,6 +102,7 @@ cp "$SCRIPT_DIR/AppRun" "$APPDIR/AppRun"
 chmod 755 "$APPDIR/AppRun"
 cp "$REPO_ROOT/LICENSE" "$APPDIR/"
 "$VENV/bin/python" "$REPO_ROOT/packaging/collect_licenses.py" "$APPDIR/THIRD-PARTY-LICENSES.txt"
+append_native_licenses "$APPDIR/THIRD-PARTY-LICENSES.txt"
 
 echo "-- 4/4: appimagetool --"
 mkdir -p "$SCRIPT_DIR/out"

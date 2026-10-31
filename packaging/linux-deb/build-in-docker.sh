@@ -6,6 +6,6 @@
 set -eu
 cd "$(dirname "$0")/../.."
 docker run --rm -v "$PWD":/src -w /src python:3.12-slim-bullseye sh -c "
-    apt-get update -qq && apt-get install -y -qq binutils >/dev/null
+    apt-get update -qq && apt-get install -y -qq binutils libhackrf0 libairspy0 >/dev/null
     packaging/linux-deb/build.sh
     chown -R $(id -u):$(id -g) packaging/linux-deb"

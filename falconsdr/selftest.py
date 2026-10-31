@@ -4,6 +4,7 @@ so a dependency PyInstaller silently dropped (AGENTS.md gotcha 35: tzdata,
 librtlsdr) fails the build instead of a user's first launch."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -25,6 +26,18 @@ def _checks():
             raise RuntimeError("pyrtlsdr/librtlsdr could not be loaded")
         import rtlsdr
         return f"librtlsdr loaded ({Path(rtlsdr.__file__).parent.name})"
+
+    def native_receiver_libraries():
+        # libhackrf/libairspy are bundled in the Windows build and the .deb (FALCONSDR_REQUIRE_NATIVE_LIBS=1 there):
+        # a dropped DLL/.so must fail the build, not the first HackRF user. Listing needs no device, but loads libusb.
+        from falconsdr import sdr_native
+        hack, air = sdr_native.hackrf_library(), sdr_native.airspy_library()
+        required = getattr(sys, "frozen", False) and (sys.platform == "win32" or os.environ.get("FALCONSDR_REQUIRE_NATIVE_LIBS") == "1")
+        missing = [name for name, lib in (("libhackrf", hack), ("libairspy", air)) if lib is None]
+        if required and missing:
+            raise RuntimeError(f"{' and '.join(missing)} could not be loaded from the bundle")
+        sdr_native.native_enumerate()
+        return "libhackrf and libairspy load" if not missing else f"not bundled here ({', '.join(missing)} missing - fine for a source install)"
 
     def web_ui():
         from falconsdr.web.server import STATIC_DIR
@@ -92,7 +105,7 @@ def _checks():
             raise RuntimeError("python3.dll missing - abi3 add-ons (PyAV) can't load")
         return f"bundled pip {__version__}"
 
-    return [numpy_scipy, timezones, rtlsdr_library, web_ui, translations, band_presets, demodulator, mp3, addon_installer]
+    return [numpy_scipy, timezones, rtlsdr_library, native_receiver_libraries, web_ui, translations, band_presets, demodulator, mp3, addon_installer]
 
 
 def run() -> int:

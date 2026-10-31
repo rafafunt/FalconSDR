@@ -44,6 +44,9 @@ python3 -m venv "$VENV"
 echo "-- 2/5: PyInstaller (--onedir) --"
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
+# libhackrf + libairspy (BSD-3-Clause): HackRF/Airspy without SoapySDR - build-in-docker.sh installs the packages.
+source "$SCRIPT_DIR/../linux-native-libs.sh"
+collect_native_libs strict
 (
   cd "$REPO_ROOT"
   # Absolute source paths for --add-data - PyInstaller resolves a relative
@@ -97,6 +100,7 @@ mkdir -p "$BUILD"
     --add-data "$REPO_ROOT/falconsdr/web/static:falconsdr/web/static" \
     --collect-data tzdata \
     --collect-data pyrtlsdrlib     --collect-data imageio_ffmpeg     --collect-all pip \
+    "${NATIVE_ARGS[@]}" \
     --distpath "$BUILD/dist" \
     --workpath "$BUILD/work" \
     --specpath "$BUILD" \
@@ -105,7 +109,7 @@ mkdir -p "$BUILD"
 
 # Fails the build if PyInstaller silently dropped something (tzdata,
 # librtlsdr...) - falconsdr/selftest.py; packaging/windows/build.ps1 does the same.
-"$BUILD/dist/$PKG/$PKG" --self-test
+FALCONSDR_REQUIRE_NATIVE_LIBS=1 "$BUILD/dist/$PKG/$PKG" --self-test
 
 echo "-- 3/5: assembling the .deb tree --"
 DEBROOT="$BUILD/deb"
@@ -135,6 +139,7 @@ cp "$SCRIPT_DIR/README.md" "$DEBROOT/usr/share/doc/$PKG/packaging-README.md"
 cp "$SCRIPT_DIR/../../LICENSE" "$DEBROOT/usr/share/doc/$PKG/copyright"
 # ...and those of everything bundled (packaging/collect_licenses.py).
 "$VENV/bin/python" "$SCRIPT_DIR/../collect_licenses.py" "$DEBROOT/usr/share/doc/$PKG/THIRD-PARTY-LICENSES.txt"
+append_native_licenses "$DEBROOT/usr/share/doc/$PKG/THIRD-PARTY-LICENSES.txt"
 
 # Real user-reported gap: a fresh Ubuntu install has no udev rule granting a
 # plain user access to an RTL-SDR dongle's USB device node (the `rtl-sdr`

@@ -95,6 +95,8 @@ can't open the dongle) on a normal Windows install.
 
 ## Not included
 
-SoapySDR hardware (HackRF, Airspy, SDRplay…). The exe is not code-signed, so
+SoapySDR (so SDRplay, LimeSDR, USRP…). HackRF and Airspy are included natively and experimental: `libhackrf` and
+`libairspy` (with `libusb`, `libwinpthread`) are fetched at build time by `fetch_native_libs.py` - pinned conda-forge
+binaries, checked by SHA-256 - and loaded by `--self-test`. The exe is not code-signed, so
 SmartScreen shows "Windows protected your PC" on first run → **More info →
 Run anyway**.

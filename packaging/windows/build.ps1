@@ -101,10 +101,20 @@ Check (Test-Path "$Dist\falconsdr.exe") "falconsdr.exe was not produced"
 # transcription) fail to load without it ("DLL load failed while importing _core").
 $BasePython = & $VPy -c "import sys; print(sys.base_prefix)"
 Copy-Item "$BasePython\python3.dll" "$Dist\_internal\"
+# libhackrf + libairspy (+ libusb, libwinpthread): HackRF/Airspy without SoapySDR (sdr_native.py, AGENTS.md gotcha 55).
+# Pinned downloads, checked by SHA-256 - see fetch_native_libs.py for why conda-forge and how to update.
+Step "2b: native receiver libraries (libhackrf, libairspy)"
+& $VPy -m pip install --quiet --disable-pip-version-check zstandard
+Check ($LASTEXITCODE -eq 0) "pip install zstandard failed"
+$Native = "$Build\native"
+& $VPy "$ScriptDir\fetch_native_libs.py" $Native
+Check ($LASTEXITCODE -eq 0) "fetching the native receiver libraries failed"
+Copy-Item "$Native\*.dll" "$Dist\_internal\"
 # License texts of everything bundled (BSD/MIT/Apache need them next to a
 # binary distribution; ffmpeg's GPL source pointer) - ships in the ZIP and installer.
 & $VPy "$ScriptDir\..\collect_licenses.py" "$Dist\THIRD-PARTY-LICENSES.txt"
 Check ($LASTEXITCODE -eq 0) "collecting third-party licenses failed"
+Get-Content -Raw -Encoding UTF8 "$Native\LICENSES.txt" | Add-Content -Encoding UTF8 "$Dist\THIRD-PARTY-LICENSES.txt"
 
 # The checks run the built exe the way a machine with nothing installed would:
 # empty profile, PATH without Python, SDR programs or this repo's DLLs.

@@ -755,10 +755,14 @@ catalog loads; wrap them in a function called at point of use
 55. **HackRF/Airspy natively (`sdr_native.py`, drivers `hackrf_native`/`airspy_native`) is experimental and has never
     run against a real board** - the author owns an RTL-SDR only. SoapySDR stays the default for both; the native
     path is the way out when SoapySDR is missing/fails (`open_real_backend`: `hackrf`/`airspy` without SoapySDR
-    open natively) and a way to compare. `libhackrf`/`libairspy` are **found, never bundled** (system package, a DLL
-    next to the program, `FALCONSDR_LIBHACKRF`/`FALCONSDR_LIBAIRSPY`). Licences checked from the sources on
-    2026-10-31: both libraries BSD-3-Clause (GPL-compatible; shipping them later means shipping that text -
-    `packaging/collect_licenses.py`), libusb LGPL-2.1 (dynamic only). Do not copy SoapyHackRF (MIT) / hackrf-tools
+    open natively) and a way to compare. `libhackrf`/`libairspy` are loaded by `_find_library` (bundle folder, system
+    package, `FALCONSDR_LIBHACKRF`/`FALCONSDR_LIBAIRSPY`) and **bundled in the Windows build and the .deb** (rpm/AppImage
+    only if the build machine has them). Licences checked from the sources on 2026-10-31: both libraries BSD-3-Clause
+    (GPL-compatible; a binary needs their notice: `fetch_native_libs.py` and `linux-native-libs.sh` append it to
+    THIRD-PARTY-LICENSES.txt), libusb LGPL-2.1 and libwinpthread MIT, as separate DLLs/.so. Windows DLLs come from
+    conda-forge, pinned by SHA-256 in `packaging/windows/fetch_native_libs.py` (HackRF publishes no Windows binaries;
+    Airspy's own zip needs the VC++ 2010 runtime) - update them there; `--self-test` loads both (a dropped file fails
+    the build; `FALCONSDR_REQUIRE_NATIVE_LIBS=1` makes it required on Linux too). Do not copy SoapyHackRF (MIT) / hackrf-tools
     (GPL-2.0) code; the gain split is our own. What the code assumes and `main.py --probe-sdr` must confirm on a
     real board: how many blocks after a retune still hold the old frequency (`CallbackStream.begin_retune` drops
     those that arrive within one transfer + a margin of the retune - the same bug SoapySDR had, gotcha 54), the

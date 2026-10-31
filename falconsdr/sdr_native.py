@@ -1,7 +1,8 @@
 """Experimental native backends for HackRF (libhackrf) and Airspy (libairspy), loaded with ctypes.
 
 Both libraries are BSD-3-Clause (headers checked 2026-10-31), so FalconSDR (GPL-3.0-or-later) may use and
-even ship them; for now they are only *found*, never bundled: a system package (``libhackrf0``,
+ship them: the Windows and .deb builds bundle them (packaging/windows/fetch_native_libs.py, linux-deb/build.sh).
+Elsewhere they are *found*: a system package (``libhackrf0``,
 ``libairspy0``), a DLL next to the program, or ``FALCONSDR_LIBHACKRF`` / ``FALCONSDR_LIBAIRSPY``.
 SoapySDR stays the default for these two (it is the better tested path); this is the way out when it is
 missing or fails. Neither has been run against real hardware by the author - ``main.py --probe-sdr``
@@ -200,7 +201,7 @@ def hackrf_library() -> ctypes.CDLL | None:
         if _hackrf_tried:
             return _hackrf_lib
         _hackrf_tried = True
-        lib = _find_library(("libhackrf.so.0", "libhackrf.so", "hackrf.dll", "libhackrf.dll", "libhackrf.dylib"),
+        lib = _find_library(("libhackrf.so.0", "libhackrf.so", "hackrf-0.dll", "hackrf.dll", "libhackrf.dll", "libhackrf.dylib"),
                             "FALCONSDR_LIBHACKRF", "hackrf")
         if lib is None:
             return None

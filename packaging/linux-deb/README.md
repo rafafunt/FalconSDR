@@ -29,7 +29,8 @@ matching neither a hardware problem nor a debug-mode one.
 
 ## Known limitations of this build (by design, not bugs)
 
-- **RTL-SDR only.** SoapySDR-based hardware (HackRF, LimeSDR, Airspy,
+- **RTL-SDR, plus HackRF and Airspy natively (experimental).** `libhackrf` and
+  `libairspy` are bundled. SoapySDR-based hardware (LimeSDR,
   SDRplay, USRP/UHD) isn't available — SoapySDR is a system C library with
   its own plugin/driver-module architecture that doesn't freeze into a
   single bundle the way a normal pip package does. Someone with that

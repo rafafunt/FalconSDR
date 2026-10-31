@@ -35,3 +35,20 @@ jobs:
           bash -n packaging/appimage/build-in-docker.sh
       - if: runner.os == 'Linux'
         run: python -c "import re; t=open('packaging/rpm/falconsdr.spec').read(); assert 'AutoReqProv' in t, 'spec must disable AutoReqProv (bundled /opt libs)'"
+      - if: runner.os == 'Linux'
+        run: |
+          bash -n packaging/linux-native-libs.sh
+          bash -n packaging/linux-deb/build.sh
+      # The Windows build bundles libhackrf/libairspy from pinned conda-forge files (gotcha 55): fetch them the way
+      # build.ps1 does and load them with nothing else on the machine - a changed hash or a missing DLL fails here, not
+      # at release time.
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m pip install zstandard
+          python packaging\windows\fetch_native_libs.py native
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $env:FALCONSDR_LIBHACKRF = (Resolve-Path native\hackrf-0.dll).Path
+          $env:FALCONSDR_LIBAIRSPY = (Resolve-Path native\airspy.dll).Path
+          python -c "from falconsdr import sdr_native as n; assert n.hackrf_library() is not None, 'libhackrf did not load'; assert n.airspy_library() is not None, 'libairspy did not load'; print('devices:', n.native_enumerate())"
+          if ($LASTEXITCODE -ne 0) { exit 1 }

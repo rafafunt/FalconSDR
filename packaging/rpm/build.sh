@@ -39,6 +39,8 @@ python3 -m venv "$VENV"
 echo "-- 2/4: PyInstaller (--onedir) --"
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
+source "$SCRIPT_DIR/../linux-native-libs.sh"
+collect_native_libs soft
 (
   cd "$REPO_ROOT"
   # Absolute source paths for --add-data (relative sources once resolved
@@ -57,6 +59,7 @@ mkdir -p "$BUILD"
     --collect-data pyrtlsdrlib \
     --collect-data imageio_ffmpeg \
     --collect-all pip \
+    "${NATIVE_ARGS[@]}" \
     --distpath "$BUILD/dist" \
     --workpath "$BUILD/work" \
     --specpath "$BUILD" \
@@ -92,6 +95,7 @@ cp "$REPO_ROOT/falconsdr/web/static/icon.svg" \
 cp "$SCRIPT_DIR/README.md" "$ROOT/usr/share/doc/$PKG/packaging-README.md"
 cp "$REPO_ROOT/LICENSE" "$ROOT/usr/share/doc/$PKG/copyright"
 "$VENV/bin/python" "$REPO_ROOT/packaging/collect_licenses.py" "$ROOT/usr/share/doc/$PKG/THIRD-PARTY-LICENSES.txt"
+append_native_licenses "$ROOT/usr/share/doc/$PKG/THIRD-PARTY-LICENSES.txt"
 
 cp "$REPO_ROOT/packaging/linux-deb/60-rtl-sdr.rules" "$ROOT/usr/lib/udev/rules.d/"
 cp "$REPO_ROOT/packaging/linux-deb/blacklist-rtl-dvb.conf" "$ROOT/etc/modprobe.d/"
