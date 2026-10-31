@@ -1447,32 +1447,27 @@ class ScannerEngine(threading.Thread):
                         self.set_hold(False)
                     state = ScannerState.CALCULATE_NEXT_FREQ
                     self._emit_state(state)
-                elif (
-                    best_freq is not None and best_level >= effective_trigger
-                    and self._at_recording_capacity()
-                ):
-                    now = time.monotonic()
-                    if now - self._capacity_logged.get(best_freq, 0.0) > 30.0:
-                        self._capacity_logged[best_freq] = now
-                        self.signals.log.emit(
-                            tr("Limit of {n} simultaneous recordings reached - {freq:.4f} MHz not recorded").format(
-                                n=self.config.recording.max_concurrent_recordings, freq=best_freq / 1e6,
+                elif best_freq is not None and best_level >= effective_trigger:
+                    if self._at_recording_capacity():
+                        now = time.monotonic()
+                        if now - self._capacity_logged.get(best_freq, 0.0) > 30.0:
+                            self._capacity_logged[best_freq] = now
+                            self.signals.log.emit(
+                                tr("Limit of {n} simultaneous recordings reached - {freq:.4f} MHz not recorded").format(
+                                    n=self.config.recording.max_concurrent_recordings, freq=best_freq / 1e6,
+                                )
                             )
+                        if not any_active and not self._hold and now >= scanning_deadline:
+                            state = ScannerState.CALCULATE_NEXT_FREQ
+                            self._emit_state(state)
+                    else:
+                        raw_level = raw_powers[best_freq]
+                        self._calibration_log.log_detect(
+                            best_freq, window.center_hz, sample_rate, self._applied_gain_mode,
+                            self._applied_gain_db, raw_level, effective_trigger,
+                            self._channel_bw_map.get(best_freq, 0.0),
                         )
-                    if not any_active and not self._hold and now >= scanning_deadline:
-                        state = ScannerState.CALCULATE_NEXT_FREQ
-                        self._emit_state(state)
-                elif (
-                    best_freq is not None and best_level >= effective_trigger
-                    and not self._at_recording_capacity()
-                ):
-                    raw_level = raw_powers[best_freq]
-                    self._calibration_log.log_detect(
-                        best_freq, window.center_hz, sample_rate, self._applied_gain_mode,
-                        self._applied_gain_db, raw_level, effective_trigger,
-                        self._channel_bw_map.get(best_freq, 0.0),
-                    )
-                    self._open_slot(best_freq, window, raw_level)
+                        self._open_slot(best_freq, window, raw_level)
                 elif not any_active and not self._hold and time.monotonic() >= scanning_deadline:
                     # Nothing active and the dwell is over - move on.
                     self._maybe_log_floor(iq, sample_rate, window)
