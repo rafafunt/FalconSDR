@@ -1421,6 +1421,45 @@ class WorkerTokenTest(unittest.TestCase):
         self.assertEqual(Api("http://x", "plain").token, "plain")
 
 
+class UploadAndRangeTest(_LibCase):
+    def test_upload_target_stays_inside_the_library_and_needs_a_recording_name(self) -> None:
+        ok = self.lib.upload_target("2026-05-05/" + NAME.format(khz=131500))
+        self.assertEqual(ok.parent.parent, self.root.resolve())
+        for bad in ("../" + NAME.format(khz=131500), "/etc/" + NAME.format(khz=131500), "2026-05-05/notes.txt"):
+            with self.assertRaises(ValueError, msg=bad):
+                self.lib.upload_target(bad)
+
+    def test_range_requests_are_answered_or_refused_cleanly(self) -> None:
+        from falconsdr.web.server import App, make_handler
+        from http.server import ThreadingHTTPServer
+        rel = "2026-05-05/" + NAME.format(khz=131525)
+        _wav(self.root, rel, size=100)
+        self.lib.rescan()
+
+        class Ctl:
+            library = self.lib
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(App(AppConfig(), Ctl(), "", "server")))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/api/recording?id={rel}"
+
+        def get(rng=None):
+            req = Request(url, headers={"Range": rng} if rng else {})
+            try:
+                with urlopen(req) as r:
+                    return r.status, len(r.read())
+            except HTTPError as exc:
+                return exc.code, 0
+        self.assertEqual(get(), (200, 100))
+        self.assertEqual(get("bytes=0-9"), (206, 10))
+        self.assertEqual(get("bytes=90-"), (206, 10))
+        self.assertEqual(get("bytes=-20"), (206, 20))
+        self.assertEqual(get("bytes=500-"), (416, 0))
+        self.assertEqual(get("bytes=-0"), (416, 0))
+        self.assertEqual(get("bytes=abc-"), (400, 0))
+
+
 class MergePatchTest(unittest.TestCase):
     def _ctl(self):
         from falconsdr import controller as controller_mod
