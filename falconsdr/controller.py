@@ -426,7 +426,14 @@ class Controller:
         for driver, args in saved:
             if driver and driver not in ("auto", "simulated") and not any(e["driver"] == driver and e["args"] == args for e in out):
                 fields_ = dict(kv.split("=", 1) for kv in args.split(",") if "=" in kv)
-                out.append(self._device_entry(driver, fields_, fields_.get("label") or driver, args))
+                entry = self._device_entry(driver, fields_, fields_.get("label") or driver, args)
+                # The same receiver listed with other details (busy, or another SoapySDR version): the saved
+                # arguments are the ones in use, so the UI must find them - not a second copy of the entry.
+                twin = next((e for e in out if e["driver"] == driver and e["group"] == entry["group"]), None)
+                if twin is not None:
+                    twin["args"] = args
+                else:
+                    out.append(entry)
         if self.config.debug_mode:
             out.append({"driver": "simulated", "args": "", "label": i18n.tr("Simulation (no hardware)"), "group": "simulated", "method": ""})
         return out

@@ -1380,6 +1380,52 @@ class NativeSdrTest(unittest.TestCase):
         self.assertNotEqual(hack["group"], native["group"])
         self.assertEqual(Controller._device_entry("airspy", {}, "Airspy")["default_rate_hz"], 2_500_000)
 
+    def test_a_closed_soapy_backend_lets_go_of_the_device(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+        from falconsdr import sdr_backend
+        released: list[object] = []
+
+        class FakeDevice:
+            def __init__(self, _args):
+                pass
+
+            @staticmethod
+            def unmake(dev):
+                released.append(dev)
+
+            def readStream(self, *_a, **_k):
+                return SimpleNamespace(ret=-1)
+
+            def __getattr__(self, name):
+                return lambda *a, **k: SimpleNamespace(minimum=lambda: 0.0, maximum=lambda: 49.6)
+
+        with mock.patch.object(sdr_backend, "HAVE_SOAPY", True), \
+                mock.patch.object(sdr_backend, "SoapySDR", SimpleNamespace(Device=FakeDevice), create=True), \
+                mock.patch.object(sdr_backend, "SOAPY_SDR_RX", 0, create=True), \
+                mock.patch.object(sdr_backend, "SOAPY_SDR_CF32", "CF32", create=True), \
+                mock.patch.object(sdr_backend, "SdrIoDiagLogger", lambda: None), \
+                mock.patch.object(sdr_backend.SoapyBackend, "_wait_for_reopen_cooldown", staticmethod(lambda: None)), \
+                mock.patch.object(sdr_backend.SoapyBackend, "_record_close_time", staticmethod(lambda: None)):
+            b = sdr_backend.SoapyBackend("rtlsdr", "", 2_400_000, "manual", 30.0)
+            b.close()
+        self.assertEqual(released, [b.device])
+
+    def test_a_saved_choice_replaces_its_twin_in_the_list_instead_of_doubling_it(self) -> None:
+        from unittest import mock
+        from falconsdr import controller as ctl
+        from falconsdr.config import AppConfig
+        listed = [{"driver": "rtlsdr_native", "serial": "00000001", "label": "RTL-SDR (librtlsdr) SN 00000001"},
+                  {"driver": "rtlsdr", "serial": "00000001", "label": "Generic RTL2832U OEM :: 00000001"}]
+        cfg = AppConfig()
+        cfg.device.driver, cfg.device.device_args = "rtlsdr", "driver=rtlsdr,serial=00000001,label=Generic RTL2832U OEM :: 00000001,tuner=R828D"
+        fake = type("C", (), {"config": cfg, "_device_entry": staticmethod(ctl.Controller._device_entry)})()
+        with mock.patch.object(ctl, "enumerate_devices", lambda: listed):
+            out = ctl.Controller.devices(fake)
+        soapy = [e for e in out if e["driver"] == "rtlsdr"]
+        self.assertEqual(len(soapy), 1)
+        self.assertEqual(soapy[0]["args"], cfg.device.device_args)
+
     def test_open_real_backend_picks_the_way(self) -> None:
         from unittest import mock
         from falconsdr import sdr_backend as sb, sdr_native

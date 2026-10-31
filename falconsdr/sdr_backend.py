@@ -240,6 +240,12 @@ class SoapyBackend(SdrBackend):
         except Exception:
             pass
         self._apply_bias_tee(False)  # never leave the antenna powered once FalconSDR lets go
+        # Closing the stream leaves the device itself open, and so the USB interface claimed: the same
+        # process could not open it again another way (Access method) - librtlsdr failed with "busy".
+        try:
+            SoapySDR.Device.unmake(self.device)
+        except Exception:
+            pass
         self._record_close_time()
 
     @staticmethod
