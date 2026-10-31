@@ -124,6 +124,26 @@ _MODEL_REPOS = {
 }
 
 
+def _model_folder(model_id: str) -> Path:
+    repo = model_id if "/" in model_id else _MODEL_REPOS.get(model_id, f"Systran/faster-whisper-{model_id}")
+    return _hf_cache_dir() / ("models--" + repo.replace("/", "--"))
+
+
+def model_cached(model_id: str) -> bool:
+    """True when the model's weights are on this computer already (a folder given by path always is)."""
+    if Path(model_id).is_dir():
+        return True
+    return any(_model_folder(model_id).glob("snapshots/*/model.bin"))
+
+
+def model_download_bytes(model_id: str) -> int:
+    """How much of a model is on disk so far - what a download in progress has fetched."""
+    try:
+        return sum(f.stat().st_size for f in _model_folder(model_id).rglob("*") if f.is_file() and not f.is_symlink())
+    except OSError:
+        return 0
+
+
 def delete_models(model_ids: list[str], on_line: Callable[[str], None]) -> None:
     """Deletes the given Whisper models (faster-whisper names like "large-v3"
     or Hugging Face repo ids) from the Hugging Face cache - only these: the

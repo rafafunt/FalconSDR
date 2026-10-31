@@ -514,7 +514,9 @@ class Controller:
         if command not in ("install", "install_gpu", "uninstall", "uninstall_with_models", "restart", "upload_local", "detach"):
             raise ValueError("Unknown worker command")
         with self._lock:
-            self.worker_commands.setdefault(name, []).append(command)
+            queued = self.worker_commands.setdefault(name, [])
+            if command not in queued:  # a double click must not install twice
+                queued.append(command)
 
     def forget_worker(self, name: str) -> None:
         with self._lock:

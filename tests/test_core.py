@@ -1349,6 +1349,75 @@ class WorkerMirrorTest(unittest.TestCase):
         self.assertEqual(w.api.mirrored, ["d/" + NAME.format(khz=1)])
 
 
+class WorkerProgressTest(unittest.TestCase):
+    def _worker(self):
+        from falconsdr.worker import Worker
+        return Worker("http://x", "", local_root=Path(tempfile.mkdtemp(dir=_HOME)))
+
+    def test_a_status_change_asks_for_an_immediate_heartbeat_and_is_timed(self) -> None:
+        w = self._worker()
+        w._hb_wake.clear()
+        w._set_status("installing")
+        self.assertTrue(w._hb_wake.is_set())
+        self.assertEqual((w._info()["status"], w._info()["status_for_s"]), ("installing", 0))
+
+    def test_every_install_line_is_published_and_kept(self) -> None:
+        w = self._worker()
+        w._hb_wake.clear()
+        w._log_line("Downloading ctranslate2 (38 MB)")
+        self.assertTrue(w._hb_wake.is_set())
+        self.assertEqual(list(w._log)[-1], "Downloading ctranslate2 (38 MB)")
+
+    def test_a_missing_model_is_reported_as_downloading_until_it_is_on_disk(self) -> None:
+        from unittest import mock
+        from falconsdr import worker as worker_mod
+        from falconsdr.config import TranscriptionConfig
+        w = self._worker()
+        cached = {"large-v3": False}
+        with mock.patch.object(worker_mod, "model_cached", lambda m: cached[m]), \
+                mock.patch.object(worker_mod, "model_download_bytes", lambda m: 1_500_000_000):
+            w._expect_model_download(TranscriptionConfig(generic_model="large-v3", english_atc_model=""))
+            info = w._info()
+            self.assertEqual((info["status"], info["download"]), ("downloading", {"model": "large-v3", "bytes": 1_500_000_000}))
+            w._expect_model_download(TranscriptionConfig(generic_model="large-v3", english_atc_model=""))
+            self.assertEqual(sum("downloading the model" in line for line in w._log), 1)  # said once
+            cached["large-v3"] = True
+            info = w._info()
+            self.assertEqual((info["status"], info["download"]), ("idle", None))
+
+    def test_a_double_click_queues_a_command_once(self) -> None:
+        from falconsdr import controller as controller_mod
+        cfg = AppConfig()
+        cfg.recording.output_dir = tempfile.mkdtemp(dir=_HOME)
+        ctl = controller_mod.Controller(cfg)
+        ctl.send_worker_command("pc", "install")
+        ctl.send_worker_command("pc", "install")
+        ctl.send_worker_command("pc", "restart")
+        self.assertEqual(ctl.worker_commands["pc"], ["install", "restart"])
+
+    def test_model_cache_probes(self) -> None:
+        from falconsdr.playback import transcription_install as ti
+        cache = Path(tempfile.mkdtemp(dir=_HOME))
+        old = os.environ.get("HF_HUB_CACHE")
+        os.environ["HF_HUB_CACHE"] = str(cache)
+        try:
+            self.assertFalse(ti.model_cached("large-v3"))
+            snap = cache / "models--Systran--faster-whisper-large-v3" / "snapshots" / "abc"
+            snap.mkdir(parents=True)
+            (cache / "models--Systran--faster-whisper-large-v3" / "blobs").mkdir()
+            (cache / "models--Systran--faster-whisper-large-v3" / "blobs" / "x.incomplete").write_bytes(b"0" * 1234)
+            self.assertFalse(ti.model_cached("large-v3"))  # still downloading
+            self.assertEqual(ti.model_download_bytes("large-v3"), 1234)
+            (snap / "model.bin").write_bytes(b"w")
+            self.assertTrue(ti.model_cached("large-v3"))
+            self.assertTrue(ti.model_cached(str(cache)))  # a folder path
+        finally:
+            if old is None:
+                os.environ.pop("HF_HUB_CACHE", None)
+            else:
+                os.environ["HF_HUB_CACHE"] = old
+
+
 class WorkerSafeRelTest(unittest.TestCase):
     def test_paths_that_leave_the_folder_are_refused(self) -> None:
         from falconsdr.worker import safe_rel

@@ -34,7 +34,7 @@ from .config import CONFIG_DIR, TranscriptionConfig, _from_dict, atomic_write_te
 from .playback.models import QualityMetrics, Recording
 from .playback.organizer import iter_all_recordings, parse_filename
 from .playback.transcription_availability import is_transcription_installed
-from .playback.transcription_install import removal_pending
+from .playback.transcription_install import model_cached, model_download_bytes, removal_pending
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,12 @@ _HEARTBEAT_S = 5.0
 _MIRROR_INTERVAL_S = 60.0
 _IDLE_S = 10.0
 _MODEL_RETRY_S = 60.0  # a model that failed to load (still downloading...) is tried again after this
+_MIN_HEARTBEAT_GAP_S = 1.0  # report changes sooner than _HEARTBEAT_S, but never faster than this
+_COMMAND_LABELS = {
+    "install": "install transcription", "install_gpu": "install transcription with GPU support",
+    "uninstall": "uninstall transcription", "uninstall_with_models": "uninstall transcription and its models",
+    "restart": "restart FalconSDR", "upload_local": "send local recordings to the server", "detach": "disconnect",
+}
 STATE_FILE = CONFIG_DIR / "worker_state.json"
 
 
@@ -106,6 +112,10 @@ class Worker(threading.Thread):
         self._wake = threading.Event()  # a command arrived - don't sit out the idle pause
         self._log: deque[str] = deque(maxlen=40)
         self._status = "idle"
+        self._status_since = time.time()
+        self._hb_wake = threading.Event()  # set: tell the server now, don't wait for the next heartbeat
+        self._downloading: Optional[str] = None  # model id the current transcription may be waiting for
+        self._announced_downloads: set[str] = set()
         self._settings: dict = {"transcribe": False, "mirror": False, "mirror_dir": ""}
         self._tconfig = TranscriptionConfig()
         self._commands: list[str] = []
@@ -119,16 +129,39 @@ class Worker(threading.Thread):
     def say(self, line: str) -> None:
         self._log.append(f"{datetime.now():%H:%M:%S} {line}")
         logger.info("worker: %s", line)
+        self._publish()
+
+    def _set_status(self, status: str) -> None:
+        if status != self._status:
+            self._status, self._status_since = status, time.time()
+        self._publish()
+
+    def _publish(self) -> None:
+        """A click in the UI should show something within a second, not at the next 5 s heartbeat."""
+        self._hb_wake.set()
+
+    def _log_line(self, line: str) -> None:
+        self._log.append(line[-300:])
+        self._publish()
+
+    def _download_in_progress(self) -> Optional[dict]:
+        model = self._downloading
+        if model and not model_cached(model):
+            return {"model": model, "bytes": model_download_bytes(model)}
+        return None
 
     def _info(self) -> dict:
+        download = self._download_in_progress()
         return {
-            "embedded": self.embedded, "status": self._status, "installed": self._installed,
+            "download": download, "status_for_s": round(time.time() - self._status_since),
+            "embedded": self.embedded, "status": "downloading" if download else self._status, "installed": self._installed,
             "gpu": _gpu_name(), "log": list(self._log), "local_only": self._local_only,
             "mirror_root": str(self._mirror_root() or ""), "removal_pending": removal_pending(),
         }
 
     def _heartbeat_loop(self) -> None:
         while not self._stop.is_set():
+            sent = time.monotonic()
             try:
                 reply = self.api.post("/api/worker/heartbeat", {"name": self.name, "info": self._info()}, timeout=10)
                 with self._lock:
@@ -144,12 +177,15 @@ class Worker(threading.Thread):
                 if self._connected:
                     self.say(f"server unreachable: {exc}")
                 self._connected = False
-            self._stop.wait(_HEARTBEAT_S)
+            self._hb_wake.wait(_HEARTBEAT_S)
+            self._hb_wake.clear()
+            self._stop.wait(max(0.0, _MIN_HEARTBEAT_GAP_S - (time.monotonic() - sent)))
 
     # -- main loop ------------------------------------------------------------
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        self._hb_wake.set()
 
     def run(self) -> None:
         threading.Thread(target=self._heartbeat_loop, daemon=True, name="worker-heartbeat").start()
@@ -168,7 +204,7 @@ class Worker(threading.Thread):
                     self._mirror() if self._settings.get("mirror") else self._count_local_only()
                 if self._settings.get("transcribe") and self._installed:
                     did_work = self._transcribe_one()
-                self._status = "transcribing" if did_work else "idle"
+                self._set_status("transcribing" if did_work else "idle")
                 if not did_work:
                     self._wake.wait(_IDLE_S)
                     self._wake.clear()
@@ -180,6 +216,7 @@ class Worker(threading.Thread):
         with self._lock:
             commands, self._commands = self._commands, []
         for command in commands:
+            self.say(f"command from the server: {_COMMAND_LABELS.get(command, command)}")
             if command in ("install", "install_gpu"):
                 self._install(with_gpu=command == "install_gpu")
             elif command in ("uninstall", "uninstall_with_models"):
@@ -198,29 +235,31 @@ class Worker(threading.Thread):
     # -- transcription ----------------------------------------------------------
     def _install(self, with_gpu: bool) -> None:
         from .playback.transcription_install import install_transcription
-        self._status = "installing"
-        ok, needs_restart, message = install_transcription(with_gpu, lambda line: self._log.append(line[-300:]))
+        self._set_status("installing")
+        self.say("installing transcription - several GB to download, this can take a few minutes")
+        ok, needs_restart, message = install_transcription(with_gpu, self._log_line)
         self._installed = is_transcription_installed()
         if ok and needs_restart:
             self.say("installed - restart FalconSDR on this computer to start transcribing")
         else:
             self.say("transcription installed" if ok else f"install failed: {message[-300:]}")
-        self._status = "idle"
+        self._set_status("idle")
 
     def _uninstall(self, with_models: bool) -> None:
         from .playback.transcription_install import uninstall_transcription
-        self._status = "uninstalling"
+        self._set_status("uninstalling")
+        self.say("uninstalling transcription…")
         with self._lock:
             tconfig = self._tconfig
         models = [m for m in (tconfig.generic_model, tconfig.english_atc_model) if m] if with_models else []
-        ok, needs_restart, message = uninstall_transcription(models, lambda line: self._log.append(line[-300:]))
+        ok, needs_restart, message = uninstall_transcription(models, self._log_line)
         # Off right away, also when the files only go at the next start.
         self._installed = False if ok else is_transcription_installed()
         if ok and needs_restart:
             self.say("transcription uninstalled - restart FalconSDR to remove its files")
         else:
             self.say("transcription uninstalled" if ok else f"uninstall failed: {message[-300:]}")
-        self._status = "idle"
+        self._set_status("idle")
 
     def _transcribe_one(self) -> bool:
         from .playback.transcription_engine import ModelUnavailable, transcribe_recording
@@ -228,7 +267,7 @@ class Worker(threading.Thread):
         if not job:
             return False
         rel = job["id"]
-        self._status = "transcribing"
+        self._set_status("transcribing")
         temp_dir = None
         try:
             local = Path(job["path"]) if self.embedded else None
@@ -246,7 +285,11 @@ class Worker(threading.Thread):
                             quality=QualityMetrics(0, 0, 0, 0, 0, float(job.get("duration") or 0)))
             with self._lock:
                 tconfig = self._tconfig
-            result = transcribe_recording(rec, tconfig, forced_language=job.get("language"))
+            self._expect_model_download(tconfig)
+            try:
+                result = transcribe_recording(rec, tconfig, forced_language=job.get("language"))
+            finally:
+                self._downloading = None
             self.api.post("/api/worker/result", {"id": rel, "key": job["key"], "result": result.__dict__})
             self.say(f"transcribed {Path(rel).name} [{result.status}]")
         except ModelUnavailable as exc:
@@ -266,6 +309,17 @@ class Worker(threading.Thread):
             if temp_dir is not None:
                 shutil.rmtree(temp_dir, ignore_errors=True)
         return True
+
+    def _expect_model_download(self, tconfig: TranscriptionConfig) -> None:
+        """The first transcription with a model that isn't on disk waits for a multi-GB download
+        inside faster-whisper, without a word - say it, and let _info() report the progress."""
+        for model in (tconfig.generic_model, tconfig.english_atc_model):
+            if model and not model_cached(model):
+                self._downloading = model
+                if model not in self._announced_downloads:
+                    self._announced_downloads.add(model)
+                    self.say(f"downloading the model {model} (up to several GB) - transcription starts when it is done")
+                return
 
     # -- local copies -------------------------------------------------------------
     def _mirror_root(self) -> Optional[Path]:
@@ -305,7 +359,7 @@ class Worker(threading.Thread):
                 continue
             target = root / rel
             if not (target.is_file() and target.stat().st_size == f["size"]):
-                self._status = "copying"
+                self._set_status("copying")
                 self.api.download(rel, target)
             if target.is_file() and target.stat().st_size == f["size"]:
                 verified.append(rel)
@@ -324,7 +378,7 @@ class Worker(threading.Thread):
             return
         server = {f["id"]: f["size"] for f in self.api.get("/api/worker/files")}
         todo = [(rel, path) for rel, path in self._local_files(root).items() if rel not in server]
-        self._status = "uploading"
+        self._set_status("uploading")
         self.say(f"uploading {len(todo)} recordings")
         for i, (rel, path) in enumerate(todo, 1):
             if self._stop.is_set():
@@ -338,7 +392,7 @@ class Worker(threading.Thread):
         self._import_local_metadata(force=True)
         self._local_only = 0
         self.say("upload finished")
-        self._status = "idle"
+        self._set_status("idle")
 
     def _import_local_metadata(self, force: bool = False) -> bool:
         """One-time: this computer's own transcripts, quality analysis and
