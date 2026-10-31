@@ -18,6 +18,7 @@ import os
 import queue
 import threading
 import time
+import traceback
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -174,6 +175,12 @@ def make_handler(app: App):
                 self._error(409, str(exc))
             except (BrokenPipeError, ConnectionResetError):
                 pass
+            except Exception:  # noqa: BLE001 - a bug or a full disk: answer, don't just drop the connection
+                traceback.print_exc()
+                try:
+                    self._error(500, "Internal error")
+                except OSError:
+                    pass
 
         def do_GET(self) -> None:  # noqa: N802
             self._route("GET")
@@ -361,7 +368,7 @@ def make_handler(app: App):
             try:
                 with urlopen(Request(url + "/api/live", headers={"Authorization": f"Bearer {token}"}), timeout=5):
                     pass
-            except URLError as exc:
+            except OSError as exc:  # URLError, and a plain TimeoutError while reading the reply
                 raise RuntimeError(i18n.tr("Can't connect: {error}").format(error=getattr(exc, "reason", exc)))
             rr = cfg.remote_receiver
             rr.enabled, rr.url, rr.token = True, url, token

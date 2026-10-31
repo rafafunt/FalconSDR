@@ -1339,6 +1339,21 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(self._status(locked + "/api/live", headers={"Authorization": "Bearer nope"}), 401)
         self.assertEqual(self._status(locked + "/api/live", headers={"Authorization": "Bearer secret"}), 200)
 
+    def test_an_unexpected_error_is_answered_with_500(self) -> None:
+        from falconsdr.web.server import App, make_handler
+        from http.server import ThreadingHTTPServer
+
+        class Ctl:
+            library = None
+
+            def live(self, since_log=0):
+                raise AttributeError("a bug")
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(App(AppConfig(), Ctl(), "", "server")))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        self.assertEqual(self._status(f"http://127.0.0.1:{httpd.server_address[1]}/api/live"), 500)
+
     def test_a_wrong_password_is_answered_slowly(self) -> None:
         from unittest import mock
         from falconsdr.web import server
@@ -1473,6 +1488,12 @@ class MergePatchTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ctl.patch_config({"trigger_level_dbfs": -10.0, "default_blacklist_margin_hz": "abc"})
         self.assertEqual((ctl.config.trigger_level_dbfs, ctl.config.default_blacklist_margin_hz), before)
+
+    def test_solo_of_a_band_that_does_not_exist_is_refused(self) -> None:
+        ctl = self._ctl()
+        with self.assertRaises(ValueError):
+            ctl.command("solo", {"band": 99})
+        self.assertIsNone(ctl._solo_band)
 
     def test_null_clears_only_fields_that_may_be_empty(self) -> None:
         ctl = self._ctl()

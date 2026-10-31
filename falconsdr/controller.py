@@ -246,6 +246,8 @@ class Controller:
     def command(self, name: str, payload: dict) -> None:
         if name == "solo":
             idx = payload.get("band")
+            if idx is not None and not 0 <= int(idx) < len(self.config.bands):
+                raise ValueError("No such band")
             self._solo_band = int(idx) if idx is not None else None
             band = self.config.bands[self._solo_band] if self._solo_band is not None else None
             for engine in self._engines:
