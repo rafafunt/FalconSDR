@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Set
 
-from falconsdr.config import atomic_write_text
+from falconsdr.config import atomic_write_text, quarantine
 from falconsdr.playback.config import FAVORITES_FILE
 
 logger = logging.getLogger(__name__)
@@ -25,8 +25,10 @@ class FavoritesStore:
         if self.favorites_file.exists():
             try:
                 self._keys = set(json.loads(self.favorites_file.read_text(encoding="utf-8")))
-            except (json.JSONDecodeError, OSError):
+            except (ValueError, OSError) as exc:
                 logger.warning("Failed to load the favorites list, starting fresh")
+                if isinstance(exc, ValueError):
+                    quarantine(self.favorites_file)
                 self._keys = set()
 
     def save(self) -> None:

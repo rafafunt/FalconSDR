@@ -62,6 +62,34 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(AppConfig.load().trigger_level_dbfs, -42.0)
         self.assertFalse(list(config_mod.CONFIG_DIR.glob("*.tmp")))
 
+    def test_a_corrupt_config_is_kept_aside_not_overwritten(self) -> None:
+        config_mod.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        config_mod.CONFIG_PATH.write_text('{"access_token": "secret", ')
+        cfg = AppConfig.load()
+        self.assertEqual(cfg.access_token, "")  # defaults for now ...
+        cfg.save()
+        bad = config_mod.CONFIG_PATH.with_name("config.json.bad")
+        self.assertIn("secret", bad.read_text())  # ... but the original is still there
+        bad.unlink()
+
+    def test_concurrent_saves_do_not_corrupt_the_file(self) -> None:
+        target = Path(tempfile.mkdtemp(dir=_HOME)) / "x.json"
+        errors = []
+        def hammer(n: int) -> None:
+            try:
+                for _ in range(200):
+                    config_mod.atomic_write_text(target, json.dumps({"v": "x" * (n * 1000)}))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+        threads = [threading.Thread(target=hammer, args=(n,)) for n in (1, 5, 9)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        json.loads(target.read_text())
+        self.assertFalse(list(target.parent.glob("*.tmp")))
+
     def test_empty_recordings_folder_means_default(self) -> None:
         config_mod.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         config_mod.CONFIG_PATH.write_text(json.dumps({"recording": {"output_dir": "  "}}))

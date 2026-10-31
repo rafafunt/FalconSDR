@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Dict
 
-from falconsdr.config import atomic_write_text, dumps_chunked
+from falconsdr.config import atomic_write_text, dumps_chunked, quarantine
 from falconsdr.playback.config import QUALITY_CACHE_FILE
 from falconsdr.playback.models import QualityMetrics
 
@@ -24,8 +24,10 @@ class QualityCache:
         if self.cache_file.exists():
             try:
                 self._data = json.loads(self.cache_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
+            except (ValueError, OSError) as exc:
                 logger.warning("Failed to load the quality cache, starting fresh")
+                if isinstance(exc, ValueError):
+                    quarantine(self.cache_file)
                 self._data = {}
 
     def save(self) -> None:

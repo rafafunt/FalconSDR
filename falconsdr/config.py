@@ -5,6 +5,8 @@ Saved to ~/.config/FalconSDR/config.json.
 from __future__ import annotations
 
 import json
+import os
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -46,11 +48,26 @@ def atomic_write_text(path: Path, text: str) -> None:
     truncated file behind - a half-written config.json used to load as
     "corrupt" -> silent defaults, which the next save() then made permanent."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    # newline="": csv already writes its own "\r\n" - no second translation on Windows.
-    with temporary.open("w", encoding="utf-8", newline="") as f:
-        f.write(text)
-    temporary.replace(path)
+    # Unique per thread: two HTTP threads saving the same file at once must not
+    # write into (or rename away) each other's temporary file.
+    temporary = path.with_name(f"{path.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+    try:
+        # newline="": csv already writes its own "\r\n" - no second translation on Windows.
+        with temporary.open("w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def quarantine(path: Path) -> None:
+    """Moves an unreadable file aside (``.bad``) so the next save() can't overwrite
+    the only copy - a typo in config.json must not turn into silent defaults
+    (no password!) and then into a permanent reset."""
+    try:
+        path.replace(path.with_name(path.name + ".bad"))
+    except OSError:
+        pass
 
 
 _migrate_from_smartscanatc()
@@ -309,7 +326,12 @@ class AppConfig:
             return cfg
         try:
             raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            if not isinstance(raw, dict):
+                raise ValueError("config.json is not an object")
+        except ValueError:
+            quarantine(CONFIG_PATH)
+            return AppConfig()
+        except OSError:
             return AppConfig()
         if "bands" in raw:
             bands = [_from_dict(VfoRangeConfig, b) for b in raw["bands"]]
