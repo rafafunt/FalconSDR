@@ -926,6 +926,26 @@ class DigitalVoiceTest(unittest.TestCase):
         self.assertEqual(seen, [None])  # not a certificate problem - no second try
 
 
+class DigitalDownloadChecksumTest(unittest.TestCase):
+    def _serve_bytes(self, data: bytes):
+        import io
+        from unittest import mock
+        from falconsdr import digital_voice
+        return digital_voice, mock.patch.object(digital_voice, "_urlopen", lambda url: io.BytesIO(data))
+
+    def test_a_download_that_is_not_the_tested_one_is_removed_and_refused(self) -> None:
+        import gzip, hashlib
+        payload = b"tar-bytes"
+        dv, patch = self._serve_bytes(gzip.compress(payload))
+        dest = Path(tempfile.mkdtemp(dir=_HOME)) / "a.tar.gz"
+        with patch:
+            dv._download("https://github.com/x/y/z", dest, hashlib.sha256(payload).hexdigest(), gunzip=True)
+            self.assertTrue(dest.exists())  # right bytes, even if re-compressed
+            with self.assertRaises(RuntimeError):
+                dv._download("https://github.com/x/y/z", dest, "0" * 64, gunzip=True)
+        self.assertFalse(dest.exists())
+
+
 class RtlSdrListTest(unittest.TestCase):
     def test_every_dongle_is_listed_and_shared_serials_go_by_usb_order(self) -> None:
         import sys

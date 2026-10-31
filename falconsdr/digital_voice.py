@@ -11,6 +11,8 @@ Encrypted voice stays muted - dsd-fme's default; no key is ever passed.
 """
 from __future__ import annotations
 
+import gzip
+import hashlib
 import os
 import re
 import shutil
@@ -42,9 +44,15 @@ DSD_DIR = APP_DATA_DIR / "addons" / "dsd-fme"
 _RELEASE = "20260715"
 _WINDOWS_ZIP = (f"https://github.com/lwvmobile/dsd-fme/releases/download/{_RELEASE}/"
                 f"dsd-fme-x86-64-cygwin-portable-{_RELEASE}.zip")
+# SHA-256 of what is downloaded (of the *unzipped* .tar for the sources: GitHub may re-compress
+# a tag's tarball). Code fetched from the internet and run here is only run if it is the code
+# that was tested - a re-pointed tag or release asset fails the install instead. Update with _RELEASE.
+_WINDOWS_ZIP_SHA256 = "006cfa420e79033b51ded97ed4d2d0a9715e350ffcfe35c41e89b9e6ef00e9f8"
 _SOURCES = {
-    "mbelib": "https://codeload.github.com/lwvmobile/mbelib/tar.gz/34adf9f054bc5650ace162a4917dcbc2cfa6102e",
-    "dsd-fme": f"https://codeload.github.com/lwvmobile/dsd-fme/tar.gz/refs/tags/{_RELEASE}",
+    "mbelib": ("https://codeload.github.com/lwvmobile/mbelib/tar.gz/34adf9f054bc5650ace162a4917dcbc2cfa6102e",
+               "f877f02d19736888cda7e8b28b3c9c1689af3cde7840fb235aec078c96fb4cb6"),
+    "dsd-fme": (f"https://codeload.github.com/lwvmobile/dsd-fme/tar.gz/refs/tags/{_RELEASE}",
+                "873a70e38cb05ca0ae8722d7e2b946a786dce1870446dfcff273e5af42e42f82"),
 }
 ISSUES_URL = "https://github.com/rafafunt/FalconSDR/issues"
 
@@ -239,16 +247,27 @@ def _urlopen(url: str):
     raise error
 
 
-def _download(url: str, dest: Path) -> None:
+def _sha256(path: Path, gunzip: bool) -> str:
+    digest = hashlib.sha256()
+    with (gzip.open(path, "rb") if gunzip else open(path, "rb")) as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _download(url: str, dest: Path, sha256: str, gunzip: bool = False) -> None:
     _say(f"Downloading {url.split('/')[4]}…")
     with _urlopen(url) as resp, open(dest, "wb") as out:
         shutil.copyfileobj(resp, out)
+    if _sha256(dest, gunzip) != sha256:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(f"{dest.name}: the download is not the tested version (checksum mismatch) - not installed")
 
 
 def _install_windows() -> None:
     DSD_DIR.mkdir(parents=True, exist_ok=True)
     archive = DSD_DIR / "dsd-fme.zip"
-    _download(_WINDOWS_ZIP, archive)
+    _download(_WINDOWS_ZIP, archive, _WINDOWS_ZIP_SHA256)
     _say("Unpacking…")
     with zipfile.ZipFile(archive) as z:
         z.extractall(DSD_DIR)
@@ -273,9 +292,9 @@ def _build_from_source() -> None:
     work.mkdir(parents=True)
     try:
         jobs = str(max(1, (os.cpu_count() or 2)))
-        for name, url in _SOURCES.items():
+        for name, (url, sha256) in _SOURCES.items():
             archive = work / f"{name}.tar.gz"
-            _download(url, archive)
+            _download(url, archive, sha256, gunzip=True)
             with tarfile.open(archive) as tar:
                 top = tar.getnames()[0].split("/")[0]
                 if hasattr(tarfile, "data_filter"):  # Python 3.11.4+; Pi OS 12 ships 3.11.2
