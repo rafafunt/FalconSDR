@@ -1849,6 +1849,62 @@ class HttpTest(unittest.TestCase):
         self.addCleanup(httpd.shutdown)
         self.assertEqual(self._status(f"http://127.0.0.1:{httpd.server_address[1]}/api/live"), 500)
 
+    def test_a_selection_downloads_as_one_streamed_zip(self) -> None:
+        import io
+        import shutil
+        import tempfile
+        import zipfile
+        from falconsdr.web.server import App, make_handler
+        from http.server import ThreadingHTTPServer
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "a").mkdir()
+        (tmp / "b").mkdir()
+        files = {"a/x.mp3": b"A" * 3_000_000, "b/x.mp3": b"B" * 10, "a/y.wav": b""}   # two share a name; one is empty
+        for rel, data in files.items():
+            (tmp / rel).write_bytes(data)
+
+        class Lib:
+            def path_of(self, rel):
+                if rel not in files:
+                    raise FileNotFoundError(rel)
+                return tmp / rel
+
+        class Ctl:
+            library = Lib()
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(App(AppConfig(), Ctl(), "", "server")))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        url = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+        def post(ids):
+            req = Request(url + "/api/library/zip", data=json.dumps({"ids": ids}).encode(), method="POST",
+                          headers={"X-FalconSDR": "1", "Content-Type": "application/json"})
+            with urlopen(req, timeout=5) as r:
+                return json.loads(r.read())
+        job = post(["a/x.mp3", "b/x.mp3", "a/y.wav", "gone.mp3"])        # the vanished one is skipped
+        self.assertEqual((job["count"], job["bytes"]), (3, 3_000_010))
+        with urlopen(url + "/api/library/zip?token=" + job["token"], timeout=10) as r:
+            self.assertEqual(r.headers["Content-Type"], "application/zip")
+            self.assertIn("attachment", r.headers["Content-Disposition"])
+            data = r.read()
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            self.assertIsNone(z.testzip())
+            self.assertEqual(sorted(z.namelist()), ["x-2.mp3", "x.mp3", "y.wav"])
+            self.assertEqual(z.read("x.mp3"), b"A" * 3_000_000)
+            self.assertEqual(z.read("x-2.mp3"), b"B" * 10)
+        self.assertEqual(self._status(url + "/api/library/zip?token=" + job["token"]), 404)   # used once
+        self.assertEqual(self._status(url + "/api/library/zip?token=nope"), 404)
+        with self.assertRaises(HTTPError) as err:
+            post(["gone.mp3"])
+        self.assertEqual(err.exception.code, 404)
+        err.exception.close()
+        with self.assertRaises(HTTPError) as err:
+            post([])
+        self.assertEqual(err.exception.code, 400)
+        err.exception.close()
+
     def test_a_wrong_password_is_answered_slowly(self) -> None:
         from unittest import mock
         from falconsdr.web import server

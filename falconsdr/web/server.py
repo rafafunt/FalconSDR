@@ -16,9 +16,11 @@ import json
 import mimetypes
 import os
 import queue
+import secrets
 import threading
 import time
 import traceback
+import zipfile
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -97,6 +99,10 @@ def make_handler(app: App):
     ctl = app.controller
     lib = ctl.library if ctl is not None else None
     cfg = app.config
+    # Prepared ZIP downloads: token -> (files, made at). The ids go in a POST body (a selection can be tens of
+    # thousands, far beyond a URL); the download itself is a plain GET the browser can save.
+    zip_jobs: dict[str, tuple[list[Path], float]] = {}
+    zip_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "FalconSDR/2"
@@ -435,6 +441,61 @@ def make_handler(app: App):
             lib.set_favorite(body["ids"], bool(body.get("favorite", True)))
             self._json({"ok": True})
 
+        def lib_zip_prepare(self, _query: dict) -> None:
+            ids = self._body().get("ids")
+            if not isinstance(ids, list) or not ids:
+                raise ValueError("ids must be a non-empty list")
+            files: list[Path] = []
+            for rec_id in ids:
+                try:
+                    files.append(lib.path_of(str(rec_id)))
+                except FileNotFoundError:
+                    pass                      # deleted meanwhile
+            if not files:
+                raise FileNotFoundError("none of the recordings exist")
+            token = secrets.token_urlsafe(16)
+            with zip_lock:
+                now = time.monotonic()
+                for old in [t for t, (_f, made) in zip_jobs.items() if now - made > 120]:
+                    del zip_jobs[old]
+                zip_jobs[token] = (files, now)
+            self._json({"token": token, "count": len(files), "bytes": sum(f.stat().st_size for f in files if f.exists())})
+
+        def lib_zip(self, query: dict) -> None:
+            token = str(_qs(query, "token", ""))
+            with zip_lock:
+                job = zip_jobs.get(token) if self.command == "HEAD" else zip_jobs.pop(token, None)
+            if job is None:
+                raise FileNotFoundError("download expired")
+            files = job[0]
+            # No length is known up front (and none is needed: HTTP/1.0 ends the body by closing the connection).
+            # Stored, not deflated: mp3 gains nothing and a WAV costs CPU the scanner may need.
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="falconsdr-recordings-{time.strftime("%Y%m%d-%H%M%S")}.zip"')
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            seen: set[str] = set()
+            with zipfile.ZipFile(self.wfile, "w", zipfile.ZIP_STORED) as zf:
+                for path in files:
+                    name, n = path.name, 1
+                    while name in seen:
+                        n += 1
+                        name = f"{path.stem}-{n}{path.suffix}"
+                    seen.add(name)
+                    try:
+                        src = path.open("rb")
+                    except OSError:
+                        continue              # deleted since it was prepared
+                    with src:
+                        info = zipfile.ZipInfo.from_file(path, name)
+                        info.compress_type = zipfile.ZIP_STORED
+                        with zf.open(info, "w", force_zip64=True) as out:
+                            while chunk := src.read(1 << 20):
+                                out.write(chunk)
+
         def lib_transcript(self, _query: dict) -> None:
             body = self._body()
             lib.set_transcript_text(str(body["id"]), str(body.get("text", "")))
@@ -599,6 +660,8 @@ def make_handler(app: App):
         ("POST", "/api/library/delete"): Handler.lib_delete,
         ("POST", "/api/library/retention"): Handler.lib_retention_now,
         ("POST", "/api/library/favorite"): Handler.lib_favorite,
+        ("POST", "/api/library/zip"): Handler.lib_zip_prepare,
+        ("GET", "/api/library/zip"): Handler.lib_zip,
         ("POST", "/api/library/transcript"): Handler.lib_transcript,
         ("POST", "/api/library/transcribe"): Handler.lib_transcribe,
         ("GET", "/api/recording"): Handler.recording,

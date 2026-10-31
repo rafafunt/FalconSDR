@@ -2736,3 +2736,9 @@ msgstr "{name} jest podłączony, ale FalconSDR nie ma dostępu do SoapySDR (mod
 
 msgid "The receiver did not open with {method}. Stop the scanner and try {other} under SDR device → Access method."
 msgstr "Odbiornik nie otworzył się przez {method}. Zatrzymaj skaner i spróbuj {other} w sekcji Urządzenie SDR → Sposób dostępu."
+
+msgid "Unfavorite"
+msgstr "Usuń z ulubionych"
+
+msgid "Downloading {n} recordings ({size}) as one ZIP…"
+msgstr "Pobieranie {n} nagrań ({size}) jako jeden plik ZIP…"

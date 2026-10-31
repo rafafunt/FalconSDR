@@ -203,6 +203,8 @@ export function recordingsView(root) {
       selected.size < total ? h('button.ghost', { onclick: selectAll }, t('Select all {n}', { n: total.toLocaleString() })) : null,
       h('span.spacer'),
       h('button', { onclick: () => setFavorite([...selected], true) }, icon('star'), t('Favorite')),
+      h('button', { onclick: () => setFavorite([...selected], false) }, icon('star'), t('Unfavorite')),
+      h('button', { onclick: () => download([...selected]) }, icon('download'), t('Download')),
       h('button', { onclick: () => transcribe([...selected]) }, icon('text'), t('Transcribe')),
       h('button.danger', { onclick: () => remove([...selected]) }, icon('trash'), t('Delete')),
       h('button.ghost', { onclick: () => { selected.clear(); syncSelection(); } }, t('Clear'))));
@@ -221,6 +223,18 @@ export function recordingsView(root) {
       items.filter((i) => ids.includes(i.id)).forEach((i) => { i.favorite = favorite; refreshRow(i); });
       if (current && ids.includes(current.id)) renderPlayer();
       loadFacets();
+      if (!favorite && F.sel.includes('fav')) reload();   // they no longer belong to the Favorites view
+    } catch (e) { errorToast(e); }
+  }
+
+  // One file goes as it is; several as one ZIP the server streams (a selection can be thousands of recordings).
+  async function download(ids) {
+    const save = (href) => { const a = h('a', { href, download: '' }); document.body.append(a); a.click(); a.remove(); };
+    if (ids.length === 1) return save(`/api/recording?id=${encodeURIComponent(ids[0])}&download=1`);
+    try {
+      const job = await api.post('/api/library/zip', { ids });
+      toast(t('Downloading {n} recordings ({size}) as one ZIP…', { n: job.count.toLocaleString(), size: fmtBytes(job.bytes) }));
+      save('/api/library/zip?token=' + encodeURIComponent(job.token));
     } catch (e) { errorToast(e); }
   }
 
