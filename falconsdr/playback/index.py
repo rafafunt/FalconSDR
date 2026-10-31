@@ -276,23 +276,26 @@ class Library:
         q = q.strip().lower()
         names = self._freq_names() if q else {}
         out = []
+        # Filter a snapshot, not under the lock: with tens of thousands of files this takes
+        # 100 ms+, and the scan thread waits for the lock in add_file() (a gap in the audio).
         with self._lock:
-            for rel, rec in self._recs.items():
-                if sel:
-                    lang = rec.transcript.language if rec.transcript and rec.transcript.language else ""
-                    if not ((fav and rec.is_favorite) or rec.freq_khz in freqs or lang in langs
-                            or any(lo <= rec.freq_khz * 1000 <= hi for lo, hi in bands)):
-                        continue
-                ts = rec.dt_utc.timestamp()
-                if since is not None and ts < since:
+            snapshot = list(self._recs.items())
+        for rel, rec in snapshot:
+            if sel:
+                lang = rec.transcript.language if rec.transcript and rec.transcript.language else ""
+                if not ((fav and rec.is_favorite) or rec.freq_khz in freqs or lang in langs
+                        or any(lo <= rec.freq_khz * 1000 <= hi for lo, hi in bands)):
                     continue
-                if until is not None and ts > until:
-                    continue
-                if min_quality > 0 and (rec.quality is None or rec.quality.quality_score < min_quality):
-                    continue
-                if q and q not in self._blob(rel, rec, names):
-                    continue
-                out.append((rel, rec))
+            ts = rec.dt_utc.timestamp()
+            if since is not None and ts < since:
+                continue
+            if until is not None and ts > until:
+                continue
+            if min_quality > 0 and (rec.quality is None or rec.quality.quality_score < min_quality):
+                continue
+            if q and q not in self._blob(rel, rec, names):
+                continue
+            out.append((rel, rec))
         return out
 
     def item(self, rel: str, rec: Recording, names: dict[int, str]) -> dict:
@@ -504,12 +507,13 @@ class Library:
     def pending_count(self) -> int:
         """Recordings still waiting for a transcript (what an auto-transcribing
         worker would work through), for the UI's progress line."""
+        auto = self.config.transcription.enabled
         with self._lock:
-            auto = self.config.transcription.enabled
-            return len(self._requests) + (sum(
-                1 for rel, r in self._recs.items()
-                if r.transcript is None and rel not in self._failed and rel not in self._requests
-            ) if auto else 0)
+            requests, failed = set(self._requests), set(self._failed)
+            snapshot = list(self._recs.items()) if auto else []
+        return len(requests) + sum(
+            1 for rel, r in snapshot if r.transcript is None and rel not in failed and rel not in requests
+        )
 
     def claim_job(self, worker: str) -> Optional[dict]:
         now = time.monotonic()

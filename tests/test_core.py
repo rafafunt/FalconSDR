@@ -1340,6 +1340,26 @@ class WorkerTokenTest(unittest.TestCase):
         self.assertEqual(Api("http://x", "plain").token, "plain")
 
 
+class LibraryLockTest(_LibCase):
+    def test_a_slow_query_does_not_hold_the_lock_the_scanner_needs(self) -> None:
+        from unittest import mock
+        for khz in (131000, 131025, 131050):
+            _wav(self.root, "2026-01-01/" + NAME.format(khz=khz))
+        self.lib.rescan()
+        def slow_blob(*_a):
+            time.sleep(0.3)
+            return "x"
+        with mock.patch.object(self.lib, "_blob", slow_blob):
+            t = threading.Thread(target=lambda: self.lib.query(q="x"))
+            t.start()
+            time.sleep(0.05)
+            began = time.monotonic()
+            self.lib.get("2026-01-01/" + NAME.format(khz=131000))  # add_file() needs the same lock
+            waited = time.monotonic() - began
+            t.join()
+        self.assertLess(waited, 0.1)
+
+
 class LibraryMaintenanceTest(_LibCase):
     def test_a_failing_step_does_not_end_the_maintenance_thread(self) -> None:
         from unittest import mock
