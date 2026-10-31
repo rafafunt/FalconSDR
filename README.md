@@ -33,8 +33,10 @@ receiver at [falconsdr.com](https://falconsdr.com).
   reduction.
 - Blacklist for carriers and interference, one click from the live view.
 - AM, NFM, WFM and SSB demodulation; software or hardware gain control.
-- Experimental: several dongles at once - the scan plan is split between
-  them, so each band is revisited that many times more often.
+- Experimental: several receivers at once - the scan plan is split between
+  them, so each band is revisited that many times more often. They can be of
+  different kinds and widths (say an RTL-SDR at 2.4 MHz next to a HackRF at
+  10 MHz); the plan is shared in proportion to their capture widths.
 - Optional **antenna range** per dongle (SDR device card): one on a 2 m
   antenna scans only 144-146 MHz, one on a 70 cm antenna only 430-440 MHz.
   What no range reaches is listed on the Listen page.
@@ -61,7 +63,8 @@ receiver at [falconsdr.com](https://falconsdr.com).
   date or transcript text; filter by time and quality.
 - Every recording gets a quality score (signal-to-noise), a waveform and
   click-to-seek playback with auto-advance.
-- Favorites, bulk delete/transcribe, keyboard shortcuts.
+- Favorites, bulk favorite/delete/transcribe, download a whole selection as
+  one ZIP, keyboard shortcuts.
 - Flight replay for aviation recordings (118-138 MHz and military UHF
   225-400 MHz): one click opens FlightRadar24 or ADS-B Exchange replaying
   the traffic around you at the moment of the recording - to see who was
@@ -69,7 +72,8 @@ receiver at [falconsdr.com](https://falconsdr.com).
 - Statistics: busiest frequencies, activity by hour, weekday and day.
 - Optional speech-to-text with [Whisper](https://github.com/SYSTRAN/faster-whisper)
   (installed from the app; one model, `large-v3`, for every language - an
-  English aviation model can be added in the settings). It can run on a
+  English aviation model can be added in the settings, and fixing the language
+  skips its detection). It can run on a
   different, faster computer than the one scanning; see
   [what it needs](#transcription-needs-more-than-scanning).
 
@@ -86,17 +90,34 @@ receiver at [falconsdr.com](https://falconsdr.com).
 | Receiver | How |
 |---|---|
 | RTL-SDR (incl. RTL-SDR Blog V3/V4) | built in on Linux, Windows and macOS |
-| HackRF, Airspy | **Windows, `.deb`, `.rpm`, AppImage:** built in (`libhackrf`/`libairspy` are bundled) - experimental, **untested on real hardware**; pick *SDR device → Access method → libhackrf / libairspy*. **Linux from source:** through [SoapySDR](https://github.com/pothosware/SoapySDR) with the matching module (source install), or the same native access once `libhackrf0` / `libairspy0` are installed |
-| SDRplay, LimeSDR, USRP, … | through SoapySDR with the matching module installed (Linux, source install); **not tested** |
+| HackRF, Airspy | built in on Windows, `.deb`, `.rpm` and AppImage (experimental) |
+| SDRplay, LimeSDR, USRP, … | through SoapySDR, Linux source install (not tested) |
+
+An RTL-SDR is opened through librtlsdr; on Linux from source also through
+SoapySDR - choose under *SDR device → Access method*. HackRF and Airspy work
+through the bundled `libhackrf` / `libairspy` (**untested on real hardware**,
+pick *Access method → libhackrf / libairspy*); on Linux from source they work
+through [SoapySDR](https://github.com/pothosware/SoapySDR) with the matching
+module, or through the same built-in access once `libhackrf0` / `libairspy0`
+are installed.
+
+HackRF captures 2-20 MHz (the default 2.4 MHz is the safest start); an Airspy
+only the fixed widths its board has (for instance 2.5 and 10 MHz on an Airspy
+R2), and FalconSDR picks the nearest. A wider capture needs more processor -
+on a 4-core mini PC about 1, 8 and 19 ms of every 30 ms block go to the
+spectrum at 2.4, 10 and 20 MHz, plus 2, 9 and 17 ms for each transmission being
+recorded. The macOS builds don't carry the HackRF/Airspy libraries.
 
 Developed and tested with an **RTL-SDR Blog V4** on Linux and Windows 11.
 Other receivers and macOS (experimental builds) should work but haven't been
 tested yet - reports are welcome.
 
-**Testing a receiver:** stop the scanner and run `python main.py --probe-sdr`
-(or `--probe-sdr hackrf_native` / `hackrf` / `airspy_native` / `airspy` to pick the
-way it is opened). It measures the gain steps, the DC spike, how many blocks after a
-retune still hold the old frequency, and sample losses, and prints one `RESULT {...}`
+**Testing a receiver:** stop the scanner and run `falconsdr --probe-sdr`
+(from source: `python main.py --probe-sdr`; add `hackrf_native` / `hackrf` /
+`airspy_native` / `airspy` to pick the way it is opened; on Windows the output
+goes to `%USERPROFILE%\.config\FalconSDR\falconsdr.log`). It measures the
+gain steps, the DC spike, how many blocks after a retune still hold the old
+frequency, and sample losses, and prints one `RESULT {...}`
 line - please paste it into an issue together with your receiver's model.
 
 Any antenna works; one cut or tuned for the band you scan works much better.
@@ -155,9 +176,9 @@ curl -fsSL https://raw.githubusercontent.com/rafafunt/FalconSDR/master/packaging
 
 Debian/Ubuntu get the `.deb`, Fedora/openSUSE the `.rpm`, Arch the AUR
 package, anything else the AppImage. Add `--from-source` to install from a
-git checkout instead: the way to get SoapySDR support (HackRF, LimeSDR,
-Airspy, …) and the fallback for other CPU architectures or musl distros
-such as Alpine.
+git checkout instead: the way to get SoapySDR support (LimeSDR, SDRplay,
+USRP, …, and HackRF/Airspy through SoapySDR instead of the built-in access)
+and the fallback for other CPU architectures or musl distros such as Alpine.
 
 ### Ubuntu / Debian - .deb package
 
@@ -171,8 +192,8 @@ Start **FalconSDR** from the application menu. Unplug and replug the dongle
 once after installing - the package adds a udev rule for USB access and stops
 the DVB-T TV driver from taking the dongle.
 
-This package is self-contained (RTL-SDR only, no Python needed). For SoapySDR
-devices, run from source instead.
+This package is self-contained (RTL-SDR, plus HackRF and Airspy natively -
+experimental; no Python needed). For SoapySDR devices, run from source instead.
 
 ### Fedora / openSUSE - .rpm package
 
@@ -228,7 +249,9 @@ program already works with your dongle, it's already done. Otherwise: plug in
 the dongle → run Zadig → *Options → List All Devices* → pick
 **"Bulk-In, Interface (Interface 0)"** (or "RTL2838UHIDIR"; not Interface 1)
 → target driver **WinUSB** → *Replace Driver* → replug the dongle. The same
-steps are in the app (Listen → SDR device).
+steps are in the app (Listen → SDR device). A HackRF or Airspy may need the
+same driver step; the built-in access to them is untested on Windows with real
+hardware.
 
 FalconSDR runs in the background with its interface in the browser; quit it
 in Settings → Advanced. "Start with the system" is there too (off by default).
@@ -284,10 +307,12 @@ The interface opens at `http://127.0.0.1:8765`.
 
 ### Updating and removing
 
-Quit FalconSDR, then install the newer `.deb` or Windows installer over the
-old one - settings, channels and recordings are kept. Start it again
-afterwards (a copy left running through the update shows errors). Remove with `sudo apt remove falconsdr` or
-Windows *Settings → Apps*; your recordings and settings stay on disk (see
+Quit FalconSDR, then install the newer `.deb`, `.rpm` or Windows installer over
+the old one - settings, channels, favorites and recordings are kept. Start it
+again afterwards (a copy left running through the update shows errors). An
+AppImage is replaced by downloading the new one. Remove with `sudo apt remove
+falconsdr`, `sudo dnf remove falconsdr` or Windows *Settings → Apps*; your
+recordings and settings stay on disk (see
 [Where things are stored](#where-things-are-stored)).
 
 ### Headless receiver
@@ -303,6 +328,9 @@ with the address to open from any device on your network
 (`http://<receiver-ip>:8765`). Run the same line again to update - settings
 and recordings are kept. Details, other versions and helper computers for
 transcription: [packaging/remote-server/README.md](packaging/remote-server/README.md).
+The service sees the system's SoapySDR: `sudo apt install python3-soapysdr
+soapysdr-module-<your receiver>` and restart it (`sudo systemctl restart
+falconsdr-receiver`), then pick the access method under *SDR device*.
 
 ## First steps
 
@@ -333,8 +361,8 @@ transcription: [packaging/remote-server/README.md](packaging/remote-server/READM
   the channel spacing the band really uses.
 - If the Activity feed says *this computer can't keep up with the SDR*, data
   is being lost (short gaps in audio and recordings): lower the capture
-  bandwidth, or move off a virtual machine - USB passed through to a VM is a
-  common cause.
+  bandwidth (a wide HackRF capture costs much more than an RTL-SDR's 2.4 MHz),
+  or move off a virtual machine - USB passed through to a VM is a common cause.
 
 ## Command line
 
@@ -350,6 +378,7 @@ falconsdr --port 9000   another port
 falconsdr --no-browser  don't open the browser
 falconsdr --version     show the version
 falconsdr --self-test   check this install has everything it needs
+falconsdr --probe-sdr   measure the receiver with the scanner stopped (see Hardware)
 ```
 
 ## Where things are stored
@@ -367,6 +396,11 @@ falconsdr --self-test   check this install has everything it needs
 - **"Failed to connect… retrying"** - the SDR is missing, in use by another
   program, lacks USB permissions (Linux: udev rule, replug) or has the wrong
   driver (Windows: Zadig).
+- **A HackRF or Airspy is plugged in but not listed** - on Linux the Listen
+  page names what is missing: SoapySDR (source install; see above) or the
+  `libhackrf` / `libairspy` library (`sudo apt install libhackrf0 libairspy0`, Fedora:
+  `sudo dnf install hackrf airspyone_host`). If one way to open a receiver
+  fails, try the other under *SDR device → Access method*.
 - **Nothing gets recorded** - recording is off, the trigger level is too high,
   or the band's modulation is wrong (aviation is AM, most other VHF/UHF voice
   is NFM).
@@ -401,7 +435,8 @@ are responsible for how you use this program.
 GPL-3.0-or-later (see [LICENSE](LICENSE)) - required by `pyrtlsdr` and the
 bundled `librtlsdr`. The Windows/Linux packages list every bundled component
 and its license in `THIRD-PARTY-LICENSES.txt` (ffmpeg in them is a GPLv3
-build). Transcription software and Whisper models are not bundled: they are
+build; `libhackrf` and `libairspy` are BSD-3-Clause, `libusb` LGPL-2.1).
+Transcription software and Whisper models are not bundled: they are
 downloaded on the user's own request from their publishers (faster-whisper,
 CTranslate2 and the default model `Systran/faster-whisper-large-v3` are MIT-licensed, as
 is the optional English aviation model `jacktol/whisper-medium.en-fine-tuned-for-ATC-faster-whisper`).
