@@ -36,6 +36,13 @@ jobs:
       - name: Build
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
+      # Kept as a workflow artifact too: a draft release has no tag yet, and a failed attach must not lose the build.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            packaging/windows/out/*.zip
+            packaging/windows/out/*.exe
       - name: Attach to the release
         shell: pwsh
         env:

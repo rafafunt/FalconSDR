@@ -58,10 +58,14 @@ jobs:
           rc=$?
           cat ~/.config/FalconSDR/falconsdr.log 2>/dev/null
           exit $rc
+      - name: Zip the app
+        run: ditto -c -k --keepParent dist/FalconSDR.app "FalconSDR-$VERSION-macos-${{ matrix.arch }}-experimental.zip"
+      # Kept as a workflow artifact too: a draft release has no tag yet, and a failed attach must not lose the build.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: FalconSDR-*-macos-*-experimental.zip
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          zip_name="FalconSDR-$VERSION-macos-${{ matrix.arch }}-experimental.zip"
-          ditto -c -k --keepParent dist/FalconSDR.app "$zip_name"
-          gh release upload "${{ inputs.tag }}" "$zip_name" --clobber
+        run: gh release upload "${{ inputs.tag }}" "FalconSDR-$VERSION-macos-${{ matrix.arch }}-experimental.zip" --clobber
