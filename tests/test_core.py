@@ -1426,6 +1426,33 @@ class NativeSdrTest(unittest.TestCase):
         self.assertEqual(len(soapy), 1)
         self.assertEqual(soapy[0]["args"], cfg.device.device_args)
 
+    def test_a_hackrf_shows_up_in_the_list_whatever_is_installed_and_defaults_to_the_way_that_works(self) -> None:
+        from unittest import mock
+        from falconsdr import controller as ctl
+        from falconsdr.config import AppConfig
+        serial = "0000000000000000a1b2c3d4e5f60718"
+        soapy_hackrf = {"driver": "hackrf", "serial": serial, "label": "HackRF One #0 " + serial}
+        native_hackrf = {"driver": "hackrf_native", "serial": serial, "label": "HackRF One (libhackrf) SN e5f60718"}
+        fake = type("C", (), {"config": AppConfig(), "_device_entry": staticmethod(ctl.Controller._device_entry)})()
+
+        def listing(devices, usb):
+            with mock.patch.object(ctl, "enumerate_devices", lambda: devices), \
+                    mock.patch.object(ctl.sdr_native, "usb_receivers_seen", lambda: usb):
+                return [e for e in ctl.Controller.devices(fake) if e.get("family") == "hackrf"]
+
+        both = listing([soapy_hackrf, native_hackrf], ["hackrf"])           # SoapySDR with its module, libhackrf too
+        self.assertEqual([e["method"] for e in both], ["soapy", "libhackrf"])   # one receiver, two ways, SoapySDR first
+        self.assertEqual(len({e["group"] for e in both}), 1)
+        only_native = listing([native_hackrf], ["hackrf"])                  # no SoapySDR: libhackrf is the only - so the default
+        self.assertEqual([e["method"] for e in only_native], ["libhackrf"])
+        only_soapy = listing([soapy_hackrf], ["hackrf"])
+        self.assertEqual([e["method"] for e in only_soapy], ["soapy"])
+        nothing = listing([], ["hackrf"])                                   # plugged in, nothing can open it
+        self.assertEqual(len(nothing), 1)
+        self.assertTrue(nothing[0]["missing"])
+        self.assertEqual(nothing[0]["driver"], "hackrf_native")
+        self.assertEqual(listing([], []), [])                               # not plugged in: nothing to show
+
     def test_open_real_backend_picks_the_way(self) -> None:
         from unittest import mock
         from falconsdr import sdr_backend as sb, sdr_native

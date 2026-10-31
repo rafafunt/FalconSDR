@@ -262,7 +262,7 @@ class HackRfBackend(_NativeStreamBackend):
     def __init__(self, device_args: str, sample_rate: float, gain_mode: str, gain_db: float, bias_tee: bool = False):
         lib = hackrf_library()
         if lib is None:
-            raise RuntimeError("libhackrf is not installed (Debian/Ubuntu: sudo apt install libhackrf0)")
+            raise RuntimeError("libhackrf was not found (Debian/Ubuntu: sudo apt install libhackrf0; Windows: hackrf.dll next to the program). Or install SoapySDR with soapysdr-module-hackrf")
         lo, hi = _HACKRF_SAMPLE_RATES_HZ
         if not lo <= sample_rate <= hi:
             raise RuntimeError(f"HackRF captures 2 to 20 MS/s - set the capture width to 2..20 MHz (now {sample_rate / 1e6:.2f})")
@@ -428,7 +428,7 @@ class AirspyBackend(_NativeStreamBackend):
     def __init__(self, device_args: str, sample_rate: float, gain_mode: str, gain_db: float, bias_tee: bool = False):
         lib = airspy_library()
         if lib is None:
-            raise RuntimeError("libairspy is not installed (Debian/Ubuntu: sudo apt install libairspy0)")
+            raise RuntimeError("libairspy was not found (Debian/Ubuntu: sudo apt install libairspy0; Windows: airspy.dll next to the program). Or install SoapySDR with soapysdr-module-airspy")
         super().__init__(sample_rate)
         self._lib = lib
         self.gain_range_db = _AIRSPY_GAIN_RANGE_DB

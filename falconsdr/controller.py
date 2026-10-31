@@ -434,6 +434,15 @@ class Controller:
                     twin["args"] = args
                 else:
                     out.append(entry)
+        # Plugged in (USB ids) but nothing here can open it: still list it, so it is not "missing" - choosing
+        # it fails with the exact thing to install (the Listen page shows the error while RECONNECTING).
+        have = {e.get("family") for e in out}
+        for family, name in (("hackrf", "HackRF"), ("airspy", "Airspy")):
+            if family in sdr_native.usb_receivers_seen() and family not in have:
+                label = f"{name} (plugged in - needs libhackrf/SoapySDR)" if family == "hackrf" else f"{name} (plugged in - needs libairspy/SoapySDR)"
+                entry = self._device_entry(f"{family}_native", {"label": label}, label)
+                entry["missing"] = True
+                out.append(entry)
         if self.config.debug_mode:
             out.append({"driver": "simulated", "args": "", "label": i18n.tr("Simulation (no hardware)"), "group": "simulated", "method": ""})
         return out

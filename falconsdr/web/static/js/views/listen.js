@@ -265,7 +265,7 @@ export function listenView(root) {
   // A receiver that is plugged in (USB ids, Linux) but that nothing here can drive: say why instead of an empty list.
   function missingReceiverNotice(devices) {
     const caps = S.settings.capabilities;
-    const listed = new Set(devices.map((d) => d.family));
+    const listed = new Set(devices.filter((d) => !d.missing).map((d) => d.family));
     const missing = (caps.usb_seen || []).filter((f) => !listed.has(f));
     if (!missing.length) return null;
     const name = missing.map((f) => FAMILY_NAMES[f] || f).join(', ');
