@@ -1286,6 +1286,28 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ControllerStartTest(unittest.TestCase):
+    def test_two_simultaneous_starts_start_one_set_of_engines(self) -> None:
+        from unittest import mock
+        from falconsdr import controller as controller_mod
+        cfg = AppConfig()
+        cfg.recording.output_dir = tempfile.mkdtemp(dir=_HOME)
+        ctl = controller_mod.Controller(cfg)
+        started = []
+        real_connect = ctl._connect
+        def slow_connect(*args):
+            time.sleep(0.2)  # widen the window between "no engines yet" and "engines stored"
+            real_connect(*args)
+        with mock.patch.object(controller_mod.ScannerEngine, "start", lambda self: started.append(self)), \
+                mock.patch.object(ctl, "_connect", slow_connect):
+            threads = [threading.Thread(target=ctl.start) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(len(started), 1)
+
+
 @unittest.skipUnless(hasattr(time, "tzset"), "needs time.tzset (not Windows)")
 class FilenameTimeZoneTest(unittest.TestCase):
     def test_a_filename_is_local_time_of_this_computer_not_of_poland(self) -> None:

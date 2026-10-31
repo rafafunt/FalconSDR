@@ -97,6 +97,7 @@ class Controller:
         self.channels: list[Channel] = storage.load_channels()
         self.blacklist: list[BlacklistEntry] = storage.load_blacklist()
         self._lock = threading.Lock()
+        self._start_lock = threading.Lock()  # two Start requests at once must not start two sets of engines
         # One engine per dongle (config.device + device.extra_devices); the
         # first is the "lead". _audible = index of the one heard live.
         self._engines: list[ScannerEngine] = []
@@ -162,6 +163,10 @@ class Controller:
         return [None, *extra]
 
     def start(self) -> None:
+        with self._start_lock:
+            self._start()
+
+    def _start(self) -> None:
         with self._lock:
             existing = list(self._engines)
         if existing:
