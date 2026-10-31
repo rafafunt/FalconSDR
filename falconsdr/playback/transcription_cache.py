@@ -54,11 +54,12 @@ class TranscriptionCache:
             "transcribed_at": result.transcribed_at,
         }
 
-    def prune(self, valid_keys: set[str]) -> None:
-        """Removes cache entries for files that no longer exist (moved/deleted)."""
+    def prune(self, valid_keys: set[str]) -> int:
+        """Removes cache entries for files that no longer exist (moved/deleted); returns how many."""
         stale = set(self._data) - valid_keys
         for key in stale:
             del self._data[key]
+        return len(stale)
 
     def remove(self, key: str) -> None:
         """Removes a single entry (e.g. right after the user manually deletes a recording)."""

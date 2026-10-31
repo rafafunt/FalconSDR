@@ -1397,6 +1397,51 @@ class WorkerTokenTest(unittest.TestCase):
         self.assertEqual(Api("http://x", "plain").token, "plain")
 
 
+class CacheKeyTest(_LibCase):
+    def _lib_for(self, root: Path) -> Library:
+        cfg = AppConfig()
+        cfg.recording.output_dir = str(root)
+        return Library(cfg, lambda: set(), lambda: {})
+
+    def test_a_star_survives_moving_the_library_folder(self) -> None:
+        import shutil
+        rel = "2026-02-02/2026-02-02_10-00-00_131375.wav"
+        path = _wav(self.root, rel)
+        os.utime(path, (1_700_000_000, 1_700_000_000))
+        self.lib.rescan()
+        self.lib.set_favorite([rel], True)
+        moved = self.tmp / "moved"
+        shutil.copytree(self.root, moved)  # copy2 keeps the mtime
+        lib2 = self._lib_for(moved)
+        lib2.rescan()
+        self.assertTrue(lib2.get(rel).is_favorite)
+
+    def test_old_absolute_keys_are_converted_once(self) -> None:
+        old = f"{self.root}{os.sep}2026-03-03/2026-03-03_10-00-00_131400.wav|100|1700000000"
+        self.lib.favorites._keys.add(old)
+        self.lib.quality._data[old] = {"x": 1}
+        self.lib._migrate_keys()
+        new = "2026-03-03/2026-03-03_10-00-00_131400.wav|100|1700000000"
+        self.assertIn(new, self.lib.favorites._keys)
+        self.assertNotIn(old, self.lib.favorites._keys)
+        self.assertIn(new, self.lib.quality._data)
+
+    def test_entries_of_vanished_files_are_pruned_but_not_after_a_scan_that_lost_everything(self) -> None:
+        keep, gone = "2026-04-04/" + NAME.format(khz=131425), "2026-04-04/" + NAME.format(khz=131450)
+        _wav(self.root, keep)
+        _wav(self.root, gone)
+        self.lib.rescan()
+        self.lib.set_favorite([keep, gone], True)
+        gone_key = self.lib.get(gone).key
+        (self.root / gone).unlink()
+        self.lib.rescan()
+        self.assertNotIn(gone_key, self.lib.favorites._keys)
+        keep_key = self.lib.get(keep).key
+        (self.root / keep).unlink()  # a share that came back empty must not wipe the stars
+        self.lib.rescan()
+        self.assertIn(keep_key, self.lib.favorites._keys)
+
+
 class FavoritesBatchTest(_LibCase):
     def test_starring_many_recordings_saves_the_file_once(self) -> None:
         from unittest import mock

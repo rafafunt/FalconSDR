@@ -48,6 +48,12 @@ class FavoritesStore:
         else:
             self._keys.discard(key)
 
+    def prune(self, valid_keys: set[str]) -> int:
+        """Forgets stars of files that no longer exist; returns how many (caller saves)."""
+        stale = self._keys - valid_keys
+        self._keys -= stale
+        return len(stale)
+
     def remove(self, key: str) -> None:
         """Removes a single entry (e.g. right after the user manually deletes a recording); caller saves."""
         self._keys.discard(key)

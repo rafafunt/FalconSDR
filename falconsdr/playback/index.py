@@ -69,6 +69,7 @@ class Library:
         self.transcripts = TranscriptionCache()
         self.favorites = FavoritesStore()
         self._mirrored: set[str] = self._load_mirrored()
+        self._migrate_keys()
         self._requests: dict[str, Optional[str]] = {}   # relpath -> forced language (None = auto)
         self._leases: dict[str, tuple[str, float]] = {}  # relpath -> (worker, expires monotonic)
         self._failed: set[str] = set()   # errored this session - not re-queued automatically
@@ -109,6 +110,7 @@ class Library:
         # (called from the scan engine) waits for the lock.
         self.transcripts.save()
         self.quality.save()
+        self.favorites.save()
         try:
             atomic_write_text(MIRRORED_FILE, json.dumps(mirrored))
         except OSError as exc:  # like the two caches' own save(): a full disk must not stop the library
@@ -142,6 +144,35 @@ class Library:
     def _rel(self, path: Path) -> str:
         return path.resolve().relative_to(self.root.resolve()).as_posix()
 
+    def _key(self, path: Path, st: os.stat_result) -> str:
+        """Cache key of a file: its path *below the library folder* + size + mtime. An absolute
+        path would orphan every star and transcript the moment the folder moves or is remounted."""
+        try:
+            where = path.relative_to(self.root).as_posix()
+        except ValueError:
+            where = path.as_posix()
+        return f"{where}|{st.st_size}|{int(st.st_mtime)}"
+
+    def _migrate_keys(self) -> None:
+        """One-time: keys written by older versions start with the absolute folder path."""
+        prefix = str(self.root) + os.sep
+        def relative(key: str) -> str:
+            if not key.startswith(prefix):
+                return key
+            return key[len(prefix):].replace(os.sep, "/")
+        changed = False
+        for store in (self.quality._data, self.transcripts._data):
+            for key in [k for k in store if k.startswith(prefix)]:
+                store[relative(key)] = store.pop(key)
+                changed = True
+        old_favorites = {k for k in self.favorites._keys if k.startswith(prefix)}
+        if old_favorites:
+            self.favorites._keys = {relative(k) if k in old_favorites else k for k in self.favorites._keys}
+            changed = True
+        if changed:
+            self._dirty = True
+            self.favorites.save()
+
     def _make(self, path: Path) -> Optional[Recording]:
         parsed = parse_filename(path.name)
         if parsed is None:
@@ -154,7 +185,7 @@ class Library:
             path=path, dt_local=parsed.dt_local, dt_utc=parsed.dt_local.astimezone(UTC_TZ),
             freq_khz=round(snap_airband_hz(parsed.freq_khz * 1000) / 1000), size=st.st_size,
         )
-        rec.key = f"{path}|{st.st_size}|{int(st.st_mtime)}"
+        rec.key = self._key(path, st)
         rec.quality = self.quality.get(rec.key)
         rec.transcript = self.transcripts.get(rec.key)
         if rec.transcript is not None and rec.transcript.status == "error":
@@ -206,7 +237,7 @@ class Library:
                     st = path.stat()
                 except OSError:
                     continue
-                if old is not None and old.key == f"{path}|{st.st_size}|{int(st.st_mtime)}":
+                if old is not None and old.key == self._key(path, st):
                     found[rel] = old
                     continue
                 rec = self._make(path)
@@ -215,8 +246,17 @@ class Library:
             if complete:
                 mtimes[folder] = mtime
         with self._lock:
+            for rel, rec in self._recs.items():  # a file that closed while we were scanning
+                if rel not in known and rel not in found:
+                    found[rel] = rec
             self._recs = found
             self._blobs = {rel: b for rel, b in self._blobs.items() if rel in found}
+            # Forget what belongs to files that are gone (deleted by hand, moved away) - but never
+            # on a scan that lost most of the library (a share half-mounted): that is not "gone".
+            if found and len(found) * 2 >= len(known):
+                valid = {r.key for r in found.values()}
+                dropped = self.quality.prune(valid) + self.transcripts.prune(valid) + self.favorites.prune(valid)
+                self._dirty = self._dirty or dropped > 0
         self._dir_mtimes = mtimes
 
     def add_file(self, path: Path) -> None:
