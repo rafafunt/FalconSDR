@@ -10,8 +10,6 @@ from ..config import DEFAULT_RECORDINGS_DIR
 
 FALCONSDR_DIR = Path(DEFAULT_RECORDINGS_DIR)
 
-# Time zone the scanner writes filename timestamps in.
-POLAND_TZ = ZoneInfo("Europe/Warsaw")
 UTC_TZ = ZoneInfo("UTC")
 
 # Application data directory (quality cache) - separate from the recordings

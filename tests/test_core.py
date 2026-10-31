@@ -1286,6 +1286,27 @@ if __name__ == "__main__":
     unittest.main()
 
 
+@unittest.skipUnless(hasattr(time, "tzset"), "needs time.tzset (not Windows)")
+class FilenameTimeZoneTest(unittest.TestCase):
+    def test_a_filename_is_local_time_of_this_computer_not_of_poland(self) -> None:
+        from falconsdr.playback.organizer import parse_filename
+        old = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "America/New_York"
+            time.tzset()
+            parsed = parse_filename("2026-01-01_10-00-00_131000.wav")
+            self.assertEqual(parsed.dt_local.astimezone(__import__("datetime").timezone.utc).hour, 15)
+            os.environ["TZ"] = "UTC"
+            time.tzset()
+            self.assertEqual(parse_filename("2026-07-01_10-00-00_131000.wav").dt_local.utcoffset().total_seconds(), 0)
+        finally:
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
+
+
 class WorkerTokenTest(unittest.TestCase):
     def test_api_follows_a_password_changed_while_running(self) -> None:
         from falconsdr.worker import Api

@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from falconsdr.playback.config import DATE_DIR_FORMAT, FILENAME_REGEX, POLAND_TZ, FALCONSDR_DIR
+from falconsdr.playback.config import DATE_DIR_FORMAT, FILENAME_REGEX, FALCONSDR_DIR
 from falconsdr.playback.models import MANUAL_FREQ_KHZ
 
 logger = logging.getLogger(__name__)
@@ -35,8 +35,7 @@ def parse_filename(name: str) -> ParsedName | None:
     dt_local = datetime(
         int(year), int(month), int(day), int(hour), int(minute), int(second),
         microsecond=int(micros) if micros else 0,
-        tzinfo=POLAND_TZ,
-    )
+    ).astimezone()  # the recorder names files in this computer's local time (recorder.py)
     # freq is None for a "..._session.wav" name (manual/"Single File" mode -
     # see FILENAME_REGEX's own comment) - no single fixed frequency, so
     # MANUAL_FREQ_KHZ (0, never a real radio frequency) stands in for it.
