@@ -75,6 +75,23 @@ _BIAS_TEE_ARG_KEYS = ("biastee", "bias_tee", "offset_tuning")
 _BIAS_TEE_ON_KEYS = ("biastee", "bias_tee")
 
 
+# SoapyRTLSDR stream args ("bufflen" = bytes per USB transfer, "buffers" = how many; other drivers ignore
+# them). The driver streams through a retune, so what it queued meanwhile - and the transfer it was filling
+# when the tuner moved - is the old frequency. With ~100 ms transfers that was ~250 ms (3.9 blocks) after
+# every hop: the whole dwell read as the previous window, i.e. ghost peaks and slots that linger for
+# nothing. Small transfers keep that to a few ms; many of them keep the ~220 ms of slack a stalled
+# consumer needs (15 small ones overflowed 7 times in 12 s with 150 ms stalls, 64 never).
+_SOAPY_TRANSFER_S = 0.0034
+_SOAPY_SLACK_S = 0.22
+_SOAPY_TIMEOUT = -1   # SOAPY_SDR_TIMEOUT
+
+
+def _soapy_stream_args(sample_rate: float) -> dict[str, str]:
+    bufflen = min(262144, max(4096, round(sample_rate * _SOAPY_TRANSFER_S * 2 / 512) * 512))  # 2 bytes per sample, x512
+    buffers = max(15, round(_SOAPY_SLACK_S * sample_rate * 2 / bufflen))
+    return {"bufflen": str(bufflen), "buffers": str(buffers)}
+
+
 class SoapyBackend(SdrBackend):
     label = "soapysdr"
 
@@ -109,16 +126,10 @@ class SoapyBackend(SdrBackend):
         except Exception:
             pass
         self.set_gain(gain_mode, gain_db)
-        # "bufflen" is a SoapyRTLSDR *stream* arg and limits how much one
-        # readStream() returns. Raw bytes (2 per 8-bit I/Q sample), a multiple
-        # of 512; ~100 ms here, well above a 30 ms chunk.
-        raw_bufflen = (int(sample_rate * 0.1) * 2 // 512 + 1) * 512
         try:
-            self.stream = self.device.setupStream(
-                SOAPY_SDR_RX, SOAPY_SDR_CF32, [0], {"bufflen": str(raw_bufflen)},
-            )
+            self.stream = self.device.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32, [0], _soapy_stream_args(sample_rate))
         except Exception:
-            # A driver that rejects the arg still opens - it's only a latency tweak.
+            # A driver that rejects the args still opens - they only shape latency and slack.
             self.stream = self.device.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
         self.device.activateStream(self.stream)
         try:
@@ -144,6 +155,22 @@ class SoapyBackend(SdrBackend):
         self.device.setFrequency(SOAPY_SDR_RX, 0, freq_hz)
         # Some driver builds re-derive the bias-tee on retune - re-assert it.
         self._apply_bias_tee()
+        self._flush_stream()
+
+    def _flush_stream(self) -> None:
+        """Drops the old frequency's samples (see _SOAPY_TRANSFER_S): everything the driver has queued,
+        then the two transfers that were in flight while the tuner moved."""
+        buf = self._buf[:16384]
+        for _ in range(256):  # bounded: a driver answering errors forever must not hang the retune
+            if self.device.readStream(self.stream, [buf], buf.size, timeoutUs=0).ret in (0, _SOAPY_TIMEOUT):
+                break
+        skip = min(2 * (self.stream_mtu or 8192), int(self.sample_rate * 0.1))
+        deadline = time.monotonic() + 1.0
+        while skip > 0 and time.monotonic() < deadline:
+            n = min(skip, buf.size)
+            sr = self.device.readStream(self.stream, [buf[:n]], n, timeoutUs=200_000)
+            if sr.ret > 0:
+                skip -= sr.ret
 
     def set_gain(self, gain_mode: str, gain_db: float) -> None:
         if gain_mode == "auto":

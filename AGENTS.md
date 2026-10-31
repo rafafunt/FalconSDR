@@ -735,7 +735,11 @@ catalog loads; wrap them in a function called at point of use
     ~12 ms more. `_stop_stream` retries `rtlsdr_cancel_async` - a cancel before the stream runs
     is ignored. `AcquisitionThread._note_read_start` is blind while `backend.streaming` (reads
     leave the queue in 13.6 ms steps); `stream_stats()` / `async_stream(...)` in the health line
-    is the loss figure then. SoapySDR needs none of this (its drivers stream on their own).
+    is the loss figure then. SoapySDR's drivers stream on their own, but a retune still leaves the old
+    frequency in their queue: `SoapyBackend` asks for 3.4 ms transfers x 64 (`_soapy_stream_args`) and
+    flushes after every `set_frequency` (`_flush_stream`) - measured on the receiver: 3.9 -> 0 blocks of the previous
+    window after a hop (they read as ghost peaks and made slots linger), with no overflow under 150 ms
+    stalls (15 small transfers overflowed 7 times in 12 s, ~100 ms ones had a 100 ms read stall).
     A stream that ends before delivering a byte (the library refuses) makes `read_raw` fall back to
     blocking reads for good (`_give_up_streaming`) - raising would make the engine reconnect and
     fail again forever. Transfers are ~13.6 ms of IQ whatever the sample rate

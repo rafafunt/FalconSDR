@@ -1124,6 +1124,12 @@ class BiasTeeTest(unittest.TestCase):
             def writeSetting(self, k, v):
                 writes.append((k, v))
 
+            def readStream(self, *_a, **_k):
+                return SimpleNamespace(ret=-1)  # nothing queued (the retune flush)
+
+            def getStreamMTU(self, _stream):
+                return 8192
+
             def __getattr__(self, name):  # every other Soapy call: accept and do nothing
                 return lambda *a, **k: SimpleNamespace(minimum=lambda: 0.0, maximum=lambda: 49.6)
 
@@ -1147,6 +1153,53 @@ class BiasTeeTest(unittest.TestCase):
             self.assertEqual(writes, [("biastee", "true"), ("bias_tee", "true")])
             b.close()
             self.assertEqual(writes[-3:], [("biastee", "false"), ("bias_tee", "false"), ("offset_tuning", "false")])
+
+
+class SoapyRetuneTest(unittest.TestCase):
+    def test_stream_args_keep_small_transfers_and_about_220_ms_of_slack(self) -> None:
+        from falconsdr.sdr_backend import _soapy_stream_args
+        self.assertEqual(_soapy_stream_args(2_400_000), {"bufflen": "16384", "buffers": "64"})
+        low = _soapy_stream_args(250_000)
+        self.assertEqual(int(low["bufflen"]) % 512, 0)
+        self.assertGreaterEqual(int(low["bufflen"]), 4096)
+        self.assertGreaterEqual(int(low["buffers"]), 15)
+
+    def test_a_retune_drops_what_the_driver_queued_and_two_transfers_more(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+        from falconsdr import sdr_backend
+        state = {"queued": 5, "blocking_samples": 0, "calls": 0}
+
+        class FakeDevice:
+            def __init__(self, _args):
+                pass
+
+            def readStream(self, _stream, bufs, n, timeoutUs=0):
+                state["calls"] += 1
+                if timeoutUs == 0:  # a poll: data if some is queued, else a timeout
+                    if state["queued"] > 0:
+                        state["queued"] -= 1
+                        return SimpleNamespace(ret=n)
+                    return SimpleNamespace(ret=-1)
+                state["blocking_samples"] += n  # a real-time read: fresh data
+                return SimpleNamespace(ret=n)
+
+            def getStreamMTU(self, _stream):
+                return 8192
+
+            def __getattr__(self, name):
+                return lambda *a, **k: SimpleNamespace(minimum=lambda: 0.0, maximum=lambda: 49.6)
+
+        with mock.patch.object(sdr_backend, "HAVE_SOAPY", True), \
+                mock.patch.object(sdr_backend, "SoapySDR", SimpleNamespace(Device=FakeDevice), create=True), \
+                mock.patch.object(sdr_backend, "SOAPY_SDR_RX", 0, create=True), \
+                mock.patch.object(sdr_backend, "SOAPY_SDR_CF32", "CF32", create=True), \
+                mock.patch.object(sdr_backend, "SdrIoDiagLogger", lambda: None), \
+                mock.patch.object(sdr_backend.SoapyBackend, "_wait_for_reopen_cooldown", staticmethod(lambda: None)):
+            b = sdr_backend.SoapyBackend("rtlsdr", "", 2_400_000, "manual", 30.0)
+            b.set_frequency(121_500_000)
+        self.assertEqual(state["queued"], 0)                  # the backlog is gone
+        self.assertEqual(state["blocking_samples"], 16384)    # and two transfers (2 x MTU) of what was in flight
 
 
 class MultiDongleTest(unittest.TestCase):
