@@ -1156,6 +1156,39 @@ class BiasTeeTest(unittest.TestCase):
 
 
 class SoapyRetuneTest(unittest.TestCase):
+    def test_an_rtlsdr_gain_snaps_to_the_nearest_tuner_step_like_the_native_backend(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+        from falconsdr import sdr_backend
+        sent: list[float] = []
+
+        class FakeDevice:
+            def __init__(self, _args):
+                pass
+
+            def setGain(self, _d, _c, value):
+                sent.append(value)
+
+            def readStream(self, *_a, **_k):
+                return SimpleNamespace(ret=-1)
+
+            def __getattr__(self, name):
+                return lambda *a, **k: SimpleNamespace(minimum=lambda: 0.0, maximum=lambda: 49.6)
+
+        with mock.patch.object(sdr_backend, "HAVE_SOAPY", True), \
+                mock.patch.object(sdr_backend, "SoapySDR", SimpleNamespace(Device=FakeDevice), create=True), \
+                mock.patch.object(sdr_backend, "SOAPY_SDR_RX", 0, create=True), \
+                mock.patch.object(sdr_backend, "SOAPY_SDR_CF32", "CF32", create=True), \
+                mock.patch.object(sdr_backend, "SdrIoDiagLogger", lambda: None), \
+                mock.patch.object(sdr_backend.SoapyBackend, "_wait_for_reopen_cooldown", staticmethod(lambda: None)):
+            b = sdr_backend.SoapyBackend("rtlsdr", "", 2_400_000, "manual", 30.4)
+            for requested in (31.0, 31.4, 0.2, 60.0):
+                b.set_gain("manual", requested)
+            self.assertEqual(sent, [29.7, 29.7, 32.8, 0.0, 49.6])
+            sent.clear()
+            other = sdr_backend.SoapyBackend("hackrf", "", 2_400_000, "manual", 30.4)
+            self.assertEqual(sent, [30.4])  # no table for other hardware: passed on as is
+
     def test_stream_args_keep_small_transfers_and_about_220_ms_of_slack(self) -> None:
         from falconsdr.sdr_backend import _soapy_stream_args
         self.assertEqual(_soapy_stream_args(2_400_000), {"bufflen": "16384", "buffers": "64"})

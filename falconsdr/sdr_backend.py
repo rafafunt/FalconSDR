@@ -85,6 +85,15 @@ _SOAPY_TRANSFER_S = 0.0034
 _SOAPY_SLACK_S = 0.22
 _SOAPY_TIMEOUT = -1   # SOAPY_SDR_TIMEOUT
 
+# The R820T/R828D tuner's gain steps (librtlsdr's table). pyrtlsdr snaps a requested gain to the nearest
+# one, SoapyRTLSDR hands it over as is and librtlsdr rounds *up*: 30.4 dB was 29.7 on one path and 32.8
+# on the other - about 1.2 dB more noise in every channel, against the same dBFS trigger. SoapyBackend
+# snaps the same way. shortcut: SoapyRTLSDR reports neither tuner nor steps, so the table is applied to
+# an "rtlsdr" device with a 49.6 dB maximum; other tuners (E4000...) pass through - read the steps from
+# the device if Soapy ever exposes them.
+_R82XX_GAINS_DB = (0.0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.7, 22.9, 25.4,
+                   28.0, 29.7, 32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4, 43.9, 44.5, 48.0, 49.6)
+
 
 def _soapy_stream_args(sample_rate: float) -> dict[str, str]:
     bufflen = min(262144, max(4096, round(sample_rate * _SOAPY_TRANSFER_S * 2 / 512) * 512))  # 2 bytes per sample, x512
@@ -120,9 +129,12 @@ class SoapyBackend(SdrBackend):
         self._apply_bias_tee()
         self.sample_rate = sample_rate
         self.device.setSampleRate(SOAPY_SDR_RX, 0, sample_rate)
+        self._gain_steps: tuple[float, ...] | None = None
         try:
             rng = self.device.getGainRange(SOAPY_SDR_RX, 0)
             self.gain_range_db = (rng.minimum(), rng.maximum())
+            if args["driver"] == "rtlsdr" and abs(rng.maximum() - _R82XX_GAINS_DB[-1]) < 0.05:
+                self._gain_steps = _R82XX_GAINS_DB
         except Exception:
             pass
         self.set_gain(gain_mode, gain_db)
@@ -183,6 +195,8 @@ class SoapyBackend(SdrBackend):
             self.device.setGainMode(SOAPY_SDR_RX, 0, False)
         except Exception:
             pass
+        if self._gain_steps:
+            gain_db = min(self._gain_steps, key=lambda step: abs(step - gain_db))
         self.device.setGain(SOAPY_SDR_RX, 0, gain_db)
 
     def read(self, num_samples: int) -> np.ndarray:
