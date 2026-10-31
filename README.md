@@ -288,7 +288,9 @@ python3 -m venv --system-site-packages .venv       # lets the venv see python3-s
 .venv/bin/python main.py                          # Windows: .venv\Scripts\python main.py
 ```
 
-The interface opens at `http://127.0.0.1:8765`.
+The interface opens at `http://127.0.0.1:8765`. To update: `git pull`, run the
+`pip install` line again and restart (or run the one-liner with
+`--from-source` again from the folder above `FalconSDR/`).
 
 - **Linux:** for RTL-SDR access without root, install your distribution's
   `rtl-sdr` package (udev rules) or copy `packaging/linux-deb/60-rtl-sdr.rules`
@@ -310,7 +312,11 @@ The interface opens at `http://127.0.0.1:8765`.
 Quit FalconSDR, then install the newer `.deb`, `.rpm` or Windows installer over
 the old one - settings, channels, favorites and recordings are kept. Start it
 again afterwards (a copy left running through the update shows errors). An
-AppImage is replaced by downloading the new one. Remove with `sudo apt remove
+AppImage is replaced by downloading the new one. A source install is updated
+by running the `--from-source` line again from the folder that holds
+`FalconSDR/` (it pulls the checkout and refreshes the venv), or by `git pull`
+in the checkout and the `pip install` line; the headless receiver, by its own
+line again (see below). Remove with `sudo apt remove
 falconsdr`, `sudo dnf remove falconsdr` or Windows *Settings → Apps*; your
 recordings and settings stay on disk (see
 [Where things are stored](#where-things-are-stored)).

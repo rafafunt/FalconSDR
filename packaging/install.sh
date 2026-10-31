@@ -13,7 +13,10 @@
 #     hardware: HackRF/LimeSDR/Airspy/... - not in the packaged builds;
 #     also the fallback for unsupported CPU architectures, musl-based
 #     distros such as Alpine (the AppImage needs glibc and won't run
-#     there), and releases that don't publish the matching asset yet)
+#     there), and releases that don't publish the matching asset yet).
+#     Run it again - from the folder that holds FalconSDR/ - to update: it
+#     pulls the checkout, resets the venv's settings and reinstalls the
+#     requirements; restart FalconSDR afterwards.
 #   - `--server` -> headless receiver: a checkout in /opt/falconsdr-src,
 #     packaging/remote-server/install.sh, systemd service started (Debian,
 #     Ubuntu, Raspberry Pi OS). The latest release unless FALCONSDR_REF=
@@ -174,16 +177,28 @@ EOF
 install_from_source() {
   say "Installing FalconSDR from source (SoapySDR-capable path)..."
   need python3; need git
-  if [ ! -d FalconSDR ]; then git clone "https://github.com/$REPO.git"; fi
-  cd FalconSDR
+  # Started from inside a checkout (the folder the program runs from): use it, never clone a copy into it.
+  if [ -f main.py ] && [ -d falconsdr ] && [ -d .git ]; then :
+  else
+    if [ ! -d FalconSDR ]; then git clone "https://github.com/$REPO.git"; fi
+    cd FalconSDR
+  fi
+  # A checkout that already exists is updated, not just reinstalled: this is also the update command.
+  if [ -d .git ]; then
+    if git pull --ff-only -q 2>/dev/null; then :
+    else say "Could not update the checkout (local changes, or not on a branch) - keeping the code as it is."; fi
+  fi
+  version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' falconsdr/__init__.py)
   # --system-site-packages: SoapySDR's Python module comes from the distribution (python3-soapysdr) and a
   # plain venv cannot see it - HackRF & co were silently not found (issue #9).
   python3 -m venv --system-site-packages .venv
   .venv/bin/pip install -r requirements.txt
   cat <<EOF
 
-Done. Start it with:
+FalconSDR $version is ready. Start it with:
   .venv/bin/python main.py
+(Already running? Stop it first, then start it again to use this version. To update later,
+run this same command again from the folder that contains FalconSDR/.)
 (RTL-SDR udev rule: packaging/linux-deb/60-rtl-sdr.rules - see the README.
 SoapySDR hardware: sudo apt install python3-soapysdr soapysdr-module-<device>, then restart.
 HackRF/Airspy also work without SoapySDR (experimental): libhackrf0 / libairspy0.)
