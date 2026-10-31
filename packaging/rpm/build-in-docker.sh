@@ -6,8 +6,8 @@
 # supported Fedora; ./build.sh alone is fine for your own machine.
 set -eu
 cd "$(dirname "$0")/../.."
-docker run --rm -v "$PWD":/src -w /src fedora:41 sh -c "
-    dnf install -y -q python3 rpm-build binutils systemd-rpm-macros >/dev/null
-    dnf install -y -q hackrf-libs airspy-libs >/dev/null 2>&1 || echo 'hackrf-libs/airspy-libs not available - building without them'
+# hackrf / airspyone_host = libhackrf / libairspy (bundled, AGENTS.md gotcha 55); -e: a missing one fails the build.
+docker run --rm -e FALCONSDR_REQUIRE_NATIVE_LIBS=1 -v "$PWD":/src -w /src fedora:41 sh -ec "
+    dnf install -y -q python3 rpm-build binutils systemd-rpm-macros hackrf airspyone_host >/dev/null
     packaging/rpm/build.sh
     chown -R $(id -u):$(id -g) packaging/rpm"

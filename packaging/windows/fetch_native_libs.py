@@ -41,28 +41,9 @@ PACKAGES = [
 ]
 
 # The conda package of libhackrf carries only the repository's GPL text (for the tools), not the library's own
-# notice - BSD-3-Clause needs it with a binary, so it is quoted here from hackrf.h / hackrf.c (checked 2026-10-31).
-_HACKRF_NOTICE = """Copyright (c) 2012-2026 Great Scott Gadgets <info@greatscottgadgets.com>
-Copyright (c) 2012, Jared Boone <jared@sharebrained.com>
-Copyright (c) 2013, Benjamin Vernoux <titanmkd@gmail.com>
-
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
-
-    Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
-    Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-    Neither the name of Great Scott Gadgets nor the names of its contributors may be used to endorse or promote products derived from this software
-    without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
-THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
-IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
-HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-"""
+# notice - BSD-3-Clause needs it with a binary: packaging/licenses/libhackrf-BSD-3-Clause.txt, which the Linux
+# builds append to their licence files as well (packaging/linux-native-libs.sh).
+_HACKRF_NOTICE = (Path(__file__).resolve().parent.parent / "licenses" / "libhackrf-BSD-3-Clause.txt").read_text(encoding="utf-8")
 
 _NOTE = (
     "The conda-forge packages list GPL-2.0-or-later for their command-line tools (hackrf_transfer, airspy_rx...), which\n"
@@ -97,7 +78,7 @@ def fetch(out: Path) -> None:
     licences = ["Native receiver libraries in this build\n" + "=" * 78 + "\n\n" + _NOTE]
     for name, sha256, dll, what, licence, source in PACKAGES:
         found = False
-        texts = [f"--- libhackrf notice (hackrf.h)\n{_HACKRF_NOTICE}"] if dll == "hackrf-0.dll" else []
+        texts = [f"--- libhackrf notice\n{_HACKRF_NOTICE}"] if dll == "hackrf-0.dll" else []
         for member, content in _package_files(_download(name, sha256)):
             if member == f"Library/bin/{dll}":
                 (out / dll).write_bytes(content)

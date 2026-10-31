@@ -9,8 +9,9 @@ set -eu
 cd "$(dirname "$0")/../.."
 # -e: a failed step must fail the build, not end in a "successful" chown.
 # Python fetches appimagetool: bullseye's curl update is gone from the mirrors.
-docker run --rm -v "$PWD":/src -w /src python:3.12-slim-bullseye sh -ec "
-    apt-get update -qq && apt-get install -y -qq binutils file >/dev/null
+# libhackrf0/libairspy0 are bundled (AGENTS.md gotcha 55); FALCONSDR_REQUIRE_NATIVE_LIBS=1: a missing one fails the build.
+docker run --rm -e FALCONSDR_REQUIRE_NATIVE_LIBS=1 -v "$PWD":/src -w /src python:3.12-slim-bullseye sh -ec "
+    apt-get update -qq && apt-get install -y -qq binutils file libhackrf0 libairspy0 >/dev/null
     python3 -c 'import urllib.request, sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
       https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
       /usr/local/bin/appimagetool
