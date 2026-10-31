@@ -50,5 +50,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $env:FALCONSDR_LIBHACKRF = (Resolve-Path native\hackrf-0.dll).Path
           $env:FALCONSDR_LIBAIRSPY = (Resolve-Path native\airspy.dll).Path
-          python -c "from falconsdr import sdr_native as n; assert n.hackrf_library() is not None, 'libhackrf did not load'; assert n.airspy_library() is not None, 'libairspy did not load'; print('devices:', n.native_enumerate())"
+          python -c "from falconsdr import sdr_native as n; assert n.hackrf_library() is not None, 'libhackrf did not load'; assert n.airspy_library() is not None, 'libairspy did not load'; print('devices:', n.enumerate_here()['devices'])"
           if ($LASTEXITCODE -ne 0) { exit 1 }
