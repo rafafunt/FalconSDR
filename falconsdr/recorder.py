@@ -86,6 +86,18 @@ class Recorder:
             return None
         return path
 
+    def abort(self) -> None:
+        """Gives up on the current file after a write error (disk full, drive
+        gone): a WAV whose header can't be finished is unplayable anyway, and
+        deleting it frees space. Later write_audio() calls are no-ops."""
+        path = self._current_path
+        self._close_file()
+        if path is not None:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
     # -- internals ---------------------------------------------------
     def _single_file_path(self) -> Path:
         # Straight into the date folder - organize() would move a loose file
@@ -141,6 +153,9 @@ class Recorder:
             return
         # Unflushed silence is the trailing tail - dropped.
         self._pending_silence = []
-        self._wav.close()
-        self._wav = None
+        wav, self._wav = self._wav, None
         self._current_path = None
+        try:
+            wav.close()  # patches the header: can fail on a full disk
+        except OSError:
+            pass

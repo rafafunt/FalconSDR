@@ -1256,3 +1256,49 @@ class HttpTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecorderTest(unittest.TestCase):
+    def _recorder(self):
+        from falconsdr.config import RecordingConfig
+        from falconsdr.recorder import Recorder
+        root = Path(tempfile.mkdtemp(dir=_HOME))
+        rec = Recorder(RecordingConfig(enabled=True, output_dir=str(root)), 12500)
+        rec.start_session()
+        rec.begin_transmission(131_000_000)
+        return rec
+
+    def test_trailing_silence_is_dropped_but_a_mid_gap_is_kept(self) -> None:
+        import numpy as np
+        rec = self._recorder()
+        tone, quiet = np.full(100, 0.5, dtype=np.float32), np.zeros(100, dtype=np.float32)
+        rec.write_audio(tone)
+        rec.write_audio(quiet, real=False)
+        rec.write_audio(tone)
+        rec.write_audio(quiet, real=False)
+        path = rec.end_transmission()
+        import wave
+        with wave.open(str(path)) as w:
+            self.assertEqual(w.getnframes(), 300)
+
+    def test_abort_after_a_write_error_deletes_the_file_and_later_writes_are_noops(self) -> None:
+        import numpy as np
+        rec = self._recorder()
+        path = Path(rec.current_path)
+        rec.write_audio(np.full(100, 0.5, dtype=np.float32))
+        rec.abort()
+        self.assertFalse(path.exists())
+        rec.write_audio(np.full(100, 0.5, dtype=np.float32))  # must not raise
+        self.assertIsNone(rec.end_transmission())
+
+    def test_a_failing_header_patch_on_close_does_not_raise(self) -> None:
+        import numpy as np
+        rec = self._recorder()
+        rec.write_audio(np.full(100, 0.5, dtype=np.float32))
+
+        class Broken:
+            def close(self) -> None:
+                raise OSError(28, "No space left on device")
+        rec._wav = Broken()
+        rec.end_transmission()  # a full disk is not an exception for the caller
+

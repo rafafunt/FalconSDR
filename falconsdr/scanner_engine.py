@@ -13,6 +13,7 @@ import datetime as dt
 import gc
 import math
 import os
+import shutil
 import sys
 import threading
 import time
@@ -44,6 +45,10 @@ from .sdr_backend import AcquisitionThread, create_backend, open_real_backend
 from .wav_metadata import append_metadata_chunk
 
 AUDIO_RATE = 12500
+# Below this much free space on the recordings disk nothing new is recorded
+# (live listening goes on): a full disk must never take the scanner down.
+_MIN_FREE_BYTES = 1 << 30
+_DISK_LOG_EVERY_S = 60.0
 CHUNK_SECONDS = 0.03
 MAX_VFO_CHANNELS = 20_000
 
@@ -347,6 +352,8 @@ class _Slot:
         # when the add-on is missing, then it plays as NFM.
         self.dsd: digital_voice.DsdDecoder | None = None
         self.announced_call: tuple[str, str] = ("", "")
+        # A write failed (or the disk is nearly full): listened to, not recorded.
+        self.recording_failed = False
 
 
 class Signal:
@@ -522,6 +529,8 @@ class ScannerEngine(threading.Thread):
 
         self._iq_recorder: IQRecorder | None = None
         self._iq_recorder_lock = threading.Lock()
+        self._iq_disk_checked = 0.0
+        self._disk_logged = 0.0  # monotonic time of the last disk-trouble log line
 
         # Parallel per-slot demod/noise reduction/writes (gotcha 12) - measured
         # 3-4.6x faster, resample_poly/FFT release the GIL.
@@ -576,7 +585,10 @@ class ScannerEngine(threading.Thread):
                 return
             manual_config = RecordingConfig(enabled=True, output_dir=self.config.recording.output_dir)
             recorder = Recorder(manual_config, AUDIO_RATE, single_file=True)
-            recorder.start_session()
+            try:
+                recorder.start_session()
+            except OSError as exc:
+                raise RuntimeError(tr("Can't start recording: {error}").format(error=exc)) from exc
             self._manual_recorder = recorder
             self._manual_recording_first_freq = None
         self.signals.manual_recording_changed.emit(True, recorder.current_path)
@@ -620,7 +632,11 @@ class ScannerEngine(threading.Thread):
             if recorder is not None and freq_hz is not None and self._manual_recording_first_freq is None:
                 self._manual_recording_first_freq = freq_hz
         if recorder is not None:
-            recorder.write_audio(audio, real=True)
+            try:
+                recorder.write_audio(audio, real=True)
+            except OSError as exc:
+                self._log_disk_trouble(tr("Manual recording stopped: {error}").format(error=exc))
+                self.stop_manual_recording()
 
     # -- raw wideband IQ recording (gotcha 15) ---------------------------
     # Fed only by SCANNING reads, never by TUNING (the tuner is settling).
@@ -628,7 +644,10 @@ class ScannerEngine(threading.Thread):
         with self._iq_recorder_lock:
             if self._iq_recorder is not None:
                 return
-            recorder = IQRecorder(self.config.recording.output_dir, self.config.device.sample_rate_hz)
+            try:
+                recorder = IQRecorder(self.config.recording.output_dir, self.config.device.sample_rate_hz)
+            except OSError as exc:
+                raise RuntimeError(tr("Can't start recording: {error}").format(error=exc)) from exc
             self._iq_recorder = recorder
         self.signals.raw_iq_recording_changed.emit(True, recorder.current_path)
 
@@ -638,7 +657,10 @@ class ScannerEngine(threading.Thread):
             if recorder is None:
                 return
             self._iq_recorder = None
-        recorder.close()
+        try:
+            recorder.close()
+        except OSError:
+            pass  # disk full: the data file stays, the .sigmf-meta may be missing
         self.signals.raw_iq_recording_changed.emit(False, "")
 
     def is_recording_raw_iq(self) -> bool:
@@ -648,8 +670,43 @@ class ScannerEngine(threading.Thread):
     def _feed_raw_iq(self, iq: np.ndarray, center_freq_hz: float) -> None:
         with self._iq_recorder_lock:
             recorder = self._iq_recorder
-        if recorder is not None:
+        if recorder is None:
+            return
+        now = time.monotonic()
+        try:
+            # Uncompressed IQ is ~19 MB/s: stop before it eats the last gigabyte.
+            if now - self._iq_disk_checked > 5.0:
+                self._iq_disk_checked = now
+                if self._disk_low():
+                    raise OSError(tr("disk almost full"))
             recorder.write(iq, center_freq_hz)
+        except OSError as exc:
+            self._log_disk_trouble(tr("Raw IQ recording stopped: {error}").format(error=exc))
+            self.stop_raw_iq_recording()
+
+    def _disk_low(self) -> bool:
+        path = Path(self.config.recording.output_dir)
+        while not path.exists() and path.parent != path:
+            path = path.parent
+        try:
+            return shutil.disk_usage(path).free < _MIN_FREE_BYTES
+        except OSError:
+            return False
+
+    def _log_disk_trouble(self, message: str) -> None:
+        """At most once a minute - a full disk would otherwise log on every tick."""
+        now = time.monotonic()
+        if now - self._disk_logged >= _DISK_LOG_EVERY_S:
+            self._disk_logged = now
+            self.signals.log.emit(message)
+
+    def _recording_failed(self, slot: _Slot, error: object) -> None:
+        """The slot goes on being listened to, but its file is given up."""
+        slot.recording_failed = True
+        slot.recorder.abort()
+        self._log_disk_trouble(
+            tr("{freq:.4f} MHz: can't write the recording ({error}) - not recording").format(freq=slot.freq_hz / 1e6, error=error)
+        )
 
     def update_channels(self, channels: list[Channel]) -> None:
         self.channels = channels
@@ -738,10 +795,18 @@ class ScannerEngine(threading.Thread):
                 traceback.print_exc()
                 error = str(exc) if isinstance(exc, (RuntimeError, OSError)) else f"{type(exc).__name__}: {exc}"
                 self.signals.log.emit(tr("SDR connection lost: {error}").format(error=error))
+                # Nothing in here may raise: this handler is what keeps the engine alive.
                 for freq_hz in list(self._slots.keys()):
-                    self._close_slot(freq_hz, reason="connection_lost")
+                    try:
+                        self._close_slot(freq_hz, reason="connection_lost")
+                    except Exception:  # noqa: BLE001
+                        traceback.print_exc()
+                        self._slots.pop(freq_hz, None)
                 if self._backend is not None:
-                    self._backend.close()
+                    try:
+                        self._backend.close()
+                    except Exception:  # noqa: BLE001
+                        traceback.print_exc()
                     self._backend = None
                 # Once real hardware has been proven present, never silently
                 # drop back to fake data on reconnect - keep insisting on the
@@ -1709,8 +1774,15 @@ class ScannerEngine(threading.Thread):
         }
 
         if self.config.recording.enabled:
-            recorder.start_session()
-            recorder.begin_transmission(freq_hz)
+            if self._disk_low():
+                slot.recording_failed = True
+                self._log_disk_trouble(tr("Less than 1 GB free on the recordings disk - not recording"))
+            else:
+                try:
+                    recorder.start_session()
+                    recorder.begin_transmission(freq_hz)
+                except OSError as exc:
+                    self._recording_failed(slot, exc)
         self._emit_recording_changed()
         self._emit_freqs()
 
@@ -1729,7 +1801,7 @@ class ScannerEngine(threading.Thread):
         if self.config.recording.enabled:
             finished_path = slot.recorder.end_transmission()
             slot.recorder.stop_session()
-            if finished_path is None and reason == "linger" and not (slot.dsd and slot.dsd.encrypted):
+            if finished_path is None and reason == "linger" and not slot.recording_failed and not (slot.dsd and slot.dsd.encrypted):
                 # Recorder dropped it - say so, a silent loss looks like a bug.
                 self.signals.log.emit(
                     (tr("{freq:.4f} MHz: no digital voice decoded - recording discarded") if slot.dsd
@@ -1850,9 +1922,12 @@ class ScannerEngine(threading.Thread):
         if slot.freq_hz == self._primary_freq:
             # Manual recording follows the primary slot regardless of mute.
             self._feed_manual_recording(mono, freq_hz=slot.freq_hz)
-        if self.config.recording.enabled:
+        if self.config.recording.enabled and not slot.recording_failed:
             # Digital: only decoded voice makes a recording worth keeping (not an encrypted call's silence).
-            slot.recorder.write_audio(mono, real=slot.dsd is None or bool(mono.any()))
+            try:
+                slot.recorder.write_audio(mono, real=slot.dsd is None or bool(mono.any()))
+            except OSError as exc:
+                self._recording_failed(slot, exc)
 
     def _apply_noise_reduction(self, slot: _Slot, audio):
         enabled, strength = self._effective_noise_reduction(slot.window)
