@@ -86,7 +86,8 @@ receiver at [falconsdr.com](https://falconsdr.com).
 | Receiver | How |
 |---|---|
 | RTL-SDR (incl. RTL-SDR Blog V3/V4) | built in on Linux, Windows and macOS |
-| HackRF, Airspy, SDRplay, LimeSDR, USRP, … | through [SoapySDR](https://github.com/pothosware/SoapySDR) with the matching module installed |
+| HackRF, Airspy | through [SoapySDR](https://github.com/pothosware/SoapySDR) with the matching module installed (Linux, source install), or - experimental, **untested on real hardware** - directly through `libhackrf` / `libairspy` (*SDR device → Access method*; the library must be installed, FalconSDR does not ship it). Not in the Windows/.deb/.rpm packages yet |
+| SDRplay, LimeSDR, USRP, … | through SoapySDR with the matching module installed (Linux, source install); **not tested** |
 
 Developed and tested with an **RTL-SDR Blog V4** on Linux and Windows 11.
 Other receivers and macOS (experimental builds) should work but haven't been
@@ -253,7 +254,7 @@ Requires Python 3.10+.
 ```
 git clone https://github.com/rafafunt/FalconSDR.git
 cd FalconSDR
-python3 -m venv .venv
+python3 -m venv --system-site-packages .venv       # lets the venv see python3-soapysdr (Linux)
 .venv/bin/pip install -r requirements.txt        # Windows: .venv\Scripts\pip ...
 .venv/bin/python main.py                          # Windows: .venv\Scripts\python main.py
 ```
@@ -263,7 +264,11 @@ The interface opens at `http://127.0.0.1:8765`.
 - **Linux:** for RTL-SDR access without root, install your distribution's
   `rtl-sdr` package (udev rules) or copy `packaging/linux-deb/60-rtl-sdr.rules`
   to `/etc/udev/rules.d/`. For SoapySDR devices install `python3-soapysdr` and
-  the device's `soapysdr-module-*`.
+  the device's `soapysdr-module-*` (e.g. `sudo apt install python3-soapysdr
+  soapysdr-module-hackrf`); the venv must be created with
+  `--system-site-packages`, as above, or it cannot see them. HackRF and Airspy
+  can also be opened without SoapySDR (experimental, *SDR device → Access
+  method*): `sudo apt install libhackrf0 libairspy0`.
 - **Windows:** the dongle needs the WinUSB driver - see *RTL-SDR driver*
   above.
 - **MP3 recordings** use the ffmpeg that comes with the `imageio-ffmpeg`

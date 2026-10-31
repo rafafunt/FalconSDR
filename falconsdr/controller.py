@@ -28,8 +28,9 @@ from .config import DEFAULT_RECORDINGS_DIR, AppConfig, ScheduleEntry, VfoRangeCo
 from .models import BlacklistEntry, Channel, Modulation, snap_airband_hz
 from .playback.index import Library
 from .playback.transcription_availability import is_transcription_installed
+from . import sdr_native
 from .scanner_engine import AUDIO_RATE, ScannerEngine, SharedFrequencies
-from .sdr_backend import enumerate_devices
+from .sdr_backend import HAVE_SOAPY, device_family, device_method, enumerate_devices
 
 # Bounds each listener's backlog so a slow or stalled browser can never make
 # the engine wait (old chunks are dropped, not queued forever).
@@ -405,21 +406,43 @@ class Controller:
                 "transcription_installed": is_transcription_installed(),
                 "digital": digital_voice.is_digital_installed(),
                 "platform": sys.platform,
+                "soapy": HAVE_SOAPY,
+                "native": {"hackrf": sdr_native.hackrf_library() is not None, "airspy": sdr_native.airspy_library() is not None},
+                "usb_seen": sdr_native.usb_receivers_seen(),
                 "autostart": autostart.is_enabled() if autostart.supported() else None,
             },
         }
 
     def devices(self) -> list[dict]:
-        out = [{"driver": "auto", "args": "", "label": i18n.tr("Automatic (first detected)")}]
+        """Every way to open a receiver, one entry each: the UI groups them by ``group`` (one physical
+        receiver) and offers ``method`` as "how to access it". The first entry of a group is its default."""
+        out = [{"driver": "auto", "args": "", "label": i18n.tr("Automatic (first detected)"), "group": "auto", "method": ""}]
         for dev in enumerate_devices():
-            out.append({
-                "driver": dev.get("driver", "auto"),
-                "args": ",".join(f"{k}={v}" for k, v in dev.items()),
-                "label": dev.get("label") or dev.get("driver", "device"),
-            })
+            out.append(self._device_entry(dev.get("driver", "auto"), {k: str(v) for k, v in dev.items()},
+                                          dev.get("label") or dev.get("driver", "device")))
+        # A busy receiver (the scanner has it open) can drop out of a fresh listing - the saved choice must not.
+        saved = [(self.config.device.driver, self.config.device.device_args)] + \
+                [(x.get("driver", ""), x.get("device_args", "")) for x in self.config.device.extra_devices]
+        for driver, args in saved:
+            if driver and driver not in ("auto", "simulated") and not any(e["driver"] == driver and e["args"] == args for e in out):
+                fields_ = dict(kv.split("=", 1) for kv in args.split(",") if "=" in kv)
+                out.append(self._device_entry(driver, fields_, fields_.get("label") or driver, args))
         if self.config.debug_mode:
-            out.append({"driver": "simulated", "args": "", "label": i18n.tr("Simulation (no hardware)")})
+            out.append({"driver": "simulated", "args": "", "label": i18n.tr("Simulation (no hardware)"), "group": "simulated", "method": ""})
         return out
+
+    @staticmethod
+    def _device_entry(driver: str, dev: dict, label: str, args: str | None = None) -> dict:
+        family = device_family(driver)
+        ident = (dev.get("serial") or "").lower().lstrip("0") or (f"#{dev['index']}" if "index" in dev else label)
+        entry = {
+            "driver": driver,
+            "args": args if args is not None else ",".join(f"{k}={v}" for k, v in dev.items()),
+            "label": label, "family": family, "method": device_method(driver), "group": f"{family}:{ident}",
+        }
+        if family == "airspy":
+            entry["default_rate_hz"] = 2_500_000  # the R2's slow mode; a Mini needs 3 MHz - the error says so
+        return entry
 
     # -- edits -------------------------------------------------------------------
     def patch_config(self, patch: dict) -> None:

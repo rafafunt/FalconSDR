@@ -176,14 +176,17 @@ install_from_source() {
   need python3; need git
   if [ ! -d FalconSDR ]; then git clone "https://github.com/$REPO.git"; fi
   cd FalconSDR
-  python3 -m venv .venv
+  # --system-site-packages: SoapySDR's Python module comes from the distribution (python3-soapysdr) and a
+  # plain venv cannot see it - HackRF & co were silently not found (issue #9).
+  python3 -m venv --system-site-packages .venv
   .venv/bin/pip install -r requirements.txt
   cat <<EOF
 
 Done. Start it with:
   .venv/bin/python main.py
 (RTL-SDR udev rule: packaging/linux-deb/60-rtl-sdr.rules - see the README.
-SoapySDR hardware: install python3-soapysdr + soapysdr-module-<device>.)
+SoapySDR hardware: sudo apt install python3-soapysdr soapysdr-module-<device>, then restart.
+HackRF/Airspy also work without SoapySDR (experimental): libhackrf0 / libairspy0.)
 EOF
 }
 

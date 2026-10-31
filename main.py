@@ -10,6 +10,7 @@
   --start                   start scanning right away
   --no-browser              don't open the browser
   --self-test               check this install/build has everything it needs, then exit
+  --probe-sdr [DRIVER]      measure the receiver (gain steps, stale samples after a retune, losses), then exit
 """
 import os
 import sys
@@ -86,6 +87,8 @@ def main() -> int:
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--version", action="version", version=f"FalconSDR {__version__}")
     parser.add_argument("--self-test", action="store_true", help="check this install has everything it needs, then exit")
+    parser.add_argument("--probe-sdr", nargs="?", const="", default=None, metavar="DRIVER",
+                        help="measure the receiver with the scanner stopped, print a report, then exit")
     args = parser.parse_args()
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -100,6 +103,9 @@ def main() -> int:
     if args.self_test:
         from falconsdr import selftest
         return selftest.run()
+    if args.probe_sdr is not None:
+        from falconsdr import sdr_probe
+        return sdr_probe.run(args.probe_sdr)
     faulthandler.enable(file=(CONFIG_DIR / "crash.log").open("a", encoding="utf-8", buffering=1), all_threads=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 

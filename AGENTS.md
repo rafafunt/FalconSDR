@@ -214,9 +214,13 @@ catalog loads; wrap them in a function called at point of use
     librtlsdr/`pyrtlsdrlib` — SoapySDR has no pip wheel there). Matches
     `SoapyBackend`'s contract: bias-tee as configured (off by default - gotcha 47), raises instead of short-reads,
     same CF32 scaling `(i - 127.4) / 128` (so a threshold means the same
-    dBFS cross-platform). `open_real_backend()` picks Soapy vs native based
-    on driver string/what's installed; `"auto"` tries Soapy then native,
-    only simulates if both fail. **`SoapyBackend.__init__` must turn `driver
+    dBFS cross-platform). `open_real_backend()` picks Soapy vs native from
+    the driver string/what's installed; `"auto"` = an RTL-SDR, librtlsdr first (the
+    path measured most), SoapySDR if that fails; only simulates (debug) if both fail.
+    The device list has one entry per way to open a receiver (`enumerate_devices()`,
+    `Controller._device_entry`: `group`, `method`); the UI shows the receiver and, when
+    there are several, an "Access method" choice. A way the user chose that fails raises,
+    never switches silently (the Listen page names the other way while RECONNECTING). **`SoapyBackend.__init__` must turn `driver
     in ("", "auto")` into an explicit `{"driver": "rtlsdr"}` args filter,
     never pass `{}` to `SoapySDR.Device()`** — a real, measured bug, not just
     the theoretical "could match the `audio` driver" risk (gotcha 4) it was
@@ -232,6 +236,7 @@ catalog loads; wrap them in a function called at point of use
 17. **Other SoapySDR hardware (HackRF/LimeSDR/Airspy/SDRplay/USRP) already
     works via `SoapyBackend`** with no code changes once the matching
     `soapysdr-module-*` is installed — nothing in it is RTL-SDR-specific.
+    HackRF and Airspy can also be opened natively (gotcha 55, experimental).
     The UI's capture-width field accepts `0.25–61.44` MHz (not a hardware limit,
     just a generous bound — raise it if a real device needs more). Windows/
     macOS stay RTL-SDR-only for the zero-install path; conda-forge SoapySDR
@@ -745,6 +750,25 @@ catalog loads; wrap them in a function called at point of use
     fail again forever. Transfers are ~13.6 ms of IQ whatever the sample rate
     (`_async_buffer_bytes`), and `close()` leaves the device open if the stream thread will not
     stop (freeing it under a running `rtlsdr_read_async` can crash). Not tried on Windows.
+
+55. **HackRF/Airspy natively (`sdr_native.py`, drivers `hackrf_native`/`airspy_native`) is experimental and has never
+    run against a real board** - the author owns an RTL-SDR only. SoapySDR stays the default for both; the native
+    path is the way out when SoapySDR is missing/fails (`open_real_backend`: `hackrf`/`airspy` without SoapySDR
+    open natively) and a way to compare. `libhackrf`/`libairspy` are **found, never bundled** (system package, a DLL
+    next to the program, `FALCONSDR_LIBHACKRF`/`FALCONSDR_LIBAIRSPY`). Licences checked from the sources on
+    2026-10-31: both libraries BSD-3-Clause (GPL-compatible; shipping them later means shipping that text -
+    `packaging/collect_licenses.py`), libusb LGPL-2.1 (dynamic only). Do not copy SoapyHackRF (MIT) / hackrf-tools
+    (GPL-2.0) code; the gain split is our own. What the code assumes and `main.py --probe-sdr` must confirm on a
+    real board: how many blocks after a retune still hold the old frequency (`CallbackStream.begin_retune` drops
+    those that arrive within one transfer + a margin of the retune - the same bug SoapySDR had, gotcha 54), the
+    gain steps (HackRF: LNA 8 dB x VGA 2 dB split, amp above 102 dB - `hackrf_gain_split`; Airspy: the
+    sensitivity table's 0-21 index passed as dB, `auto` = the board's own AGC), the DC spike at the window centre
+    (the channelizer has no notch: a persistent spike would look like a signal in the middle channel), and losses.
+    Airspy only captures the rates it lists (2.5/10 MS/s R2, 3/6/10 Mini - not 2.4): `AirspyBackend` raises with the
+    list, the UI sets 2.5 MHz when it is picked. HackRF needs 2-20 MS/s. Antenna power (HackRF `antenna_enable`,
+    Airspy `rf_bias`) follows gotcha 47: off at open, on as the last step, off in `close()`. `hackrf_init()` is
+    never undone (`hackrf_exit()` fails with a device open). The callback must never raise into C. A busy receiver
+    can drop out of a fresh listing, so `Controller.devices()` keeps the saved choice.
 
 ## Testing without touching the user's real config/recordings
 

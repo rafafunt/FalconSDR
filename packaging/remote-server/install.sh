@@ -34,7 +34,7 @@ done
 mkdir -p "$DEST"
 rsync -a --delete --exclude .venv --exclude .git --exclude '__pycache__' \
     --exclude 'packaging/linux-deb/build*' --exclude 'packaging/linux-deb/out' "$SRC/" "$DEST/"
-[ -x "$DEST/.venv/bin/python" ] || python3 -m venv "$DEST/.venv"
+[ -x "$DEST/.venv/bin/python" ] || python3 -m venv --system-site-packages "$DEST/.venv"
 "$DEST/.venv/bin/pip" install --quiet --upgrade -r "$DEST/requirements.txt"
 
 install -D -m 644 "$SRC/packaging/linux-deb/60-rtl-sdr.rules" /etc/udev/rules.d/60-rtl-sdr.rules

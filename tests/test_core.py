@@ -1235,6 +1235,188 @@ class SoapyRetuneTest(unittest.TestCase):
         self.assertEqual(state["blocking_samples"], 16384)    # and two transfers (2 x MTU) of what was in flight
 
 
+class NativeSdrTest(unittest.TestCase):
+    """HackRF/Airspy through a stand-in for the vendor library - what the code does with the API, not
+    what a real board does (nobody has run it on one yet: `main.py --probe-sdr` is for that)."""
+
+    def test_stream_drops_what_was_queued_before_a_retune_and_one_transfer_more(self) -> None:
+        from falconsdr.sdr_native import CallbackStream
+        st = CallbackStream(bytes_per_sample=2, sample_rate=1_000_000)     # a 1000-sample chunk lasts 1 ms
+        chunk = bytes(2000)
+        st.push(chunk, now=10.000)
+        self.assertEqual(st.received_samples, 1000)
+        st.begin_retune(at=10.002)                                          # also forgets what was queued; settled at 10.005
+        st.push(chunk, now=10.003)    # made before the retune landed
+        st.push(chunk, now=10.006)    # made 10.005-10.006: after it, but the margin chunk (the callback may be late)
+        st.push(chunk, now=10.008)    # made 10.007-10.008: clean even if the callback ran 1 ms late
+        self.assertEqual(st.stale_samples, 2000)
+        self.assertEqual(st.received_samples, 2000)
+        self.assertEqual(len(st.read(1000)), 2000)
+
+    def test_stream_hands_out_exact_sizes_across_chunks_and_raises_when_starved(self) -> None:
+        from falconsdr.sdr_native import CallbackStream
+        st = CallbackStream(bytes_per_sample=2, sample_rate=1_000_000, timeout_s=0.05)
+        st.push(bytes(range(200)), now=1.0)
+        st.push(bytes(range(200, 256)) + bytes(144), now=1.1)
+        first, second = st.read(60), st.read(40)
+        self.assertEqual(first.tobytes() + second.tobytes(), (bytes(range(256)) + bytes(144))[:200])
+        with self.assertRaises(RuntimeError):
+            st.read(1000)                                                   # 100 samples are left of 1000
+        st.fail("boom")
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            st.read(1)
+
+    def test_stream_counts_an_overflow_as_a_loss(self) -> None:
+        from falconsdr.sdr_native import CallbackStream
+        st = CallbackStream(bytes_per_sample=2, sample_rate=1000, max_buffer_s=1.0)     # holds 1 s = 2000 bytes
+        for i in range(5):
+            st.push(bytes(1000), now=10.0 + i)
+        lost, received = st.stats()
+        self.assertEqual((lost, received), (1.5, 2.5))              # 5 chunks of 0.5 s, room for 2
+
+    def test_hackrf_gain_uses_the_real_steps_and_adds_up(self) -> None:
+        from falconsdr.sdr_native import hackrf_gain_split
+        for gain in range(0, 117):
+            lna, vga, amp = hackrf_gain_split(gain)
+            self.assertEqual(lna % 8, 0)
+            self.assertEqual(vga % 2, 0)
+            self.assertTrue(0 <= lna <= 40 and 0 <= vga <= 62)
+            self.assertLessEqual(abs(lna + vga + (14 if amp else 0) - gain), 1, gain)
+            self.assertEqual(amp, gain > 102)
+        self.assertEqual(hackrf_gain_split(-5), (0, 0, False))
+        self.assertEqual(hackrf_gain_split(500), (40, 62, True))
+
+    def _fake_hackrf(self):
+        import ctypes
+        calls: list[tuple] = []
+
+        class Lib:
+            cb = None
+
+            def __getattr__(self, name):
+                def call(*args):
+                    calls.append((name, *[getattr(a, "value", a) for a in args[1:]]))
+                    if name in ("hackrf_open", "hackrf_open_by_serial"):
+                        args[-1]._obj.value = 1234
+                    if name == "hackrf_start_rx":
+                        Lib.cb = args[1]
+                    return 0
+                return call
+        return Lib(), calls, ctypes
+
+    def test_hackrf_backend_opens_with_the_antenna_off_streams_and_closes_it_off_again(self) -> None:
+        from unittest import mock
+        import numpy as np
+        from falconsdr import sdr_native
+        lib, calls, ctypes = self._fake_hackrf()
+        with mock.patch.object(sdr_native, "hackrf_library", lambda: lib), \
+                mock.patch.object(sdr_native.SoapyBackend, "_wait_for_reopen_cooldown", staticmethod(lambda: None)), \
+                mock.patch.object(sdr_native.SoapyBackend, "_record_close_time", staticmethod(lambda: None)):
+            b = sdr_native.HackRfBackend("serial=0abc", 2_400_000, "manual", 30.0)
+            names = [c[0] for c in calls]
+            self.assertEqual(names[0], "hackrf_open_by_serial")
+            self.assertEqual(calls[names.index("hackrf_set_antenna_enable")][1], 0)   # never powered unless asked for
+            self.assertIn(("hackrf_set_lna_gain", 8), calls)
+            self.assertIn(("hackrf_set_vga_gain", 22), calls)
+            raw = bytes([127, 0, 128, 64]) * 10_000                                # +127, 0, -128, +64
+            tr = sdr_native._HackrfTransfer(buffer_length=len(raw), valid_length=len(raw))
+            buf = (ctypes.c_uint8 * len(raw)).from_buffer_copy(raw)
+            tr.buffer = ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint8))
+            self.assertEqual(sdr_native.HackRfBackend._on_data(b, ctypes.pointer(tr)), 0)
+            iq = b.read(20_000)
+            self.assertEqual(iq.dtype, np.complex64)
+            self.assertAlmostEqual(float(iq[0].real), 127 / 128)
+            self.assertAlmostEqual(float(iq[1].real), -1.0)
+            b.close()
+            self.assertEqual(calls[-1][0], "hackrf_close")
+            self.assertIn(("hackrf_set_antenna_enable", 0), calls[-4:])
+            with self.assertRaisesRegex(RuntimeError, "2 to 20"):
+                sdr_native.HackRfBackend("", 1_000_000, "manual", 30.0)
+
+    def test_airspy_backend_refuses_a_rate_the_board_does_not_have_and_passes_float_iq_through(self) -> None:
+        from unittest import mock
+        import numpy as np
+        from falconsdr import sdr_native
+        calls: list[tuple] = []
+
+        class Lib:
+            def __getattr__(self, name):
+                def call(*args):
+                    calls.append((name, *[getattr(a, "value", a) for a in args[1:]]))
+                    if name in ("airspy_open", "airspy_open_sn"):
+                        args[0]._obj.value = 99
+                    if name == "airspy_get_samplerates" and args[2] == 0:
+                        args[1]._obj.value = 2
+                    if name == "airspy_get_samplerates" and args[2] == 2:
+                        args[1][0], args[1][1] = 10_000_000, 2_500_000
+                    return 0
+                return call
+        with mock.patch.object(sdr_native, "airspy_library", lambda: Lib()), \
+                mock.patch.object(sdr_native.SoapyBackend, "_wait_for_reopen_cooldown", staticmethod(lambda: None)), \
+                mock.patch.object(sdr_native.SoapyBackend, "_record_close_time", staticmethod(lambda: None)):
+            with self.assertRaisesRegex(RuntimeError, "2.5, 10 MS/s|10, 2.5 MS/s"):
+                sdr_native.AirspyBackend("", 2_400_000, "manual", 12.0)
+            self.assertNotIn("airspy_start_rx", [c[0] for c in calls])             # nothing streamed, device closed
+            self.assertEqual(calls[-1][0], "airspy_close")
+            calls.clear()
+            b = sdr_native.AirspyBackend("", 2_500_000, "manual", 30.0)
+            self.assertIn(("airspy_set_sensitivity_gain", 21), calls)               # clamped to the table's end
+            samples = np.array([0.5 + 0.25j, -1 + 0j], dtype=np.complex64)
+            b._stream.push(samples.tobytes() * 5, now=time.monotonic())
+            got = b.read(10)
+            self.assertEqual(got.dtype, np.complex64)
+            self.assertEqual(complex(got[0]), 0.5 + 0.25j)
+            b.close()
+
+    def test_every_way_to_open_a_receiver_is_grouped_and_rtl_defaults_to_librtlsdr(self) -> None:
+        from falconsdr.controller import Controller
+        native = Controller._device_entry("rtlsdr_native", {"serial": "00000001"}, "RTL-SDR (librtlsdr) SN 00000001")
+        soapy = Controller._device_entry("rtlsdr", {"serial": "00000001", "label": "Generic RTL2832U OEM :: 00000001"}, "Generic RTL2832U OEM :: 00000001")
+        self.assertEqual(native["group"], soapy["group"])
+        self.assertEqual((native["method"], soapy["method"]), ("librtlsdr", "soapy"))
+        hack = Controller._device_entry("hackrf_native", {"serial": "0000000000000000a1b2c3d4e5f60718"}, "HackRF One (libhackrf) SN e5f60718")
+        hack_soapy = Controller._device_entry("hackrf", {"serial": "0000000000000000A1B2C3D4E5F60718"}, "HackRF One #0 0000000000000000a1b2c3d4e5f60718")
+        self.assertEqual(hack["group"], hack_soapy["group"])
+        self.assertNotEqual(hack["group"], native["group"])
+        self.assertEqual(Controller._device_entry("airspy", {}, "Airspy")["default_rate_hz"], 2_500_000)
+
+    def test_open_real_backend_picks_the_way(self) -> None:
+        from unittest import mock
+        from falconsdr import sdr_backend as sb, sdr_native
+        made: list[str] = []
+
+        def fake(name):
+            def make(*_a, **_k):
+                made.append(name)
+                return name
+            return make
+        args = ("", "", 2_400_000, "manual", 30.0)
+        patches = [mock.patch.object(sb, "RtlSdrBackend", fake("rtl")), mock.patch.object(sb, "SoapyBackend", fake("soapy")),
+                   mock.patch.object(sdr_native, "HackRfBackend", fake("hackrf")), mock.patch.object(sdr_native, "AirspyBackend", fake("airspy"))]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        for driver, soapy, native_rtl, expect in [
+            ("auto", True, True, "rtl"), ("auto", True, False, "soapy"), ("auto", False, True, "rtl"),
+            ("rtlsdr", True, True, "soapy"), ("rtlsdr", False, True, "rtl"), ("rtlsdr_native", True, True, "rtl"),
+            ("hackrf", True, True, "soapy"), ("hackrf", False, True, "hackrf"), ("hackrf_native", True, True, "hackrf"),
+            ("airspy", False, True, "airspy"), ("airspy_native", True, True, "airspy"),
+        ]:
+            made.clear()
+            with mock.patch.object(sb, "HAVE_SOAPY", soapy), mock.patch.object(sb, "HAVE_RTLSDR_NATIVE", native_rtl):
+                sb.open_real_backend(driver, *args[1:])
+            self.assertEqual(made, [expect], (driver, soapy, native_rtl))
+        # "auto": librtlsdr first, SoapySDR when it will not open
+        made.clear()
+
+        def boom(*_a, **_k):
+            raise RuntimeError("busy")
+        with mock.patch.object(sb, "HAVE_SOAPY", True), mock.patch.object(sb, "HAVE_RTLSDR_NATIVE", True), \
+                mock.patch.object(sb, "RtlSdrBackend", boom):
+            sb.open_real_backend("auto", *args[1:])
+        self.assertEqual(made, ["soapy"])
+
+
 class MultiDongleTest(unittest.TestCase):
     def test_scan_plan_is_split_without_overlap_and_lanes_keep_their_weight(self) -> None:
         from falconsdr.channelizer import plan_windows

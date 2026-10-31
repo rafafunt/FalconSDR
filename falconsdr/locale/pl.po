@@ -2709,3 +2709,30 @@ msgstr "Wysłano do {name} - czekam, aż odbierze polecenie (kilka sekund)…"
 
 msgid "Downloading the model {model}: {size} so far - the first transcription waits for it. This can take several minutes."
 msgstr "Pobieranie modelu {model}: dotąd {size} - pierwsza transkrypcja na to czeka. To może potrwać kilka minut."
+
+msgid "SoapySDR"
+msgstr "SoapySDR"
+
+msgid "librtlsdr"
+msgstr "librtlsdr"
+
+msgid "libhackrf (experimental)"
+msgstr "libhackrf (eksperymentalne)"
+
+msgid "libairspy (experimental)"
+msgstr "libairspy (eksperymentalne)"
+
+msgid "Access method"
+msgstr "Sposób dostępu"
+
+msgid "How FalconSDR talks to this receiver. The first choice is the default; the other one is the fallback when it will not open, and a way to compare."
+msgstr "Jak FalconSDR komunikuje się z tym odbiornikiem. Pierwszy wybór jest domyślny; drugi to rozwiązanie awaryjne, gdy tamten się nie otwiera, i sposób na porównanie."
+
+msgid "{name} is plugged in but not listed. Install its SoapySDR module (e.g. soapysdr-module-hackrf), allow USB access (udev rules or the plugdev group), then reload this page."
+msgstr "{name} jest podłączony, ale nie ma go na liście. Zainstaluj jego moduł SoapySDR (np. soapysdr-module-hackrf), zezwól na dostęp do USB (reguły udev lub grupa plugdev) i odśwież stronę."
+
+msgid "{name} is plugged in, but SoapySDR is not available to FalconSDR (the Python module python3-soapysdr is not visible to it). Install python3-soapysdr and soapysdr-module-<your receiver>, then reinstall with install.sh --from-source, or install libhackrf0 / libairspy0 for the experimental native access."
+msgstr "{name} jest podłączony, ale FalconSDR nie ma dostępu do SoapySDR (moduł Pythona python3-soapysdr jest dla niego niewidoczny). Zainstaluj python3-soapysdr i soapysdr-module-<twój odbiornik>, a potem zainstaluj ponownie przez install.sh --from-source, albo zainstaluj libhackrf0 / libairspy0, by użyć eksperymentalnego dostępu natywnego."
+
+msgid "The receiver did not open with {method}. Stop the scanner and try {other} under SDR device → Access method."
+msgstr "Odbiornik nie otworzył się przez {method}. Zatrzymaj skaner i spróbuj {other} w sekcji Urządzenie SDR → Sposób dostępu."

@@ -583,38 +583,64 @@ def _read_serial(lib, index: int) -> str:
     return bytes(b for b in buf if b).decode("ascii", "replace")
 
 
+#: Per hardware family: the driver values that open it - the one tried first, then the other ways.
+#: RTL-SDR is native first (librtlsdr, the path used and measured most); HackRF/Airspy go through
+#: SoapySDR first and have the experimental native backend (sdr_native.py) as the alternative.
+_NATIVE_ONLY_FAMILIES = {"hackrf_native": "hackrf", "airspy_native": "airspy"}
+
+
+def device_family(driver: str) -> str:
+    """"rtl", "hackrf", "airspy" or the driver name itself - one physical receiver can be listed once per
+    way of opening it, and the UI groups those by family + serial."""
+    if driver in ("rtlsdr", RTLSDR_NATIVE_DRIVER):
+        return "rtl"
+    return _NATIVE_ONLY_FAMILIES.get(driver, driver)
+
+
+def device_method(driver: str) -> str:
+    return {RTLSDR_NATIVE_DRIVER: "librtlsdr", "hackrf_native": "libhackrf", "airspy_native": "libairspy"}.get(driver, "soapy")
+
+
 def enumerate_devices() -> list[dict]:
-    """Every real device to offer. Native librtlsdr devices only when
-    SoapySDR shows no rtlsdr one, or the same dongle is listed twice."""
-    devices = SoapyBackend.enumerate_devices()
-    if not any(d.get("driver") == "rtlsdr" for d in devices):
-        devices += RtlSdrBackend.enumerate_devices()
-    return devices
+    """Every real device to offer, one entry per way to open it: RTL-SDR natively (librtlsdr) and through
+    SoapySDR, HackRF/Airspy through SoapySDR and - experimental - through libhackrf/libairspy. The first
+    entry of a receiver is the default."""
+    from .sdr_native import native_enumerate
+    soapy = SoapyBackend.enumerate_devices()
+    native = native_enumerate()
+    rtl_native = RtlSdrBackend.enumerate_devices()
+    return rtl_native + [d for d in soapy if d.get("driver") == "rtlsdr"] \
+        + [d for d in soapy if d.get("driver") not in ("rtlsdr",)] + native
 
 
 def open_real_backend(driver: str, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
                       bias_tee: bool = False, async_read: bool = True) -> SdrBackend:
     """Opens real hardware only - never falls back to SimulatedBackend.
 
-    "auto" tries SoapySDR first (Linux's native path), then librtlsdr
-    directly. A config saved on Linux with SoapySDR's "rtlsdr" driver also
-    opens through librtlsdr on a machine without SoapySDR, so the same
-    config.json works across platforms."""
+    "auto" means an RTL-SDR: librtlsdr first, SoapySDR if that fails or isn't installed. A config saved
+    with SoapySDR's "rtlsdr" driver opens through librtlsdr on a machine without SoapySDR, and likewise
+    "hackrf"/"airspy" through libhackrf/libairspy, so the same config.json works across machines. An
+    explicitly chosen way that fails raises (gotcha 8): the UI offers the other way, nothing switches
+    silently."""
+    if driver in _NATIVE_ONLY_FAMILIES or (driver in ("hackrf", "airspy") and not HAVE_SOAPY):
+        from . import sdr_native
+        cls = sdr_native.HackRfBackend if driver.startswith("hackrf") else sdr_native.AirspyBackend
+        return cls(device_args, sample_rate, gain_mode, gain_db, bias_tee)
     if driver == RTLSDR_NATIVE_DRIVER or (driver == "rtlsdr" and not HAVE_SOAPY):
         return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
     if driver and driver != "auto":
         return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
-    if not HAVE_SOAPY and HAVE_RTLSDR_NATIVE:
-        return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
-    try:
+    if not HAVE_RTLSDR_NATIVE:
         return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
-    except Exception as soapy_exc:
-        if not HAVE_RTLSDR_NATIVE:
+    try:
+        return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
+    except Exception as native_exc:
+        if not HAVE_SOAPY:
             raise
         try:
-            return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
+            return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
         except Exception:
-            raise soapy_exc
+            raise native_exc
 
 
 class SimulatedBackend(SdrBackend):

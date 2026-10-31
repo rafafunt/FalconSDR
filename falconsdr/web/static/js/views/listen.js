@@ -8,6 +8,14 @@ import { askCustomRange, askSingleFrequency, bandEditor, bandRange, clearOverrid
 // Windows needs the WinUSB driver on the dongle (SDR++, SDR# and friends need the
 // same one, so most users already have it) - without it the device never opens.
 const isWindows = () => S.settings.capabilities.platform === 'win32';
+
+// How a receiver is opened (config.device.driver): the label is chosen here, at the point of use, so it follows the language.
+const methodLabel = (m) => ({
+  soapy: t('SoapySDR'), librtlsdr: t('librtlsdr'),
+  libhackrf: t('libhackrf (experimental)'), libairspy: t('libairspy (experimental)'),
+}[m] || m);
+const stripMethod = (label) => label.replace(/ \((librtlsdr|libhackrf|libairspy)\)/, '');
+const FAMILY_NAMES = { hackrf: 'HackRF', airspy: 'Airspy', airspyhf: 'Airspy HF+' };
 export function driverHelp() {
   return modal(t('RTL-SDR driver for Windows'), h('div.col', { style: { gap: '10px' } },
     h('p', t('Windows only talks to an RTL-SDR dongle through the WinUSB driver, installed once with the free Zadig tool. If SDR++, SDR# or another SDR program already works with this dongle, the driver is already there.')),
@@ -50,6 +58,7 @@ export function listenView(root) {
   const driverHint = h('div.row.wrap.hidden', { style: { gap: '8px', color: '#ff9f0a' } },
     t('Is the dongle connected? On Windows it needs the WinUSB driver.'),
     h('button.small', { onclick: () => driverHelp() }, t('How to install it')));
+  const methodHint = h('div.row.wrap.hidden', { style: { gap: '8px', color: '#ff9f0a' } });
   const meterFill = h('div.fill');
   const meterMark = h('div.mark');
   const levelText = h('span.mono');
@@ -76,6 +85,7 @@ export function listenView(root) {
     dongleRow,
     h('div', freqEl, nameEl),
     driverHint,
+    methodHint,
     rangeNotice,
     others,
     h('div.col', { style: { gap: '4px' } },
@@ -154,6 +164,10 @@ export function listenView(root) {
     if (!live) return;
     stateChip.className = 'chip state ' + stateClass(live);
     driverHint.classList.toggle('hidden', !(live.state === 'RECONNECTING' && isWindows()));
+    const here = S.settings.devices.find((d) => d.driver === S.settings.config.device.driver && d.args === S.settings.config.device.device_args);
+    const other = here && live.state === 'RECONNECTING' ? S.settings.devices.find((d) => d.group === here.group && d !== here) : null;
+    methodHint.classList.toggle('hidden', !other);
+    if (other) methodHint.textContent = t('The receiver did not open with {method}. Stop the scanner and try {other} under SDR device → Access method.', { method: methodLabel(here.method), other: methodLabel(other.method) });
     renderRangeNotice(live);
     mount(stateChip, h('span.dot'), live.stopping ? t('Stopping…') : stateLabel(live.state));
     const [primary, ...rest] = live.frequencies || [];
@@ -248,17 +262,43 @@ export function listenView(root) {
   }
 
   // ---------------------------------------------------------- device
+  // A receiver that is plugged in (USB ids, Linux) but that nothing here can drive: say why instead of an empty list.
+  function missingReceiverNotice(devices) {
+    const caps = S.settings.capabilities;
+    const listed = new Set(devices.map((d) => d.family));
+    const missing = (caps.usb_seen || []).filter((f) => !listed.has(f));
+    if (!missing.length) return null;
+    const name = missing.map((f) => FAMILY_NAMES[f] || f).join(', ');
+    return h('span.small', { style: { color: '#ff9f0a' } }, caps.soapy
+      ? t('{name} is plugged in but not listed. Install its SoapySDR module (e.g. soapysdr-module-hackrf), allow USB access (udev rules or the plugdev group), then reload this page.', { name })
+      : t('{name} is plugged in, but SoapySDR is not available to FalconSDR (the Python module python3-soapysdr is not visible to it). Install python3-soapysdr and soapysdr-module-<your receiver>, then reinstall with install.sh --from-source, or install libhackrf0 / libairspy0 for the experimental native access.', { name }));
+  }
+
   let deviceInputs = [];
   function renderDevice() {
     const c = cfg();
     const devices = S.settings.devices;
     const current = devices.findIndex((d) => d.driver === c.device.driver && d.args === c.device.device_args);
-    const sel = select(devices.map((d, i) => [i, d.label]), current >= 0 ? current : 0, (v) => {
-      const d = devices[+v];
-      // Another dongle may sit on another antenna - its Bias-T starts off again.
-      patchConfig({ device: { driver: d.driver, device_args: d.args, bias_tee: false } });
-      renderDevice();
+    const here = devices[current >= 0 ? current : 0];
+    // One entry per physical receiver, and - when there is more than one way to open it - a second choice.
+    const groups = [];
+    devices.forEach((d) => {
+      let g = groups.find((x) => x.group === d.group);
+      if (!g) groups.push(g = { group: d.group, entries: [] });
+      g.entries.push(d);
     });
+    const myGroup = groups.find((g) => g.group === here.group);
+    const patchDevice = (d) => {
+      // Another dongle may sit on another antenna - its Bias-T starts off again.
+      const patch = { driver: d.driver, device_args: d.args, bias_tee: false };
+      if (d.default_rate_hz && ![2.5e6, 3e6, 6e6, 10e6].includes(c.device.sample_rate_hz)) patch.sample_rate_hz = d.default_rate_hz;
+      patchConfig({ device: patch });
+      renderDevice();
+    };
+    const sel = select(groups.map((g, i) => [i, stripMethod(g.entries[0].label)]), groups.indexOf(myGroup), (v) => patchDevice(groups[+v].entries[0]));
+    const methods = myGroup.entries.length > 1
+      ? select(myGroup.entries.map((d, i) => [i, methodLabel(d.method)]), myGroup.entries.indexOf(here), (v) => patchDevice(myGroup.entries[+v]))
+      : null;
     const bias = biasTeeToggle(c.device.bias_tee, (v) => { patchConfig({ device: { bias_tee: v } }); renderDevice(); });
     const bw = h('input', { type: 'number', min: 0.25, max: 61.44, step: 0.01, value: (c.device.sample_rate_hz / 1e6).toFixed(2), onchange: (e) => patchConfig({ device: { sample_rate_hz: +e.target.value * 1e6 } }) });
     // Experimental: more dongles scanning together - each takes its share of the capture windows.
@@ -271,7 +311,7 @@ export function listenView(root) {
     const extraInputs = [];
     const extraRows = extra.map((x, i) => {
       const at = choices.findIndex((d) => d.driver === x.driver && d.args === x.device_args);
-      const s = select([...(at < 0 ? [[-1, t('(not connected)')]] : []), ...choices.map((d, j) => [j, d.label])], at, (v) => {
+      const s = select([...(at < 0 ? [[-1, t('(not connected)')]] : []), ...choices.map((d, j) => [j, `${stripMethod(d.label)} - ${methodLabel(d.method)}`])], at, (v) => {
         const d = choices[+v];
         setExtra(extra.map((e, j) => (j === i ? { driver: d.driver, device_args: d.args } : e)));
       });
@@ -289,12 +329,15 @@ export function listenView(root) {
         setExtra([...extra, { driver: d.driver, device_args: d.args }]);
       },
     }, icon('plus'), t('Scan with another dongle (experimental)'));
-    deviceInputs = [sel, bw, bias.querySelector('input'), add, ...extraInputs];
+    deviceInputs = [sel, ...(methods ? [methods] : []), bw, bias.querySelector('input'), add, ...extraInputs];
     mount(device,
       h('div.card-head', h('h2', t('SDR device'))),
       h('div.fields',
         h('label.field', t('Device'), sel),
+        methods ? h('label.field', t('Access method'), methods) : null,
         h('label.field', t('Capture width (MHz)'), bw)),
+      methods ? h('span.faint.small', t('How FalconSDR talks to this receiver. The first choice is the default; the other one is the fallback when it will not open, and a way to compare.')) : null,
+      missingReceiverNotice(devices),
       bias,
       rangeFields(c.device.range_start_hz || 0, c.device.range_stop_hz || 0, (p) => { patchConfig({ device: p }); renderDevice(); }),
       ...extraRows,
