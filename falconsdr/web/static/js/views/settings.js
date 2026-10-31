@@ -24,6 +24,42 @@ function setting(title, desc, control) {
   return h('div.setting', h('div', h('b', title), desc ? h('p', desc) : null), control);
 }
 
+// Whisper models offered by name (faster-whisper downloads one on first use; sizes are approximate).
+// Functions, not constants: t() must run after the catalog is loaded. The last choice, "Other", takes any
+// Hugging Face repo or local folder.
+const OTHER_MODEL = '__other__';
+function mainModels() {
+  return [
+    ['large-v3', `large-v3 - ${t('best quality, all languages')} (≈3 GB)`],
+    ['large-v3-turbo', `large-v3-turbo - ${t('almost as good, several times faster')} (≈1.6 GB)`],
+    ['medium', `medium - ${t('lighter, all languages')} (≈1.5 GB)`],
+    ['small', `small - ${t('for weak computers')} (≈0.5 GB)`],
+    ['base', `base - ${t('rough, very fast')} (≈0.15 GB)`],
+  ];
+}
+function englishModels() {
+  return [
+    ['', t('None - the main model also does English')],
+    ['jacktol/whisper-medium.en-fine-tuned-for-ATC-faster-whisper', `jacktol medium.en - ${t('English, tuned for air traffic control')} (≈1.5 GB)`],
+    ['distil-large-v3', `distil-large-v3 - ${t('English only, fast and accurate')} (≈1.5 GB)`],
+    ['medium.en', `medium.en - ${t('English only')} (≈1.5 GB)`],
+    ['small.en', `small.en - ${t('English only, for weak computers')} (≈0.5 GB)`],
+  ];
+}
+
+// A list of ready-made models plus "Other…" with a free text field for anything else.
+function modelPicker(models, value, onpick) {
+  const known = models.some(([v]) => v === value);
+  const input = h('input', {
+    value: known ? '' : value, placeholder: t('Hugging Face repo (user/name) or a folder'),
+    style: { width: 'min(420px, 100%)', display: known ? 'none' : '' }, onchange: (e) => onpick(e.target.value.trim()),
+  });
+  const pick = select([...models, [OTHER_MODEL, t('Other…')]], known ? value : OTHER_MODEL, (v) => {
+    if (v === OTHER_MODEL) { input.style.display = ''; input.focus(); } else { input.style.display = 'none'; onpick(v); }
+  });
+  return h('div.col', { style: { gap: '6px', alignItems: 'stretch' } }, pick, input);
+}
+
 function numberInput(value, onchange, attrs = {}) {
   return h('input', { type: 'number', value, step: 'any', style: { width: '110px' }, ...attrs, onchange: (e) => onchange(+e.target.value) });
 }
@@ -135,18 +171,20 @@ export function settingsView(root, hash) {
     const tc = cfg().transcription;
     const langs = h('input', { value: tc.candidate_languages.join(', '), style: { width: '140px' }, onchange: (e) => patchConfig({ transcription: { candidate_languages: e.target.value.split(/[,\s]+/).filter(Boolean) } }) });
     const advanced = h('details',
-      h('summary.small.muted', { style: { cursor: 'pointer' } }, t('Whisper models and options')),
+      h('summary.small.muted', { style: { cursor: 'pointer' } }, t('Advanced')),
       h('div.col', { style: { marginTop: '12px' } },
-        setting(t('Main model'), t('Transcribes every recording and detects its language - English too, unless an English model is set below.'), h('input', { value: tc.generic_model, onchange: (e) => patchConfig({ transcription: { generic_model: e.target.value.trim() } }) })),
-        setting(t('English model (optional)'), t('Only for English, e.g. tuned for air traffic control. Empty: the main model does English too - one download, less memory.'), h('input', { value: tc.english_atc_model, placeholder: 'jacktol/whisper-medium.en-fine-tuned-for-ATC-faster-whisper', style: { width: 'min(420px, 100%)' }, onchange: (e) => patchConfig({ transcription: { english_atc_model: e.target.value.trim() } }) })),
         setting(t('Run on'), '', select([['auto', t('Automatic (GPU if available)')], ['cuda', 'GPU (CUDA)'], ['cpu', 'CPU']], tc.device, (v) => patchConfig({ transcription: { device: v } }))),
-        setting(t('Expected languages'), t('ISO codes, e.g. en, pl. Detection picks between these.'), langs),
-        setting(t('Fixed language'), t('Empty: the language of each recording is detected (best for air traffic control, where languages mix). An ISO code, e.g. pl: always that language, no detection - about 40 % less CPU time.'),
-          h('input', { value: tc.fixed_language, placeholder: t('detect'), style: { width: '140px' }, onchange: (e) => patchConfig({ transcription: { fixed_language: e.target.value.trim().toLowerCase() } }) })),
         setting(t('Skip recordings shorter than'), t('Seconds - a squelch crackle is not worth transcribing.'), numberInput(tc.min_duration_sec, (v) => patchConfig({ transcription: { min_duration_sec: Math.max(0, v) } }), { min: 0, step: 0.1 }))));
     mount(body('transcription'),
       setting(t('Transcribe new recordings automatically'), t('Transcription runs on whichever computers below have it switched on - the server itself, or your PC with a GPU.'),
         toggle('', tc.enabled, (v) => patchConfig({ transcription: { enabled: v } }))),
+      setting(t('Main model'), t('Transcribes every recording and detects its language - English too, unless an English model is set below. A bigger model is more accurate and slower; the first use downloads it.'),
+        modelPicker(mainModels(), tc.generic_model, (v) => { if (v) patchConfig({ transcription: { generic_model: v } }); })),
+      setting(t('English model (optional)'), t('Only for English, e.g. tuned for air traffic control. None: the main model does English too - one download, less memory.'),
+        modelPicker(englishModels(), tc.english_atc_model, (v) => patchConfig({ transcription: { english_atc_model: v } }))),
+      setting(t('Expected languages'), t('ISO codes, e.g. en, pl. Detection picks between these.'), langs),
+      setting(t('Fixed language'), t('Empty: the language of each recording is detected (best for air traffic control, where languages mix). An ISO code, e.g. pl: always that language, no detection - about 40 % less CPU time.'),
+        h('input', { value: tc.fixed_language, placeholder: t('detect'), style: { width: '140px' }, onchange: (e) => patchConfig({ transcription: { fixed_language: e.target.value.trim().toLowerCase() } }) })),
       advanced,
       h('div.divider'),
       h('div.row', h('h3', t('Computers')), h('span.spacer')),

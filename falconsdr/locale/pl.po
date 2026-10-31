@@ -1801,20 +1801,11 @@ msgstr "Tryb bezpieczny dla układu hybrydowego: nagranie znika stąd dopiero, g
 msgid "Clean-up runs every 10 minutes. You can also delete any selection by hand on the Recordings page."
 msgstr "Czyszczenie działa co 10 minut. Dowolny wybór możesz też usunąć ręcznie na stronie Nagrania."
 
-msgid "Whisper models and options"
-msgstr "Modele Whisper i opcje"
-
 msgid "Main model"
 msgstr "Model główny"
 
-msgid "Transcribes every recording and detects its language - English too, unless an English model is set below."
-msgstr "Transkrybuje każde nagranie i rozpoznaje jego język - także angielski, chyba że niżej ustawisz model angielski."
-
 msgid "English model (optional)"
 msgstr "Model angielski (opcjonalny)"
-
-msgid "Only for English, e.g. tuned for air traffic control. Empty: the main model does English too - one download, less memory."
-msgstr "Tylko dla angielskiego, np. dostrojony do łączności lotniczej. Puste: angielski też robi model główny - jedno pobranie, mniej pamięci."
 
 msgid "Run on"
 msgstr "Uruchamiaj na"
@@ -2664,3 +2655,45 @@ msgstr "Puste: język każdego nagrania jest wykrywany (najlepsze dla łącznoś
 
 msgid "detect"
 msgstr "wykrywaj"
+
+msgid "best quality, all languages"
+msgstr "najlepsza jakość, wszystkie języki"
+
+msgid "almost as good, several times faster"
+msgstr "prawie tak dobry, kilka razy szybszy"
+
+msgid "lighter, all languages"
+msgstr "lżejszy, wszystkie języki"
+
+msgid "for weak computers"
+msgstr "dla słabych komputerów"
+
+msgid "rough, very fast"
+msgstr "zgrubny, bardzo szybki"
+
+msgid "None - the main model also does English"
+msgstr "Brak - angielski też robi model główny"
+
+msgid "English, tuned for air traffic control"
+msgstr "angielski, dostrojony do łączności lotniczej"
+
+msgid "English only, fast and accurate"
+msgstr "tylko angielski, szybki i dokładny"
+
+msgid "English only"
+msgstr "tylko angielski"
+
+msgid "English only, for weak computers"
+msgstr "tylko angielski, dla słabych komputerów"
+
+msgid "Other…"
+msgstr "Inny…"
+
+msgid "Hugging Face repo (user/name) or a folder"
+msgstr "Repozytorium Hugging Face (użytkownik/nazwa) lub folder"
+
+msgid "Transcribes every recording and detects its language - English too, unless an English model is set below. A bigger model is more accurate and slower; the first use downloads it."
+msgstr "Transkrybuje każde nagranie i rozpoznaje jego język - także angielski, chyba że niżej ustawisz model angielski. Większy model jest dokładniejszy i wolniejszy; pierwsze użycie pobiera go."
+
+msgid "Only for English, e.g. tuned for air traffic control. None: the main model does English too - one download, less memory."
+msgstr "Tylko dla angielskiego, np. dostrojony do łączności lotniczej. Brak: angielski też robi model główny - jedno pobranie, mniej pamięci."
