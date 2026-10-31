@@ -88,7 +88,10 @@ class Library:
             organize(self.root)  # legacy loose files -> date folders (never touches open files: those are in date folders)
         except OSError:
             logger.exception("organize() failed")
-        self.rescan()
+        try:
+            self.rescan()
+        except Exception:  # noqa: BLE001 - the maintenance thread below retries
+            logger.exception("first rescan failed")
         self._thread = threading.Thread(target=self._maintain, daemon=True, name="library")
         self._thread.start()
 
@@ -106,7 +109,10 @@ class Library:
         # (called from the scan engine) waits for the lock.
         self.transcripts.save()
         self.quality.save()
-        atomic_write_text(MIRRORED_FILE, json.dumps(mirrored))
+        try:
+            atomic_write_text(MIRRORED_FILE, json.dumps(mirrored))
+        except OSError as exc:  # like the two caches' own save(): a full disk must not stop the library
+            logger.warning("Failed to save the mirrored list: %s", exc)
 
     def _load_mirrored(self) -> set[str]:
         try:
@@ -117,15 +123,20 @@ class Library:
     def _maintain(self) -> None:
         last_rescan = last_retention = time.monotonic()
         while not self._stop.wait(_SAVE_INTERVAL_S):
-            self.save()
-            self._analyze_some(budget_s=2.0)
-            now = time.monotonic()
-            if now - last_rescan >= _RESCAN_INTERVAL_S:
-                last_rescan = now
-                self.rescan()
-            if now - last_retention >= _RETENTION_INTERVAL_S:
-                last_retention = now
-                self.apply_retention()
+            # One failing step (a bad cache entry, a full disk) must not end
+            # the thread - retention is what frees the disk again.
+            try:
+                self.save()
+                self._analyze_some(budget_s=2.0)
+                now = time.monotonic()
+                if now - last_rescan >= _RESCAN_INTERVAL_S:
+                    last_rescan = now
+                    self.rescan()
+                if now - last_retention >= _RETENTION_INTERVAL_S:
+                    last_retention = now
+                    self.apply_retention()
+            except Exception:  # noqa: BLE001
+                logger.exception("library maintenance step failed")
 
     # -- indexing ---------------------------------------------------------
     def _rel(self, path: Path) -> str:

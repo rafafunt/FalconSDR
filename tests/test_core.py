@@ -1258,6 +1258,32 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class LibraryMaintenanceTest(_LibCase):
+    def test_a_failing_step_does_not_end_the_maintenance_thread(self) -> None:
+        from unittest import mock
+        from falconsdr.playback import index
+        calls = []
+        def broken() -> None:
+            calls.append(1)
+            raise TypeError("bad cache entry")
+        with mock.patch.object(index, "_SAVE_INTERVAL_S", 0.01), mock.patch.object(self.lib, "save", broken):
+            thread = threading.Thread(target=self.lib._maintain, daemon=True)
+            thread.start()
+            time.sleep(0.2)
+            alive = thread.is_alive()
+            self.lib._stop.set()
+            thread.join(2)
+        self.assertTrue(alive)
+        self.assertGreater(len(calls), 1)
+
+    def test_a_full_disk_while_saving_the_mirrored_list_is_not_fatal(self) -> None:
+        from unittest import mock
+        from falconsdr.playback import index
+        self.lib._dirty = True
+        with mock.patch.object(index, "atomic_write_text", side_effect=OSError(28, "No space left on device")):
+            self.lib.save()
+
+
 class RecorderTest(unittest.TestCase):
     def _recorder(self):
         from falconsdr.config import RecordingConfig
