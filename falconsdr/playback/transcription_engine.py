@@ -68,6 +68,11 @@ _LOW_LANG_PROBABILITY = 0.4
 _LOW_AVG_LOGPROB = -0.9
 _HIGH_NO_SPEECH_PROB = 0.5
 _HIGH_COMPRESSION_RATIO = 2.4
+# Less speech than this (after the VAD) is "no_speech". Checked up front: Whisper
+# always encodes a full 30 s window, twice per recording (language detection, then
+# transcription), so a noise-only clip costs as much as a real one.
+_MIN_SPEECH_S = 0.3
+_VAD_RATE = 16000
 
 _lock = threading.Lock()
 _generic_model = None
@@ -213,8 +218,15 @@ def _resolve_language(lang: str, prob: float, all_probs, candidates: list) -> tu
     return lang, prob
 
 
+def _speech_seconds(audio) -> float:
+    """Seconds of speech the VAD finds - the number transcribe() later reports as
+    duration_after_vad (same function, same default options)."""
+    from faster_whisper.vad import get_speech_timestamps
+    return sum(c["end"] - c["start"] for c in get_speech_timestamps(audio)) / _VAD_RATE
+
+
 def _classify_status(segments, lang_probability: float, duration_after_vad: float) -> str:
-    if not segments or duration_after_vad < 0.3:
+    if not segments or duration_after_vad < _MIN_SPEECH_S:
         return "no_speech"
     avg_logprob = sum(s.avg_logprob for s in segments) / len(segments)
     avg_no_speech = sum(s.no_speech_prob for s in segments) / len(segments)
@@ -262,6 +274,17 @@ def transcribe_recording(
         except Exception as exc:  # _load_model already tried GPU -> CPU
             raise ModelUnavailable(str(exc)) from exc
         audio = decode_audio(str(rec.path))
+
+        try:
+            speech_s = _speech_seconds(audio)
+        except Exception:  # noqa: BLE001 - can't tell: let the normal path decide
+            logger.debug("VAD pre-check failed", exc_info=True)
+            speech_s = None
+        if speech_s is not None and speech_s < _MIN_SPEECH_S:
+            return TranscriptionResult(
+                text="", language=forced_language or "", language_probability=0.0,
+                status="no_speech", engine="", transcribed_at=now,
+            )
 
         if forced_language:
             lang, prob = forced_language, 1.0

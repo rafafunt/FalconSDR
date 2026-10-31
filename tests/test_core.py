@@ -604,6 +604,49 @@ class AsyncStreamTest(unittest.TestCase):
         self.assertGreater(lossy.lost_s, 0.8)
 
 
+class NoSpeechPreCheckTest(unittest.TestCase):
+    def _run(self, speech_s):
+        import sys
+        from types import ModuleType, SimpleNamespace
+        from unittest import mock
+        from falconsdr.config import TranscriptionConfig
+        from falconsdr.playback import transcription_engine as te
+        calls: list[str] = []
+
+        def transcribe(audio, **kw):
+            calls.append("transcribe")
+            return [], SimpleNamespace(duration_after_vad=0.0)
+
+        model = SimpleNamespace(
+            transcribe=transcribe,
+            detect_language=lambda **kw: calls.append("detect") or ("en", 0.9, [("en", 0.9)]),
+        )
+        audio_mod = ModuleType("faster_whisper.audio")
+        audio_mod.decode_audio = lambda path: "audio"
+
+        def speech(_audio):
+            if isinstance(speech_s, Exception):
+                raise speech_s
+            return speech_s
+        with mock.patch.dict(sys.modules, {"faster_whisper": ModuleType("faster_whisper"), "faster_whisper.audio": audio_mod}), \
+                mock.patch.object(te, "_get_models", lambda config: (model, None)), \
+                mock.patch.object(te, "_speech_seconds", speech):
+            result = te.transcribe_recording(SimpleNamespace(path="x.wav", duration_sec=5.0), TranscriptionConfig())
+        return result, calls
+
+    def test_a_clip_without_speech_never_reaches_the_encoder(self) -> None:
+        result, calls = self._run(0.1)
+        self.assertEqual((result.status, calls), ("no_speech", []))
+
+    def test_a_clip_with_speech_is_detected_and_transcribed(self) -> None:
+        _result, calls = self._run(2.0)
+        self.assertEqual(calls, ["detect", "transcribe"])
+
+    def test_when_the_vad_itself_fails_the_normal_path_decides(self) -> None:
+        _result, calls = self._run(RuntimeError("onnx"))
+        self.assertEqual(calls, ["detect", "transcribe"])
+
+
 class SingleModelTranscriptionTest(unittest.TestCase):
     """New installs use one model (large-v3) for every language; an English model is optional."""
 
