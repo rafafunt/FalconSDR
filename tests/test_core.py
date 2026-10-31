@@ -1559,6 +1559,60 @@ class NativeSdrTest(unittest.TestCase):
         self.assertEqual(made, ["soapy"])
 
 
+class CacheSavingTest(unittest.TestCase):
+    """The library's caches are rewritten only when they changed - the quality cache at most once a minute."""
+
+    def test_unchanged_caches_are_not_rewritten_and_the_derived_one_waits(self) -> None:
+        import shutil
+        import tempfile
+        from unittest import mock
+        from falconsdr.playback import index
+        from falconsdr.playback.quality_cache import QualityCache, QualityMetrics
+        from falconsdr.playback.transcription_cache import TranscriptionCache
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        quality, transcripts = QualityCache(tmp / "q.json"), TranscriptionCache(tmp / "t.json")
+        writes = []
+        from falconsdr.playback import quality_cache, transcription_cache
+        for module in (quality_cache, transcription_cache):
+            self.enterContext(mock.patch.object(module, "atomic_write_text", lambda path, text, w=writes: w.append(Path(path).name)))
+        self.assertFalse(quality.changed)
+        quality.save(); transcripts.save()
+        self.assertEqual(writes, [])                                             # nothing changed: nothing written
+        quality.put("a|1|1", QualityMetrics(0.1, 0.5, 20.0, 0.0, 80.0, 3.0, True))
+        quality.save(); quality.save()
+        self.assertEqual(writes, ["q.json"])                                     # once, not twice
+        quality.remove("gone")                                                    # removing what is not there changes nothing
+        self.assertFalse(quality.changed)
+        quality.prune({"a|1|1"})
+        self.assertFalse(quality.changed)
+        quality.prune(set())
+        self.assertTrue(quality.changed)
+
+        lib = object.__new__(index.Library)                                       # only the saving logic
+        lib._lock = threading.Lock()
+        lib._dirty = True
+        lib._mirrored = set()
+        lib.quality, lib.transcripts = quality, transcripts
+        lib.favorites = mock.Mock()
+        lib._quality_saved_at = time.monotonic()                                  # saved a moment ago
+        writes.clear()
+        with mock.patch.object(index, "atomic_write_text", lambda *a, **k: None):
+            lib.save()
+            self.assertEqual(writes, [])                                         # quality is due only after a minute...
+            self.assertTrue(lib._dirty)                                          # ...and stays pending
+            lib._quality_saved_at = time.monotonic() - index._DERIVED_SAVE_INTERVAL_S - 1
+            lib.save()
+            self.assertEqual(writes, ["q.json"])
+            self.assertFalse(lib._dirty)
+            quality.put("b|1|1", QualityMetrics(0.1, 0.5, 20.0, 0.0, 80.0, 3.0, True))
+            lib._dirty = True
+            lib._quality_saved_at = time.monotonic()
+            writes.clear()
+            lib.save(force=True)                                                 # shutdown writes it at once
+            self.assertEqual(writes, ["q.json"])
+
+
 class MixedReceiversPlanTest(unittest.TestCase):
     """Receivers of different capture widths share one scan plan (antenna_range.py)."""
 

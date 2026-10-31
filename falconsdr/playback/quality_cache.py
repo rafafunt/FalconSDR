@@ -18,6 +18,8 @@ class QualityCache:
     def __init__(self, cache_file: Path = QUALITY_CACHE_FILE):
         self.cache_file = cache_file
         self._data: Dict[str, dict] = {}
+        self._version = 0        # bumped by every change
+        self._saved_version = 0  # ...and what the file on disk has
         self._load()
 
     def _load(self) -> None:
@@ -30,9 +32,22 @@ class QualityCache:
                     quarantine(self.cache_file)
                 self._data = {}
 
+    @property
+    def changed(self) -> bool:
+        return self._version != self._saved_version
+
+    def mark_changed(self) -> None:
+        """For code that edits ``_data`` directly."""
+        self._version += 1
+
     def save(self) -> None:
+        """Writes the file if anything changed since the last write (46k entries take ~0.3 s of CPU to encode)."""
+        if not self.changed:
+            return
+        version = self._version
         try:
             atomic_write_text(self.cache_file, dumps_chunked(self._data))
+            self._saved_version = version
         except OSError as exc:
             logger.warning("Failed to save the quality cache: %s", exc)
 
@@ -43,6 +58,7 @@ class QualityCache:
         return QualityMetrics(**raw)
 
     def put(self, key: str, quality: QualityMetrics) -> None:
+        self._version += 1
         self._data[key] = {
             "noise_floor": quality.noise_floor,
             "signal_level": quality.signal_level,
@@ -58,8 +74,11 @@ class QualityCache:
         stale = set(self._data) - valid_keys
         for key in stale:
             del self._data[key]
+        if stale:
+            self._version += 1
         return len(stale)
 
     def remove(self, key: str) -> None:
         """Removes a single entry (e.g. right after the user manually deletes a recording)."""
-        self._data.pop(key, None)
+        if self._data.pop(key, None) is not None:
+            self._version += 1

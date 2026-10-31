@@ -41,6 +41,10 @@ _LEASE_S = 15 * 60
 _RESCAN_INTERVAL_S = 120.0
 _RETENTION_INTERVAL_S = 600.0
 _SAVE_INTERVAL_S = 5.0
+# The quality cache is derived data (re-measured from the recordings): rewriting 46k entries after every new file
+# was ~17% of the receiver's CPU, so it is written at most this often (and at shutdown). Transcripts and
+# favorites are the user's work and are written as soon as they change.
+_DERIVED_SAVE_INTERVAL_S = 60.0
 
 
 def _from_fields(cls, raw: dict):
@@ -74,6 +78,7 @@ class Library:
         self._leases: dict[str, tuple[str, float]] = {}  # relpath -> (worker, expires monotonic)
         self._failed: set[str] = set()   # errored this session - not re-queued automatically
         self._dirty = False
+        self._quality_saved_at = time.monotonic()
         self._dir_mtimes: dict[Path, int] = {}  # folder -> st_mtime_ns at the last rescan
         self._peaks: dict[str, list[float]] = {}
         self._stop = threading.Event()
@@ -98,18 +103,22 @@ class Library:
 
     def stop(self) -> None:
         self._stop.set()
-        self.save()
+        self.save(force=True)
 
-    def save(self) -> None:
+    def save(self, force: bool = False) -> None:
         with self._lock:
             if not self._dirty:
                 return
-            self._dirty = False
+            quality_due = force or time.monotonic() - self._quality_saved_at >= _DERIVED_SAVE_INTERVAL_S
+            # Stays dirty until the quality cache has been written too.
+            self._dirty = self.quality.changed and not quality_due
             mirrored = sorted(self._mirrored)
         # Outside the lock: serializing the caches takes a while, and add_file()
         # (called from the scan engine) waits for the lock.
-        self.transcripts.save()
-        self.quality.save()
+        self.transcripts.save()   # each cache writes only if something changed
+        if quality_due:
+            self._quality_saved_at = time.monotonic()
+            self.quality.save()
         self.favorites.save()
         try:
             atomic_write_text(MIRRORED_FILE, json.dumps(mirrored))
@@ -161,9 +170,10 @@ class Library:
                 return key
             return key[len(prefix):].replace(os.sep, "/")
         changed = False
-        for store in (self.quality._data, self.transcripts._data):
-            for key in [k for k in store if k.startswith(prefix)]:
-                store[relative(key)] = store.pop(key)
+        for cache in (self.quality, self.transcripts):
+            for key in [k for k in cache._data if k.startswith(prefix)]:
+                cache._data[relative(key)] = cache._data.pop(key)
+                cache.mark_changed()
                 changed = True
         old_favorites = {k for k in self.favorites._keys if k.startswith(prefix)}
         if old_favorites:
@@ -172,6 +182,8 @@ class Library:
         if changed:
             self._dirty = True
             self.favorites.save()
+            self.quality.save()      # one-time, and __init__ resets _dirty below: write now, not at some later change
+            self.transcripts.save()
 
     def _make(self, path: Path) -> Optional[Recording]:
         parsed = parse_filename(path.name)
