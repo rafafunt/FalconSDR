@@ -777,8 +777,9 @@ catalog loads; wrap them in a function called at point of use
     run against a real board** - the author owns an RTL-SDR only. SoapySDR stays the default for both; the native
     path is the way out when SoapySDR is missing/fails (`open_real_backend`: `hackrf`/`airspy` without SoapySDR
     open natively) and a way to compare. `libhackrf`/`libairspy` are loaded by `_find_library` (bundle folder, system
-    package, `FALCONSDR_LIBHACKRF`/`FALCONSDR_LIBAIRSPY`) and **bundled in the Windows build and the .deb** (rpm/AppImage
-    only if the build machine has them). Licences checked from the sources on 2026-10-31: both libraries BSD-3-Clause
+    package, `FALCONSDR_LIBHACKRF`/`FALCONSDR_LIBAIRSPY`) and **bundled in the Windows build and in every Linux package** (the
+    `build-in-docker.sh` scripts install them - Fedora: `hackrf`, `airspyone_host` - and set `FALCONSDR_REQUIRE_NATIVE_LIBS=1`: a missing
+    one fails the build and `--self-test` requires them). Licences checked from the sources on 2026-10-31: both libraries BSD-3-Clause
     (GPL-compatible; a binary needs their notice: `fetch_native_libs.py` and `linux-native-libs.sh` append it to
     THIRD-PARTY-LICENSES.txt), libusb LGPL-2.1 and libwinpthread MIT, as separate DLLs/.so. Windows DLLs come from
     conda-forge, pinned by SHA-256 in `packaging/windows/fetch_native_libs.py` (HackRF publishes no Windows binaries;

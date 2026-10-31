@@ -30,7 +30,7 @@ UI in the browser (http://127.0.0.1:8765) like every other build.
   as a plain user fails and the app's "auto" driver mode quietly falls back
   to Simulation (AGENTS.md gotcha 8) - indistinguishable from missing
   hardware.
-- **RTL-SDR only**, MP3 via the bundled `imageio-ffmpeg` binary or a system
+- **RTL-SDR, plus HackRF and Airspy natively (experimental)** (`libhackrf`/`libairspy` are bundled), MP3 via the bundled `imageio-ffmpeg` binary or a system
   `ffmpeg` on PATH, transcription via the bundled pip (`falconsdr --pip`) -
   the same tradeoff as the .deb/.rpm (see their READMEs).
 

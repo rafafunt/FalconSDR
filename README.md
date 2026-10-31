@@ -86,7 +86,7 @@ receiver at [falconsdr.com](https://falconsdr.com).
 | Receiver | How |
 |---|---|
 | RTL-SDR (incl. RTL-SDR Blog V3/V4) | built in on Linux, Windows and macOS |
-| HackRF, Airspy | **Windows, `.deb`:** built in (`libhackrf`/`libairspy` are bundled) - experimental, **untested on real hardware**; pick *SDR device → Access method → libhackrf / libairspy*. **Other Linux:** through [SoapySDR](https://github.com/pothosware/SoapySDR) with the matching module (source install), or the same native access once `libhackrf0` / `libairspy0` are installed |
+| HackRF, Airspy | **Windows, `.deb`, `.rpm`, AppImage:** built in (`libhackrf`/`libairspy` are bundled) - experimental, **untested on real hardware**; pick *SDR device → Access method → libhackrf / libairspy*. **Linux from source:** through [SoapySDR](https://github.com/pothosware/SoapySDR) with the matching module (source install), or the same native access once `libhackrf0` / `libairspy0` are installed |
 | SDRplay, LimeSDR, USRP, … | through SoapySDR with the matching module installed (Linux, source install); **not tested** |
 
 Developed and tested with an **RTL-SDR Blog V4** on Linux and Windows 11.
@@ -274,7 +274,7 @@ The interface opens at `http://127.0.0.1:8765`.
   soapysdr-module-hackrf`); the venv must be created with
   `--system-site-packages`, as above, or it cannot see them. HackRF and Airspy
   can also be opened without SoapySDR (experimental, *SDR device → Access
-  method*; the Windows and `.deb` builds already carry the libraries):
+  method*; the Windows, `.deb`, `.rpm` and AppImage builds already carry the libraries):
   `sudo apt install libhackrf0 libairspy0`.
 - **Windows:** the dongle needs the WinUSB driver - see *RTL-SDR driver*
   above.
