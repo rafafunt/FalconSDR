@@ -17,6 +17,7 @@ import mimetypes
 import os
 import queue
 import threading
+import time
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -35,6 +36,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 _COOKIE = "sst"
 _MAX_JSON = 32 * 1024 * 1024
 _KEEPALIVE_S = 5.0
+_LOGIN_FAIL_DELAY_S = 1.0  # a threaded server: this slows a password guesser, not other users
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 _KEEPALIVE = bytes(250)  # 10 ms of silence at 12.5 kHz/16-bit: keeps idle streams alive, detects dead ones
 
@@ -214,6 +216,7 @@ def make_handler(app: App):
             if path == "/api/login" and method == "POST":
                 token = str(self._body().get("token", ""))
                 if app.token and not hmac.compare_digest(token.encode(), app.token.encode()):
+                    time.sleep(_LOGIN_FAIL_DELAY_S)
                     return self._error(401, "Wrong password")
                 return self._json({"ok": True}, extra={
                     "Set-Cookie": f"{_COOKIE}={quote(token, safe='')}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict",

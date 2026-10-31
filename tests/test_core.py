@@ -90,6 +90,13 @@ class ConfigTest(unittest.TestCase):
         json.loads(target.read_text())
         self.assertFalse(list(target.parent.glob("*.tmp")))
 
+    @unittest.skipIf(os.name == "nt", "POSIX permissions")
+    def test_the_config_holding_the_password_is_private(self) -> None:
+        cfg = AppConfig()
+        cfg.access_token = "secret"
+        cfg.save()
+        self.assertEqual(config_mod.CONFIG_PATH.stat().st_mode & 0o077, 0)
+
     def test_empty_recordings_folder_means_default(self) -> None:
         config_mod.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         config_mod.CONFIG_PATH.write_text(json.dumps({"recording": {"output_dir": "  "}}))
@@ -1332,15 +1339,32 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(self._status(locked + "/api/live", headers={"Authorization": "Bearer nope"}), 401)
         self.assertEqual(self._status(locked + "/api/live", headers={"Authorization": "Bearer secret"}), 200)
 
+    def test_a_wrong_password_is_answered_slowly(self) -> None:
+        from unittest import mock
+        from falconsdr.web import server
+        url = self._serve("server", "secret")
+        def login(token: str) -> tuple[int, float]:
+            began = time.monotonic()
+            req = Request(url + "/api/login", data=json.dumps({"token": token}).encode(), method="POST",
+                          headers={"X-FalconSDR": "1", "Content-Type": "application/json"})
+            try:
+                with urlopen(req) as r:
+                    status = r.status
+            except HTTPError as exc:
+                status = exc.code
+            return status, time.monotonic() - began
+        with mock.patch.object(server, "_LOGIN_FAIL_DELAY_S", 0.4):
+            self.assertEqual(login("secret")[0], 200)
+            status, elapsed = login("wrong")
+        self.assertEqual(status, 401)
+        self.assertGreaterEqual(elapsed, 0.4)
+
     def test_csrf_and_dns_rebinding_are_refused(self) -> None:
         url = self._serve("local", "")
         self.assertEqual(self._status(url + "/api/scanner/stop", "POST"), 403)
         self.assertEqual(self._status(url + "/api/scanner/stop", "POST", {"X-FalconSDR": "1"}), 200)
         self.assertEqual(self._status(url + "/api/live", headers={"Host": "evil.example:80"}), 403)
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class ControllerStartTest(unittest.TestCase):
@@ -1570,3 +1594,6 @@ class RecorderTest(unittest.TestCase):
         rec._wav = Broken()
         rec.end_transmission()  # a full disk is not an exception for the caller
 
+
+if __name__ == "__main__":
+    unittest.main()

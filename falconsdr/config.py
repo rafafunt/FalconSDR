@@ -43,7 +43,7 @@ def dumps_chunked(data: dict, **kwargs) -> str:
     return "{" + ",".join(json.dumps(k, **kwargs) + ":" + json.dumps(v, **kwargs) for k, v in list(data.items())) + "}"
 
 
-def atomic_write_text(path: Path, text: str) -> None:
+def atomic_write_text(path: Path, text: str, private: bool = False) -> None:
     """Write-then-rename, so a crash/power cut mid-write never leaves a
     truncated file behind - a half-written config.json used to load as
     "corrupt" -> silent defaults, which the next save() then made permanent."""
@@ -55,6 +55,8 @@ def atomic_write_text(path: Path, text: str) -> None:
         # newline="": csv already writes its own "\r\n" - no second translation on Windows.
         with temporary.open("w", encoding="utf-8", newline="") as f:
             f.write(text)
+        if private:
+            temporary.chmod(0o600)  # no-op on Windows; keeps other local users out of the password
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -370,4 +372,4 @@ class AppConfig:
         return cfg
 
     def save(self) -> None:
-        atomic_write_text(CONFIG_PATH, json.dumps(asdict(self), indent=2, ensure_ascii=False))
+        atomic_write_text(CONFIG_PATH, json.dumps(asdict(self), indent=2, ensure_ascii=False), private=True)
