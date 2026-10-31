@@ -192,13 +192,21 @@ def unload_models() -> None:
     gc.collect()
 
 
+def _model_key(config: Optional[TranscriptionConfig]) -> tuple:
+    """What decides which models are loaded - a change of language or of the
+    skip-short threshold must not reload large-v3."""
+    if config is None:
+        return ()
+    return (config.generic_model, config.english_atc_model, config.device, config.compute_type)
+
+
 def _get_models(config: TranscriptionConfig):
     """Lazily loads the model(s) (shared across subsequent calls from the worker thread). The
     second one is None unless an English model is configured."""
     global _generic_model, _english_atc_model, _active_config
     with _lock:
         _maybe_retry_gpu_locked()
-        if _active_config != config or _generic_model is None:
+        if _model_key(_active_config) != _model_key(config) or _generic_model is None:
             _generic_model = _load_model(config.generic_model, config)
             _english_atc_model = _load_model(config.english_atc_model, config) if config.english_atc_model else None
             _active_config = config
@@ -259,6 +267,7 @@ def transcribe_recording(
     ``forced_language`` ("pl", "en"...) skips detection - a manual
     re-transcription with a chosen language."""
     now = datetime.now(timezone.utc).isoformat()
+    forced_language = forced_language or config.fixed_language.strip().lower() or None
 
     if rec.duration_sec and rec.duration_sec < config.min_duration_sec:
         return TranscriptionResult(

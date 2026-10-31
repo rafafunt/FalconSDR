@@ -253,6 +253,10 @@ class TranscriptionConfig:
     # Languages an uncertain detection is limited to, so radio noise can't
     # pick an exotic one (transcription_engine._resolve_language).
     candidate_languages: list[str] = field(default_factory=lambda: _default_candidate_languages())
+    # "" = detect the language of every recording (right for air traffic control, where
+    # languages mix on one frequency). An ISO code ("pl") = always that language, no
+    # detection: roughly 40 % less CPU time, and no random language picked out of noise.
+    fixed_language: str = ""
     min_duration_sec: float = 0.6  # shorter recordings (e.g. just a squelch crackle) are skipped
 
 

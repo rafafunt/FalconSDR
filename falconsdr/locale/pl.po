@@ -2655,3 +2655,12 @@ msgstr "{freq:.4f} MHz: nie można zapisać nagrania ({error}) - nie nagrywam"
 
 msgid "Less than 1 GB free on the recordings disk - not recording"
 msgstr "Mniej niż 1 GB wolnego miejsca na dysku z nagraniami - nie nagrywam"
+
+msgid "Fixed language"
+msgstr "Stały język"
+
+msgid "Empty: the language of each recording is detected (best for air traffic control, where languages mix). An ISO code, e.g. pl: always that language, no detection - about 40 % less CPU time."
+msgstr "Puste: język każdego nagrania jest wykrywany (najlepsze dla łączności lotniczej, gdzie języki się mieszają). Kod ISO, np. pl: zawsze ten język, bez wykrywania - ok. 40 % mniej czasu procesora."
+
+msgid "detect"
+msgstr "wykrywaj"

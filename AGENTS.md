@@ -248,7 +248,13 @@ catalog loads; wrap them in a function called at point of use
     a PEP-668 `externally-managed-environment` error — that fallback is the
     only path needing a restart. One model is the default: `generic_model` (large-v3) detects the language and transcribes
     everything; `english_atc_model` is optional (empty by default) and, when set, only gets English
-    - never assume it exists. A worker without Whisper never claims
+    - never assume it exists. **`candidate_languages` is a bias, not a whitelist**
+    (`_resolve_language`: a confidently detected language outside the list still wins) - never
+    skip detection because the list has one entry; that turns a confident Polish clip into
+    English gibberish. Skipping detection is the explicit `fixed_language` (one language, ~40 %
+    less CPU), and `_speech_seconds()` returns `no_speech` before either Whisper pass (each
+    encodes a full 30 s window) when the VAD finds nothing. `_get_models` reloads on
+    `_model_key` only - a language change must not reload large-v3. A worker without Whisper never claims
     jobs, and an `"error"` result isn't re-queued automatically within the
     same server session (`Library._failed`), or a broken install would
     retry forever.

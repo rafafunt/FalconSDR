@@ -141,6 +141,8 @@ export function settingsView(root, hash) {
         setting(t('English model (optional)'), t('Only for English, e.g. tuned for air traffic control. Empty: the main model does English too - one download, less memory.'), h('input', { value: tc.english_atc_model, placeholder: 'jacktol/whisper-medium.en-fine-tuned-for-ATC-faster-whisper', style: { width: 'min(420px, 100%)' }, onchange: (e) => patchConfig({ transcription: { english_atc_model: e.target.value.trim() } }) })),
         setting(t('Run on'), '', select([['auto', t('Automatic (GPU if available)')], ['cuda', 'GPU (CUDA)'], ['cpu', 'CPU']], tc.device, (v) => patchConfig({ transcription: { device: v } }))),
         setting(t('Expected languages'), t('ISO codes, e.g. en, pl. Detection picks between these.'), langs),
+        setting(t('Fixed language'), t('Empty: the language of each recording is detected (best for air traffic control, where languages mix). An ISO code, e.g. pl: always that language, no detection - about 40 % less CPU time.'),
+          h('input', { value: tc.fixed_language, placeholder: t('detect'), style: { width: '140px' }, onchange: (e) => patchConfig({ transcription: { fixed_language: e.target.value.trim().toLowerCase() } }) })),
         setting(t('Skip recordings shorter than'), t('Seconds - a squelch crackle is not worth transcribing.'), numberInput(tc.min_duration_sec, (v) => patchConfig({ transcription: { min_duration_sec: Math.max(0, v) } }), { min: 0, step: 0.1 }))));
     mount(body('transcription'),
       setting(t('Transcribe new recordings automatically'), t('Transcription runs on whichever computers below have it switched on - the server itself, or your PC with a GPU.'),

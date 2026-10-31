@@ -604,6 +604,45 @@ class AsyncStreamTest(unittest.TestCase):
         self.assertGreater(lossy.lost_s, 0.8)
 
 
+class FixedLanguageTest(unittest.TestCase):
+    def _run(self, fixed: str, speech_s: float = 2.0):
+        import sys
+        from types import ModuleType, SimpleNamespace
+        from unittest import mock
+        from falconsdr.config import TranscriptionConfig
+        from falconsdr.playback import transcription_engine as te
+        seen: dict = {"detect": 0, "language": None}
+
+        def transcribe(audio, **kw):
+            seen["language"] = kw.get("language")
+            return [], SimpleNamespace(duration_after_vad=0.0)
+
+        def detect(**kw):
+            seen["detect"] += 1
+            return "pl", 0.9, [("pl", 0.9)]
+        model = SimpleNamespace(transcribe=transcribe, detect_language=detect)
+        audio_mod = ModuleType("faster_whisper.audio")
+        audio_mod.decode_audio = lambda path: "audio"
+        with mock.patch.dict(sys.modules, {"faster_whisper": ModuleType("faster_whisper"), "faster_whisper.audio": audio_mod}), \
+                mock.patch.object(te, "_get_models", lambda config: (model, None)), \
+                mock.patch.object(te, "_speech_seconds", lambda audio: speech_s):
+            te.transcribe_recording(SimpleNamespace(path="x.wav", duration_sec=5.0), TranscriptionConfig(fixed_language=fixed))
+        return seen
+
+    def test_empty_means_detect_as_before(self) -> None:
+        self.assertEqual(self._run(""), {"detect": 1, "language": "pl"})
+
+    def test_a_fixed_language_skips_detection(self) -> None:
+        self.assertEqual(self._run(" PL "), {"detect": 0, "language": "pl"})
+
+    def test_a_language_change_does_not_reload_the_models(self) -> None:
+        from falconsdr.config import TranscriptionConfig
+        from falconsdr.playback import transcription_engine as te
+        base = TranscriptionConfig()
+        self.assertEqual(te._model_key(base), te._model_key(TranscriptionConfig(fixed_language="pl", min_duration_sec=2.0)))
+        self.assertNotEqual(te._model_key(base), te._model_key(TranscriptionConfig(generic_model="small")))
+
+
 class NoSpeechPreCheckTest(unittest.TestCase):
     def _run(self, speech_s):
         import sys
