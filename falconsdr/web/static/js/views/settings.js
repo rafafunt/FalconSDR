@@ -2,7 +2,7 @@
 // band presets, location, language/listening, disk & retention, server
 // connection, access password and advanced options.
 import {
-  api, confirmDialog, errorToast, fmtAgo, fmtBytes, fmtDate, fmtMHz, formDialog, h, icon, lang, modal, mount, qs, select, t, toast, toggle,
+  api, confirmDialog, errorToast, fmtAgo, fmtBytes, fmtDate, fmtDuration, fmtMHz, formDialog, h, icon, lang, modal, mount, qs, select, t, toast, toggle,
 } from '../core.js';
 import { S, cfg, confirmRecording, loadSettings, on, patchConfig } from '../state.js';
 import { modLabel, modOptions } from './bands.js';
@@ -167,6 +167,13 @@ export function settingsView(root, hash) {
 
   // ---------------------------------------------------------- transcription & computers
   const workersBox = h('div.col');
+  // A command sent to a computer: it is picked up at its next heartbeat and only then does it show a status,
+  // so the card says "waiting" at once instead of leaving a toast and silence. name -> {since, log}
+  const waiting = new Map();
+  const BUSY = ['installing', 'uninstalling', 'uploading', 'downloading'];
+  const lastLog = (info) => (info.log && info.log.length ? info.log[info.log.length - 1] : '');
+  let lastWorkers = null;
+  let fastPoll = false;
   function renderTranscription() {
     const tc = cfg().transcription;
     const langs = h('input', { value: tc.candidate_languages.join(', '), style: { width: '140px' }, onchange: (e) => patchConfig({ transcription: { candidate_languages: e.target.value.split(/[,\s]+/).filter(Boolean) } }) });
@@ -202,16 +209,54 @@ export function settingsView(root, hash) {
   async function loadWorkers() {
     let res;
     try { res = await api.get('/api/workers'); } catch { return; }
-    if (!res.workers.length) { mount(workersBox, h('div.empty', t('No computers connected yet.'))); return; }
-    mount(workersBox, res.workers.map((w) => workerCard(w, res.pending)));
+    for (const w of res.workers) {
+      const wt = waiting.get(w.name);
+      if (!wt) continue;
+      const info = w.info || {};
+      const started = BUSY.includes(info.status);
+      // A quick command can be over before we ever see its status: a new log line says it answered.
+      const answered = info.status === 'idle' && lastLog(info) !== wt.log && !lastLog(info).includes('command from the server');
+      if (!w.online || started || answered || Date.now() - wt.since > 300000) waiting.delete(w.name);
+    }
+    fastPoll = waiting.size > 0 || res.workers.some((w) => BUSY.includes((w.info || {}).status));
+    // Don't rebuild the cards under someone who is typing in one of them.
+    if (workersBox.contains(document.activeElement) && document.activeElement.matches('input:not([type=checkbox])')) return;
+    lastWorkers = res;
+    renderWorkers();
+  }
+
+  function renderWorkers() {
+    if (!lastWorkers) return;
+    if (!lastWorkers.workers.length) { mount(workersBox, h('div.empty', t('No computers connected yet.'))); return; }
+    mount(workersBox, lastWorkers.workers.map((w) => workerCard(w, lastWorkers.pending)));
   }
 
   function workerCard(w, pending) {
     const info = w.info || {};
     const s = w.settings;
     const update = (patch) => api.post('/api/workers/update', { name: w.name, settings: patch }).then(loadWorkers).catch(errorToast);
-    const command = (c) => api.post('/api/workers/command', { name: w.name, command: c }).then(() => toast(t('Sent - the computer picks it up within a few seconds'))).catch(errorToast);
-    const status = { idle: t('idle'), transcribing: t('transcribing'), copying: t('copying recordings'), uploading: t('uploading recordings'), installing: t('installing transcription…'), uninstalling: t('uninstalling transcription…') }[info.status] || info.status;
+    const command = (c) => {
+      waiting.set(w.name, { since: Date.now(), log: lastLog(info) });
+      fastPoll = true;
+      renderWorkers();
+      return api.post('/api/workers/command', { name: w.name, command: c }).then(loadWorkers)
+        .catch((e) => { waiting.delete(w.name); renderWorkers(); errorToast(e); });
+    };
+    const wt = waiting.get(w.name);
+    const busy = !!wt || BUSY.includes(info.status);
+    const status = { idle: t('idle'), transcribing: t('transcribing'), copying: t('copying recordings'), uploading: t('uploading recordings'), installing: t('installing transcription…'), uninstalling: t('uninstalling transcription…'), downloading: t('downloading the model…') }[info.status] || info.status;
+    // What is going on right now, for the operations that take a while.
+    const forS = info.status_for_s ? ` (${fmtDuration(info.status_for_s)})` : '';
+    const progress = wt && !BUSY.includes(info.status)
+      ? h('div.small', { style: { color: Date.now() - wt.since > 40000 ? 'var(--warn)' : 'var(--secondary)' } },
+        Date.now() - wt.since > 40000
+          ? t('{name} hasn\'t answered yet ({s}) - is FalconSDR running there and connected?', { name: w.name, s: fmtDuration((Date.now() - wt.since) / 1000) })
+          : t('Sent to {name} - waiting for it to pick the command up (a few seconds)…', { name: w.name }))
+      : (info.status === 'downloading' && info.download
+        ? h('div.small', { style: { color: 'var(--secondary)' } }, t('Downloading the model {model}: {size} so far - the first transcription waits for it. This can take several minutes.', { model: info.download.model, size: fmtBytes(info.download.bytes) }))
+        : (BUSY.includes(info.status)
+          ? h('div.small', { style: { color: 'var(--secondary)' } }, `${status}${forS}`, info.log && info.log.length ? h('span.faint', ` - ${lastLog(info)}`) : null)
+          : null));
     const uninstall = async () => {
       const models = h('input', { type: 'checkbox', checked: true });
       const ok = await modal(t('Uninstall transcription'), h('div.col', { style: { gap: '10px' } },
@@ -226,20 +271,21 @@ export function settingsView(root, hash) {
       h('div.row.wrap',
         icon(info.embedded ? 'server' : 'cpu'),
         h('b', w.name), info.embedded ? h('span.chip', t('this server')) : null,
-        h('span.chip', { class: w.online ? 'good' : '' }, h('span.dot'), w.online ? status : t('offline')),
+        h('span.chip', { class: (w.online ? 'good' : '') + (w.online && busy ? ' live' : '') }, h('span.dot'), w.online ? (wt && !BUSY.includes(info.status) ? t('command sent…') : status) : t('offline')),
         info.gpu ? h('span.chip.accent', info.gpu) : null,
         h('span.spacer'),
         !w.online && !info.embedded ? h('button.ghost.small', { onclick: () => api.post('/api/workers/forget', { name: w.name }).then(loadWorkers) }, t('Forget')) : null),
       info.last_seen && !w.online ? h('span.faint.small', t('Last seen {ago}', { ago: fmtAgo(new Date(info.last_seen * 1000).toISOString()) })) : null,
+      progress,
       setting(t('Transcribe here'), info.removal_pending ? h('span', { style: { color: 'var(--warn)' } }, t('Transcription is uninstalled - restart FalconSDR on this computer to remove its files.'))
         : info.installed === false ?t('Whisper isn\'t installed on this computer yet.')
         : s.transcribe && !cfg().transcription.enabled ? h('span', { style: { color: 'var(--warn)' } }, t('Automatic transcription is off above - this computer only gets recordings you queue by hand.'))
           : (s.transcribe && pending ? t('{n} recordings waiting', { n: pending.toLocaleString() }) : ''),
         h('div.row.wrap',
-          info.removal_pending && w.online ? h('button.primary', { onclick: () => command('restart') }, icon('refresh'), t('Restart now')) : null,
-          info.installed === false && !info.removal_pending && w.online ? h('button', { onclick: () => command('install') }, icon('download'), t('Install')) : null,
-          info.installed === false && !info.removal_pending && w.online && info.gpu ? h('button', { onclick: () => command('install_gpu') }, t('Install with GPU support')) : null,
-          info.installed === true && w.online && info.status === 'idle' ? h('button.ghost.danger', { onclick: () => uninstall() }, icon('trash'), t('Uninstall')) : null,
+          info.removal_pending && w.online ? h('button.primary', { disabled: busy, onclick: () => command('restart') }, icon('refresh'), t('Restart now')) : null,
+          info.installed === false && !info.removal_pending && w.online ? h('button', { disabled: busy, onclick: () => command('install') }, icon('download'), t('Install')) : null,
+          info.installed === false && !info.removal_pending && w.online && info.gpu ? h('button', { disabled: busy, onclick: () => command('install_gpu') }, t('Install with GPU support')) : null,
+          info.installed === true && w.online && (info.status === 'idle' || wt) ? h('button.ghost.danger', { disabled: busy, onclick: () => uninstall() }, icon('trash'), t('Uninstall')) : null,
           toggle('', s.transcribe, (v) => update({ transcribe: v })))),
       info.embedded ? null : setting(t('Keep a copy of every recording'), t('Copied to this folder on that computer (verified by size).'),
         toggle('', s.mirror, (v) => update({ mirror: v }))),
@@ -247,12 +293,14 @@ export function settingsView(root, hash) {
       !info.embedded && info.local_only ? h('div.row.wrap',
         h('span.chip.warn', t('{n} recordings exist only on that computer', { n: info.local_only.toLocaleString() })),
         h('button.primary', {
+          disabled: busy,
           onclick: async () => {
             if (!(await confirmDialog(t('Send recordings to the server'), t('Upload {n} recordings (with their transcripts and favorites) from {name} to this server? They stay on that computer too.', { n: info.local_only.toLocaleString(), name: w.name }), t('Upload')))) return;
             command('upload_local');
           },
         }, icon('upload'), t('Send them here'))) : null,
       !info.embedded && w.online ? h('div.row', h('span.spacer'), h('button.ghost.small', {
+        disabled: busy,
         onclick: async () => {
           if (!(await confirmDialog(t('Disconnect computer'), t('{name} stops working for this server and goes back to its own local mode.', { name: w.name }), t('Disconnect'), true))) return;
           command('detach');
@@ -474,7 +522,9 @@ export function settingsView(root, hash) {
     renderLocation(); renderPresets(); renderAppearance(); renderAdvanced();
   }
   renderAll();
-  timers.push(setInterval(loadWorkers, 3000));
+  // Every second while something is going on with a computer (so a click shows its effect), else every 3 s.
+  let pollTick = 0;
+  timers.push(setInterval(() => { pollTick += 1; if (fastPoll || pollTick % 3 === 0) loadWorkers(); }, 1000));
   const sub = (hash.match(/^#\/settings\/(\w+)/) || [])[1];
   if (sub && cards[sub]) {
     setTimeout(() => cards[sub].scrollIntoView({ block: 'start' }), 50);

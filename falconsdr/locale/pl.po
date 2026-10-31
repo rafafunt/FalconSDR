@@ -1849,9 +1849,6 @@ msgstr "Pojawi się wtedy tutaj. Włącz mu transkrypcję lub kopie lokalne, a j
 msgid "No computers connected yet."
 msgstr "Brak podłączonych komputerów."
 
-msgid "Sent - the computer picks it up within a few seconds"
-msgstr "Wysłano - komputer odbierze to w ciągu kilku sekund"
-
 msgid "idle"
 msgstr "bezczynny"
 
@@ -2697,3 +2694,18 @@ msgstr "Transkrybuje każde nagranie i rozpoznaje jego język - także angielski
 
 msgid "Only for English, e.g. tuned for air traffic control. None: the main model does English too - one download, less memory."
 msgstr "Tylko dla angielskiego, np. dostrojony do łączności lotniczej. Brak: angielski też robi model główny - jedno pobranie, mniej pamięci."
+
+msgid "downloading the model…"
+msgstr "pobieranie modelu…"
+
+msgid "command sent…"
+msgstr "polecenie wysłane…"
+
+msgid "{name} hasn't answered yet ({s}) - is FalconSDR running there and connected?"
+msgstr "{name} jeszcze nie odpowiada ({s}) - czy działa tam FalconSDR i jest połączony?"
+
+msgid "Sent to {name} - waiting for it to pick the command up (a few seconds)…"
+msgstr "Wysłano do {name} - czekam, aż odbierze polecenie (kilka sekund)…"
+
+msgid "Downloading the model {model}: {size} so far - the first transcription waits for it. This can take several minutes."
+msgstr "Pobieranie modelu {model}: dotąd {size} - pierwsza transkrypcja na to czeka. To może potrwać kilka minut."
