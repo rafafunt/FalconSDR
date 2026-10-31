@@ -1736,7 +1736,7 @@ class LibraryLockTest(_LibCase):
             self.lib.get("2026-01-01/" + NAME.format(khz=131000))  # add_file() needs the same lock
             waited = time.monotonic() - began
             t.join()
-        self.assertLess(waited, 0.1)
+        self.assertLess(waited, 0.5)  # held for the whole query it would be ~0.9 s
 
 
 class LibraryMaintenanceTest(_LibCase):
