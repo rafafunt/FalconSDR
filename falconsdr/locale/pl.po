@@ -2637,3 +2637,21 @@ msgstr "Zmień zakres w sekcji Urządzenie SDR."
 
 msgid "Nothing for this receiver to scan inside its antenna range ({low}-{high} MHz)."
 msgstr "Ten odbiornik nie ma nic do skanowania w swoim zakresie anteny ({low}-{high} MHz)."
+
+msgid "Can't start recording: {error}"
+msgstr "Nie można zacząć nagrywania: {error}"
+
+msgid "disk almost full"
+msgstr "dysk prawie pełny"
+
+msgid "Manual recording stopped: {error}"
+msgstr "Nagrywanie ręczne zatrzymane: {error}"
+
+msgid "Raw IQ recording stopped: {error}"
+msgstr "Nagrywanie surowego IQ zatrzymane: {error}"
+
+msgid "{freq:.4f} MHz: can't write the recording ({error}) - not recording"
+msgstr "{freq:.4f} MHz: nie można zapisać nagrania ({error}) - nie nagrywam"
+
+msgid "Less than 1 GB free on the recordings disk - not recording"
+msgstr "Mniej niż 1 GB wolnego miejsca na dysku z nagraniami - nie nagrywam"
