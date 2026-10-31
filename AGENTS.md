@@ -29,6 +29,7 @@ program, three modes (`main.py`):
 ```
 python3 main.py                 # local; --server for the network; --local ignores a saved server
 python3 -m unittest tests/test_core.py
+python3 main.py --probe-sdr [driver]   # with the scanner stopped: measures a real receiver (gotcha 55)
 ```
 
 `numpy`, `scipy`, `pyrtlsdr`/`pyrtlsdrlib`, `tzdata` —

@@ -93,6 +93,12 @@ Developed and tested with an **RTL-SDR Blog V4** on Linux and Windows 11.
 Other receivers and macOS (experimental builds) should work but haven't been
 tested yet - reports are welcome.
 
+**Testing a receiver:** stop the scanner and run `python main.py --probe-sdr`
+(or `--probe-sdr hackrf_native` / `hackrf` / `airspy_native` / `airspy` to pick the
+way it is opened). It measures the gain steps, the DC spike, how many blocks after a
+retune still hold the old frequency, and sample losses, and prints one `RESULT {...}`
+line - please paste it into an issue together with your receiver's model.
+
 Any antenna works; one cut or tuned for the band you scan works much better.
 
 ### Transcription needs more than scanning

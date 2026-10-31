@@ -165,7 +165,7 @@ export function listenView(root) {
     stateChip.className = 'chip state ' + stateClass(live);
     driverHint.classList.toggle('hidden', !(live.state === 'RECONNECTING' && isWindows()));
     const here = S.settings.devices.find((d) => d.driver === S.settings.config.device.driver && d.args === S.settings.config.device.device_args);
-    const other = here && live.state === 'RECONNECTING' ? S.settings.devices.find((d) => d.group === here.group && d !== here) : null;
+    const other = here && live.state === 'RECONNECTING' ? S.settings.devices.find((d) => d.group && d.group === here.group && d !== here) : null;
     methodHint.classList.toggle('hidden', !other);
     if (other) methodHint.textContent = t('The receiver did not open with {method}. Stop the scanner and try {other} under SDR device → Access method.', { method: methodLabel(here.method), other: methodLabel(other.method) });
     renderRangeNotice(live);
@@ -282,12 +282,13 @@ export function listenView(root) {
     const here = devices[current >= 0 ? current : 0];
     // One entry per physical receiver, and - when there is more than one way to open it - a second choice.
     const groups = [];
+    const groupOf = (d) => d.group || d.driver;   // the online demo's devices have no group
     devices.forEach((d) => {
-      let g = groups.find((x) => x.group === d.group);
-      if (!g) groups.push(g = { group: d.group, entries: [] });
+      let g = groups.find((x) => x.group === groupOf(d));
+      if (!g) groups.push(g = { group: groupOf(d), entries: [] });
       g.entries.push(d);
     });
-    const myGroup = groups.find((g) => g.group === here.group);
+    const myGroup = groups.find((g) => g.group === groupOf(here));
     const patchDevice = (d) => {
       // Another dongle may sit on another antenna - its Bias-T starts off again.
       const patch = { driver: d.driver, device_args: d.args, bias_tee: false };
