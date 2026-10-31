@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -43,23 +45,42 @@ def dumps_chunked(data: dict, **kwargs) -> str:
     return "{" + ",".join(json.dumps(k, **kwargs) + ":" + json.dumps(v, **kwargs) for k, v in list(data.items())) + "}"
 
 
+_write_locks: dict[str, threading.Lock] = {}
+_write_locks_guard = threading.Lock()
+
+
+def _write_lock(path: Path) -> threading.Lock:
+    with _write_locks_guard:
+        return _write_locks.setdefault(str(path), threading.Lock())
+
+
 def atomic_write_text(path: Path, text: str, private: bool = False) -> None:
     """Write-then-rename, so a crash/power cut mid-write never leaves a
     truncated file behind - a half-written config.json used to load as
     "corrupt" -> silent defaults, which the next save() then made permanent."""
     path.parent.mkdir(parents=True, exist_ok=True)
     # Unique per thread: two HTTP threads saving the same file at once must not
-    # write into (or rename away) each other's temporary file.
+    # write into (or rename away) each other's temporary file. One at a time per
+    # file as well: Windows refuses to replace a file another thread is replacing.
     temporary = path.with_name(f"{path.name}.{os.getpid()}-{threading.get_ident()}.tmp")
-    try:
-        # newline="": csv already writes its own "\r\n" - no second translation on Windows.
-        with temporary.open("w", encoding="utf-8", newline="") as f:
-            f.write(text)
-        if private:
-            temporary.chmod(0o600)  # no-op on Windows; keeps other local users out of the password
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    with _write_lock(path):
+        try:
+            # newline="": csv already writes its own "\r\n" - no second translation on Windows.
+            with temporary.open("w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            if private:
+                temporary.chmod(0o600)  # no-op on Windows; keeps other local users out of the password
+            for attempt in range(5):
+                try:
+                    temporary.replace(path)
+                    break
+                except PermissionError:
+                    # Windows: a virus scanner or indexer can hold the file for a moment.
+                    if sys.platform != "win32" or attempt == 4:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def quarantine(path: Path) -> None:

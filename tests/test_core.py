@@ -1425,6 +1425,10 @@ class WorkerSafeRelTest(unittest.TestCase):
         self.assertFalse(safe_rel("../../x/" + NAME.format(khz=131000)))
         self.assertFalse(safe_rel("/etc/" + NAME.format(khz=131000)))
         self.assertFalse(safe_rel("2026-01-01/.bashrc"))
+        if os.name == "nt":  # a rooted or drive-relative path is not "absolute" there, but still leaves the folder
+            self.assertFalse(safe_rel("\\etc\\" + NAME.format(khz=131000)))
+            self.assertFalse(safe_rel("C:" + NAME.format(khz=131000)))
+            self.assertFalse(safe_rel("C:\\x\\" + NAME.format(khz=131000)))
 
     def test_mirror_skips_a_hostile_id_but_copies_the_rest(self) -> None:
         from falconsdr.worker import Worker

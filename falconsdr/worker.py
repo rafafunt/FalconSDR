@@ -445,7 +445,10 @@ def safe_rel(rel: str) -> bool:
     """A recording id from the server, as a path below our folder: relative, no "..",
     and a name FalconSDR itself would have written. The server is trusted only so far."""
     path = Path(rel)
-    return not path.is_absolute() and ".." not in path.parts and parse_filename(path.name) is not None
+    # root/drive too, not only is_absolute(): on Windows "/etc/x.wav" has no drive, so it is not
+    # "absolute" - yet root / "/etc/x.wav" lands on the drive's root, outside the folder.
+    return not (path.is_absolute() or path.root or path.drive) and ".." not in path.parts \
+        and parse_filename(path.name) is not None
 
 
 def _load_state() -> dict:
