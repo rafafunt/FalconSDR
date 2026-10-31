@@ -320,7 +320,14 @@ export function listenView(root) {
       const xBias = biasTeeToggle(!!x.bias_tee, (v) => setExtra(extra.map((e, j) => (j === i ? { ...e, bias_tee: v } : e))));
       extraInputs.push(s, del, xBias.querySelector('input'));
       const xRange = rangeFields(x.range_start_hz || 0, x.range_stop_hz || 0, (p) => setExtra(extra.map((e, j) => (j === i ? { ...e, ...p } : e))));
-      return h('div.col', { style: { gap: '6px' } }, h('label.field', t('Dongle {n}', { n: i + 2 }), h('div.row', s, del)), xBias, xRange);
+      // Receivers differ: a HackRF can capture 10 MHz where an RTL-SDR takes 2.4. Empty = the same as the first one.
+      const xWidth = h('input', {
+        type: 'number', min: 0.25, max: 61.44, step: 0.01, placeholder: t('same as the first'), value: x.sample_rate_hz ? (x.sample_rate_hz / 1e6).toFixed(2) : '',
+        onchange: (e) => setExtra(extra.map((o, j) => (j === i ? { ...o, sample_rate_hz: e.target.value ? Math.round(+e.target.value * 1e6) : 0 } : o))),
+      });
+      extraInputs.push(xWidth);
+      return h('div.col', { style: { gap: '6px' } }, h('label.field', t('Dongle {n}', { n: i + 2 }), h('div.row', s, del)),
+        h('label.field', t('Capture width (MHz)'), xWidth), xBias, xRange);
     });
     const used = new Set([`${c.device.driver}|${c.device.device_args}`, ...extra.map((x) => `${x.driver}|${x.device_args}`)]);
     const add = h('button.ghost.small', {
@@ -343,6 +350,8 @@ export function listenView(root) {
       rangeFields(c.device.range_start_hz || 0, c.device.range_stop_hz || 0, (p) => { patchConfig({ device: p }); renderDevice(); }),
       ...extraRows,
       extra.length ? h('span.faint.small', t('The scan plan is split between all dongles - each scans its own share of the windows, so a full cycle is that much shorter. You hear one dongle at a time; the others keep recording.')) : null,
+      extra.some((x) => x.sample_rate_hz && x.sample_rate_hz !== c.device.sample_rate_hz)
+        ? h('span.faint.small', t('Receivers with different capture widths split the scan in proportion to their width, and a wide one joins neighbouring windows into one. The processor must keep up: a 30 ms block of a 10 MHz capture takes about 20 ms to analyse.')) : null,
       add,
       h('span.faint.small.lockhint', t('Stop the scanner to change the device or capture width.')),
       // Picked by USB order (no serial of its own) - that order can change when dongles are replugged.

@@ -55,6 +55,25 @@ def _find_library(names: tuple[str, ...], env: str, find_name: str) -> ctypes.CD
     return None
 
 
+def _hold_default_usb_context() -> None:
+    """Keeps libusb's default context alive for the life of the process.
+
+    libhackrf/libairspy create their own context; SoapySDR's modules and librtlsdr call libusb_init(NULL) and
+    libusb_exit(NULL) around every enumeration. With no default context of its own, libusb treats the first context
+    created as the implicit default ("API misuse! Using non-default context as implicit default") - and the next
+    libusb_exit(NULL) destroys libhackrf's, which still holds the pointer: hackrf_device_list() then crashed the
+    whole server in pthread_mutex_lock (reproduced both ways: 4 rounds of SoapySDR + libhackrf crash without this and
+    pass with it). Called before a library is initialised, with the libusb that library loaded."""
+    for name in ("libusb-1.0.so.0", "libusb-1.0.dll", "libusb-1.0.0.dylib", "libusb-1.0.dylib"):
+        try:
+            usb = ctypes.CDLL(name)
+            usb.libusb_init.argtypes = [ctypes.c_void_p]
+            usb.libusb_init(None)
+            return
+        except (OSError, AttributeError):
+            continue
+
+
 # --------------------------------------------------------------------------------- the stream
 class CallbackStream:
     """The bytes a vendor library hands to its callback, given back to read() in the size it asks for.
@@ -207,6 +226,7 @@ def hackrf_library() -> ctypes.CDLL | None:
                             "FALCONSDR_LIBHACKRF", "hackrf")
         if lib is None:
             return None
+        _hold_default_usb_context()
         c = ctypes
         try:
             sig = {
@@ -389,6 +409,7 @@ def airspy_library() -> ctypes.CDLL | None:
                             "FALCONSDR_LIBAIRSPY", "airspy")
         if lib is None:
             return None
+        _hold_default_usb_context()
         c = ctypes
         try:
             sig = {
@@ -447,9 +468,14 @@ class AirspyBackend(_NativeStreamBackend):
         try:
             self._check(lib.airspy_set_sample_type(dev, _AIRSPY_FLOAT32_IQ), "set_sample_type")
             rates = self._supported_rates()
-            if not any(abs(r - sample_rate) < 1.0 for r in rates):
-                raise RuntimeError("This Airspy captures only " + ", ".join(f"{r / 1e6:g}" for r in rates)
-                                   + " MS/s - set the capture width to one of them")
+            if not rates:
+                raise RuntimeError("This Airspy reports no sample rates")
+            # The board has a few fixed rates (R2: 2.5 and 10 MS/s, Mini: 3, 6, 10): the nearest one is used and
+            # the engine plans with backend.sample_rate - so a 2.4 MHz setting made for an RTL-SDR still works.
+            sample_rate = min(rates, key=lambda r: abs(r - sample_rate))
+            if sample_rate != self.sample_rate:
+                self.sample_rate = sample_rate
+                self._stream = CallbackStream(self.bytes_per_sample, sample_rate)
             self._check(lib.airspy_set_samplerate(dev, int(round(sample_rate))), "set_samplerate")
             lib.airspy_set_rf_bias(dev, 0)
             self.set_gain(gain_mode, gain_db)

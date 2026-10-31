@@ -636,6 +636,20 @@ catalog loads; wrap them in a function called at point of use
     The online demo's simulator (`demo/site/sw.js`: `rebuild`, `uncovered`) mirrors
     `split_by_range`/`uncovered` - change both together, then rebuild and redeploy the demo.
 
+    **Receivers of different kinds and widths** (an RTL-SDR at 2.4 MHz next to a HackRF at 10; any mix works, nothing
+    is blocked on purpose): the capture width is per engine - `ScannerEngine.sample_rate_hz` is what the open
+    receiver really captures (`backend.sample_rate`; an Airspy snaps to a rate it has), else its own
+    `extra_devices[i]["sample_rate_hz"]`, else the main one - never `config.device.sample_rate_hz` directly (the
+    demodulator, chunk size, raw-IQ recorder and window plan all use the engine's). Engines register their real
+    width in `SharedFrequencies` (`set_rate`/`rates_version`) and rebuild when it changes. With equal widths nothing
+    changed (`_partition_windows`); with different ones every engine plans for the NARROWEST width, hands windows out
+    in proportion to the widths (`split_by_range(weights=...)`, smooth weighted round-robin, same as plain
+    alternation when equal) and joins its own windows up to its width (`widen_windows`, only inside one band). Edge
+    roll-off is learned per kind of receiver (`_calibration_key`: librtlsdr keeps the plain gain-mode key, any other
+    backend/width gets `mode@label@MHz`). One engine's analysis costs about 4.7 / 23 / 50 ms per 30 ms block at 2.4 /
+    10 / 20 MS/s (server, one core; `tests`-less measurement of `spectrum_cumsum`): ~10 MS/s is the practical limit
+    there, wider needs a faster CPU or a smaller capture - the "can't keep up" health line shows it.
+
 47. **Bias-T (DC on the antenna input) is off by default and per dongle**
     (verified on a real RTL-SDR Blog V4: its LED follows the switch) (`DeviceConfig.bias_tee`, an extra dongle's `bias_tee` key).
     Both backends open with it off, switch it on only as the very last step
@@ -773,7 +787,12 @@ catalog loads; wrap them in a function called at point of use
     list, the UI sets 2.5 MHz when it is picked. HackRF needs 2-20 MS/s. Antenna power (HackRF `antenna_enable`,
     Airspy `rf_bias`) follows gotcha 47: off at open, on as the last step, off in `close()`. `hackrf_init()` is
     never undone (`hackrf_exit()` fails with a device open). The callback must never raise into C. A busy receiver
-    can drop out of a fresh listing, so `Controller.devices()` keeps the saved choice.
+    can drop out of a fresh listing, so `Controller.devices()` keeps the saved choice. **libusb**: SoapySDR's modules
+    and librtlsdr call `libusb_init(NULL)`/`libusb_exit(NULL)`; without a default context of its own libusb takes
+    the first context created as the implicit default and the next `exit(NULL)` frees libhackrf's - then
+    `hackrf_device_list()` segfaulted the whole server (reproduced, 2026-10-31). `_hold_default_usb_context()` keeps one
+    alive before either library is initialised; the device listing is still asked of a child process
+    (`native_status`, `main.py --list-native-sdr`), so a crash there can't take the scanner down.
 
 ## Testing without touching the user's real config/recordings
 

@@ -1333,7 +1333,7 @@ class NativeSdrTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "2 to 20"):
                 sdr_native.HackRfBackend("", 1_000_000, "manual", 30.0)
 
-    def test_airspy_backend_refuses_a_rate_the_board_does_not_have_and_passes_float_iq_through(self) -> None:
+    def test_airspy_backend_snaps_to_a_rate_the_board_has_and_passes_float_iq_through(self) -> None:
         from unittest import mock
         import numpy as np
         from falconsdr import sdr_native
@@ -1354,10 +1354,11 @@ class NativeSdrTest(unittest.TestCase):
         with mock.patch.object(sdr_native, "airspy_library", lambda: Lib()), \
                 mock.patch.object(sdr_native.SoapyBackend, "_wait_for_reopen_cooldown", staticmethod(lambda: None)), \
                 mock.patch.object(sdr_native.SoapyBackend, "_record_close_time", staticmethod(lambda: None)):
-            with self.assertRaisesRegex(RuntimeError, "2.5, 10 MS/s|10, 2.5 MS/s"):
-                sdr_native.AirspyBackend("", 2_400_000, "manual", 12.0)
-            self.assertNotIn("airspy_start_rx", [c[0] for c in calls])             # nothing streamed, device closed
-            self.assertEqual(calls[-1][0], "airspy_close")
+            odd = sdr_native.AirspyBackend("", 2_400_000, "manual", 12.0)             # an RTL-SDR's width: the nearest one the board has
+            self.assertEqual(odd.sample_rate, 2_500_000)
+            self.assertEqual(odd._stream.sample_rate, 2_500_000)                       # the stream counts in the real rate
+            self.assertIn(("airspy_set_samplerate", 2_500_000), calls)
+            odd.close()
             calls.clear()
             b = sdr_native.AirspyBackend("", 2_500_000, "manual", 30.0)
             self.assertIn(("airspy_set_sensitivity_gain", 21), calls)               # clamped to the table's end
@@ -1513,6 +1514,107 @@ class NativeSdrTest(unittest.TestCase):
                 mock.patch.object(sb, "RtlSdrBackend", boom):
             sb.open_real_backend("auto", *args[1:])
         self.assertEqual(made, ["soapy"])
+
+
+class MixedReceiversPlanTest(unittest.TestCase):
+    """Receivers of different capture widths share one scan plan (antenna_range.py)."""
+
+    def _plan(self):
+        from falconsdr.channelizer import plan_windows
+        freqs = list(range(118_000_000, 137_000_000, 8_333))
+        return freqs, plan_windows(freqs, 2_400_000, 8_333)
+
+    def _shares(self, rates):
+        from falconsdr.antenna_range import OPEN_END_HZ, split_by_range, widen_windows
+        freqs, plan = self._plan()
+        ranges = [(0, OPEN_END_HZ)] * len(rates)
+        bw = {f: 8_333.0 for f in freqs}
+        shares = []
+        for index, rate in enumerate(rates):
+            windows, _ = split_by_range(list(plan), [], index, ranges, weights=rates)
+            shares.append(widen_windows(windows, rate, bw, 8_333.0))
+        return freqs, shares
+
+    def test_every_frequency_goes_to_exactly_one_receiver_and_windows_fit_each_width(self) -> None:
+        from falconsdr.channelizer import USABLE_FRACTION
+        rates = [2_400_000.0, 10_000_000.0, 2_400_000.0]
+        freqs, shares = self._shares(rates)
+        owned = [sorted(f for w in share for f in w.freqs) for share in shares]
+        self.assertEqual(sorted(f for o in owned for f in o), freqs)             # nothing lost, nothing twice
+        for rate, share in zip(rates, shares):
+            for w in share:
+                self.assertLessEqual(max(w.freqs) - min(w.freqs) + 8_333, rate * USABLE_FRACTION + 1)
+        # in proportion to the width (~16 % / 68 % / 16 %), and the wide one needs far fewer retunes per frequency
+        total = len(freqs)
+        self.assertAlmostEqual(len(owned[1]) / total, 10 / 14.8, delta=0.05)
+        self.assertAlmostEqual(len(owned[0]) / total, 2.4 / 14.8, delta=0.05)
+        self.assertLess(len(shares[1]) / len(owned[1]), len(shares[0]) / len(owned[0]) / 3)
+
+    def test_equal_widths_split_exactly_like_before(self) -> None:
+        from falconsdr.antenna_range import OPEN_END_HZ, split_by_range
+        _freqs, plan = self._plan()
+        ranges = [(0, 140_000_000), (0, OPEN_END_HZ), (120_000_000, OPEN_END_HZ)]
+        old: dict[int, list[int]] = {}
+        turn: dict[tuple, int] = {}
+        for window in sorted(plan, key=lambda w: w.center_hz):                    # the plain alternation this replaced
+            groups: dict[tuple, list[int]] = {}
+            for freq in window.freqs:
+                who = tuple(k for k, (low, high) in enumerate(ranges) if low <= freq <= high)
+                groups.setdefault(who, []).append(freq)
+            for who, fs in groups.items():
+                n = turn.get(who, 0)
+                turn[who] = n + 1
+                old.setdefault(who[n % len(who)], []).extend(fs)
+        for index in range(3):
+            new, _ = split_by_range(list(plan), [], index, ranges)
+            self.assertEqual(sorted(f for w in new for f in w.freqs), sorted(old.get(index, [])))
+
+    def test_windows_of_other_bands_are_not_joined(self) -> None:
+        from falconsdr.antenna_range import widen_windows
+        from falconsdr.channelizer import ScanWindow
+        a, b = object(), object()
+        windows = [ScanWindow(100_000_000, [99_900_000, 100_000_000], band=a), ScanWindow(100_300_000, [100_300_000], band=b),
+                   ScanWindow(100_600_000, [100_600_000], band=a)]
+        out = widen_windows(windows, 10_000_000, {}, 25_000.0)
+        self.assertEqual([w.band for w in out], [a, b, a])                        # neighbours of another band stay apart
+        same = widen_windows([windows[0], ScanWindow(100_300_000, [100_300_000], band=a)], 10_000_000, {}, 25_000.0)
+        self.assertEqual(len(same), 1)
+        self.assertEqual(same[0].freqs, [99_900_000, 100_000_000, 100_300_000])
+
+    def test_device_rates_follow_the_engine_order_and_default_to_the_main_width(self) -> None:
+        from falconsdr.antenna_range import device_rates
+        cfg = AppConfig()
+        cfg.device.sample_rate_hz = 2_400_000
+        cfg.device.extra_devices = [{"driver": "hackrf", "sample_rate_hz": 10_000_000}, {"driver": "rtlsdr"}, {"nodriver": 1}]
+        self.assertEqual(device_rates(cfg), [2_400_000.0, 10_000_000.0, 2_400_000.0])
+
+    def test_the_engine_adopts_the_rate_the_receiver_really_has_and_tells_the_others(self) -> None:
+        from falconsdr.scanner_engine import ScannerEngine, SharedFrequencies
+        cfg = AppConfig()
+        cfg.device.sample_rate_hz = 2_400_000
+        cfg.device.extra_devices = [{"driver": "airspy"}]
+        shared = SharedFrequencies()
+        main = ScannerEngine(cfg, [], [], share=(0, 2), shared=shared)
+        other = ScannerEngine(cfg, [], [], device=cfg.device.extra_devices[0], share=(1, 2), shared=shared)
+        self.assertEqual((main.sample_rate_hz, other.sample_rate_hz), (2_400_000, 2_400_000))
+        self.assertTrue(shared.set_rate(1, 2_500_000))                            # the Airspy opened at its own 2.5 MHz
+        self.assertEqual(main._engine_rates(), [2_400_000, 2_500_000])           # main now plans with both
+        other._actual_rate = 2_500_000
+        self.assertEqual(other.sample_rate_hz, 2_500_000)
+        self.assertEqual(main.sample_rate_hz, 2_400_000)                          # and keeps its own width
+        self.assertFalse(shared.set_rate(1, 2_500_000))
+
+    def test_edge_roll_off_is_learned_per_kind_of_receiver(self) -> None:
+        from types import SimpleNamespace
+        from falconsdr.scanner_engine import ScannerEngine
+        engine = ScannerEngine(AppConfig(), [], [])
+        self.assertEqual(engine._calibration_key("sw_auto"), "sw_auto")            # nothing open yet: the old key
+        engine._backend = SimpleNamespace(label="rtlsdr_native")
+        self.assertEqual(engine._calibration_key("sw_auto"), "sw_auto")            # librtlsdr keeps its history
+        engine._backend = SimpleNamespace(label="soapysdr")
+        self.assertEqual(engine._calibration_key("sw_auto"), "sw_auto@soapysdr@2.4")
+        engine._backend, engine._actual_rate = SimpleNamespace(label="hackrf_native"), 10_000_000
+        self.assertEqual(engine._calibration_key("sw_auto"), "sw_auto@hackrf_native@10")
 
 
 class MultiDongleTest(unittest.TestCase):

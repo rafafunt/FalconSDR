@@ -2745,3 +2745,12 @@ msgstr "Usuń z ulubionych"
 
 msgid "Downloading {n} recordings ({size}) as one ZIP…"
 msgstr "Pobieranie {n} nagrań ({size}) jako jeden plik ZIP…"
+
+msgid "same as the first"
+msgstr "jak w pierwszym"
+
+msgid "Receivers with different capture widths split the scan in proportion to their width, and a wide one joins neighbouring windows into one. The processor must keep up: a 30 ms block of a 10 MHz capture takes about 20 ms to analyse."
+msgstr "Odbiorniki o różnej szerokości przechwytu dzielą skanowanie proporcjonalnie do szerokości, a szeroki łączy sąsiednie okna w jedno. Procesor musi nadążyć: blok 30 ms przy przechwycie 10 MHz analizuje się około 20 ms."
+
+msgid "This receiver captures {actual:.2f} MHz, not {wanted:.2f} MHz - scanning with {actual:.2f} MHz."
+msgstr "Ten odbiornik przechwytuje {actual:.2f} MHz, a nie {wanted:.2f} MHz - skanuję z {actual:.2f} MHz."

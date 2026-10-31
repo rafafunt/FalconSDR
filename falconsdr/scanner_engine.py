@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from .agc import SoftwareAgc
-from .antenna_range import OPEN_END_HZ, device_ranges, is_limited, split_by_range
+from .antenna_range import OPEN_END_HZ, device_ranges, device_rates, is_limited, split_by_range, widen_windows
 from .audio_transcode import transcode_to_mp3
 from .calibration_log import CalibrationLogger
 from .edge_compensation import EdgeCompensation
@@ -413,6 +413,21 @@ class SharedFrequencies:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._taken: dict[int, object] = {}
+        self._rates: dict[int, float] = {}
+        self.rates_version = 0   # bumped when a receiver reports a width other than the one planned with
+
+    def set_rate(self, index: int, rate_hz: float) -> bool:
+        """An engine's real capture width, once its receiver is open. True if that changed the plan."""
+        with self._lock:
+            if self._rates.get(index) == rate_hz:
+                return False
+            self._rates[index] = rate_hz
+            self.rates_version += 1
+            return True
+
+    def rates(self) -> dict[int, float]:
+        with self._lock:
+            return dict(self._rates)
 
     def claim(self, freq_hz: int, owner: object) -> bool:
         with self._lock:
@@ -481,6 +496,8 @@ class ScannerEngine(threading.Thread):
         self._spectrum_worker: _SpectrumWorker | None = None
         self._last_spectrum_submit_at = 0.0
         self._edge_compensation: EdgeCompensation | None = None
+        self._actual_rate: float | None = None   # what the open receiver really captures (backend.sample_rate)
+        self._seen_rates_version = 0
         self._logged_checkpoints: set[str] = set()  # see _checkpoint_once()
         self._dsd_warned = False
 
@@ -645,7 +662,7 @@ class ScannerEngine(threading.Thread):
             if self._iq_recorder is not None:
                 return
             try:
-                recorder = IQRecorder(self.config.recording.output_dir, self.config.device.sample_rate_hz)
+                recorder = IQRecorder(self.config.recording.output_dir, self.sample_rate_hz)
             except OSError as exc:
                 raise RuntimeError(tr("Can't start recording: {error}").format(error=exc)) from exc
             self._iq_recorder = recorder
@@ -851,22 +868,39 @@ class ScannerEngine(threading.Thread):
     def _open_backend(self, allow_simulated_fallback: bool) -> None:
         dev = self.config.device
         driver, device_args = self.driver, self.device_args
+        wanted_rate = device_rates(self.config)[self._share[0]] if self._share[0] < len(device_rates(self.config)) else dev.sample_rate_hz
         _checkpoint(f"_open_backend: constructing (driver={driver!r})")
         if allow_simulated_fallback or driver == "simulated":
             raw_backend = create_backend(
-                driver, device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db,
+                driver, device_args, wanted_rate, dev.gain_mode, dev.gain_db,
                 debug_mode=self.config.debug_mode, bias_tee=self.bias_tee, async_read=dev.async_read,
             )
         else:
             # Reconnect after real hardware was seen: keep failing, never fall
             # back to simulation (gotcha 8/10).
-            raw_backend = open_real_backend(driver, device_args, dev.sample_rate_hz, dev.gain_mode, dev.gain_db, self.bias_tee, dev.async_read)
+            raw_backend = open_real_backend(driver, device_args, wanted_rate, dev.gain_mode, dev.gain_db, self.bias_tee, dev.async_read)
+        # What the receiver really captures (an Airspy has a few fixed rates) is what everything below is built
+        # on - and what the other engines plan with (SharedFrequencies).
+        actual = float(getattr(raw_backend, "sample_rate", 0) or wanted_rate)
+        self._actual_rate = actual
+        if abs(actual - wanted_rate) > 1.0:
+            self.signals.log.emit(tr("This receiver captures {actual:.2f} MHz, not {wanted:.2f} MHz - scanning with {actual:.2f} MHz.").format(
+                actual=actual / 1e6, wanted=wanted_rate / 1e6))
+        plan_changed = self._shared.set_rate(self._share[0], actual) if self._shared is not None else abs(actual - wanted_rate) > 1.0
         # Hardware reads happen on their own thread (gotcha 11), so nothing in
-        # this loop can delay them; it proxies the backend's interface.
-        self._backend = AcquisitionThread(raw_backend, self._chunk_size(), debug=self.config.debug_mode)
+        # this loop can delay them; it proxies the backend's interface. A queue of 64 chunks is ~2 s at 2.4 MHz but
+        # 300 MB at 20 MHz: bounded by memory as well.
+        chunk = self._chunk_size()
+        self._backend = AcquisitionThread(raw_backend, chunk, max_queued=int(min(64, max(8, 160e6 // (chunk * 8)))),
+                                          debug=self.config.debug_mode)
         self._dropped_reported, self._dropped_reported_at = 0, 0.0
         _checkpoint(f"_open_backend: constructed (label={self._backend.label})")
         self._applied_gain_mode, self._applied_gain_db = dev.gain_mode, dev.gain_db
+        key = self._calibration_key(dev.gain_mode)
+        if key != dev.gain_mode or self._edge_compensation is None:   # its own roll-off history, see _calibration_key()
+            self._edge_compensation = EdgeCompensation(key)
+        if plan_changed:
+            self._rebuild_windows()
         self.signals.gain_range_changed.emit(*self._backend.gain_range_db)
         if self.bias_tee and self._backend.label != "simulated":
             self.signals.log.emit(tr("Bias-T is on: the dongle powers its antenna input (until scanning stops)."))
@@ -937,6 +971,35 @@ class ScannerEngine(threading.Thread):
         if self._shared is not None:
             self._shared.release_all(self)
 
+    @property
+    def sample_rate_hz(self) -> float:
+        """This receiver's capture width. Receivers differ (an RTL-SDR at 2.4 MHz next to a HackRF at 10), so it is
+        per engine: the open receiver's real rate, else its own setting, else the main one (gotcha 46)."""
+        if self._actual_rate:
+            return self._actual_rate
+        return self._engine_rates()[self._share[0]]
+
+    def _engine_rates(self) -> list[float]:
+        """Capture widths of all engines in engine order, as far as known: the real ones of receivers that are
+        open, the configured ones otherwise. Every engine computes the same list."""
+        rates = device_rates(self.config)
+        if len(rates) != self._share[1]:   # the dongle list changed under a running scan: assume it was uniform
+            rates = [rates[0]] * self._share[1]
+        if self._shared is not None:
+            for index, rate in self._shared.rates().items():
+                if index < len(rates):
+                    rates[index] = rate
+        return rates
+
+    def _calibration_key(self, gain_mode: str) -> str:
+        """Edge roll-off is learned per kind of receiver. librtlsdr keeps the plain gain-mode key (its history is
+        what the compensation was built from); another path or width - SoapySDR's different IF filter, a HackRF's
+        flat passband - gets its own, so one receiver never corrects with another's curve."""
+        label = getattr(self._backend, "label", "") if self._backend is not None else ""
+        if label in ("", "rtlsdr_native", "simulated"):
+            return gain_mode
+        return f"{gain_mode}@{label}@{self.sample_rate_hz / 1e6:g}"
+
     def _rebuild_windows(self) -> None:
         """Rebuilds everything the weighted scanner needs to pick its next
         window.
@@ -956,7 +1019,12 @@ class ScannerEngine(threading.Thread):
         that's what makes weight-0 items "wait their turn" and then get
         visited promptly once the weighted stuff has had a full sweep.
         """
-        sample_rate = self.config.device.sample_rate_hz
+        rates = self._engine_rates()
+        # With receivers of different widths the plan is made for the narrowest, so every window fits every one.
+        mixed = max(rates) - min(rates) > 1.0
+        sample_rate = min(rates)
+        if self._shared is not None:
+            self._seen_rates_version = self._shared.rates_version
         mem_bw = float(self.config.memory_channel_bandwidth_hz)
 
         if self._solo_band is not None:
@@ -1126,8 +1194,15 @@ class ScannerEngine(threading.Thread):
         ranges = device_ranges(self.config)
         if len(ranges) != self._share[1]:  # the dongle list changed under a running scan: ignore ranges until restart
             ranges = [(0, OPEN_END_HZ)] * self._share[1]
-        if is_limited(ranges):
-            default_windows, priority_lanes = split_by_range(default_windows, priority_lanes, self._share[0], ranges)
+        if is_limited(ranges) or mixed:
+            default_windows, priority_lanes = split_by_range(
+                default_windows, priority_lanes, self._share[0], ranges, weights=rates if mixed else None)
+            if mixed:   # a wider receiver joins its small windows instead of retuning for each
+                own_rate = rates[self._share[0]]
+                default_windows = widen_windows(default_windows, own_rate, bw_map, default_grouping_bw)
+                priority_lanes = [_Lane(weight=lane.weight, is_range=lane.is_range,
+                                        windows=widen_windows(lane.windows, own_rate, bw_map, default_grouping_bw) if lane.is_range else lane.windows)
+                                  for lane in priority_lanes]
             low, high = ranges[self._share[0]]
             if not default_windows and not priority_lanes and (low > 0 or high < OPEN_END_HZ):
                 self.signals.log.emit(tr("Nothing for this receiver to scan inside its antenna range ({low}-{high} MHz).").format(
@@ -1153,12 +1228,12 @@ class ScannerEngine(threading.Thread):
         )
         self.signals.log.emit(
             tr("Wideband scanning: {channels} channels in {windows} capture window(s) ({mhz:.2f} MHz each){extra}.").format(
-                channels=len(bw_map), windows=total_windows, mhz=sample_rate / 1e6, extra=extra,
+                channels=len(bw_map), windows=total_windows, mhz=rates[self._share[0]] / 1e6, extra=extra,
             )
         )
 
     def _chunk_size(self) -> int:
-        return max(1, int(self.config.device.sample_rate_hz * CHUNK_SECONDS))
+        return max(1, int(self.sample_rate_hz * CHUNK_SECONDS))
 
     def _is_blacklisted(self, freq_hz: int) -> bool:
         return any(e.contains(freq_hz) for e in self.blacklist)
@@ -1328,9 +1403,11 @@ class ScannerEngine(threading.Thread):
         state = ScannerState.CALCULATE_NEXT_FREQ
         self._emit_state(state)
         tuning_deadline = scanning_deadline = 0.0
-        sample_rate = self.config.device.sample_rate_hz
+        sample_rate = self.sample_rate_hz
 
         while not self._stop_evt.is_set():
+            if self._shared is not None and self._shared.rates_version != self._seen_rates_version:
+                self._rebuild_windows()   # a receiver turned out to capture another width: the shared plan changes
             self._maybe_apply_gain(self._cur_window)
             chunk = self._chunk_size()
 
@@ -1595,7 +1672,7 @@ class ScannerEngine(threading.Thread):
         self._last_floor_log[window.center_hz] = now
         powers = channel_powers_dbfs(iq, sample_rate, window.center_hz, window.freqs, self._channel_bw_map)
         self._calibration_log.log_floor(
-            window.center_hz, sample_rate, self._applied_gain_mode, self._applied_gain_db, powers,
+            window.center_hz, sample_rate, self._calibration_key(self._applied_gain_mode), self._applied_gain_db, powers,
         )
 
     # -- slot management -----------------------------------------------
@@ -1714,7 +1791,7 @@ class ScannerEngine(threading.Thread):
         if self._shared is not None and not self._shared.claim(freq_hz, self):
             return  # another dongle opened it between our check and now
         dev = self.config.device
-        demod = Demodulator(dev.sample_rate_hz, AUDIO_RATE)
+        demod = Demodulator(self.sample_rate_hz, AUDIO_RATE)
         noise_reducer = NoiseReducer(AUDIO_RATE)
         recorder = Recorder(self.config.recording, AUDIO_RATE)
         name = self._channel_name_map.get(freq_hz) or self._channel_name_by_khz.get(round(freq_hz / 1000), "")
@@ -1752,7 +1829,7 @@ class ScannerEngine(threading.Thread):
             "channel_weight": weight,
             "window_center_hz": window.center_hz,
             "offset_from_center_hz": offset_hz,
-            "sample_rate_hz": dev.sample_rate_hz,
+            "sample_rate_hz": self.sample_rate_hz,
             "channel_bw_hz": self._channel_bw_map.get(freq_hz),
             "trigger_level_dbfs": self._effective_trigger_dbfs(window),
             "measured_dbfs_at_trigger": level_dbfs,
