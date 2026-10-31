@@ -1390,9 +1390,8 @@ class NativeSdrTest(unittest.TestCase):
             def __init__(self, _args):
                 pass
 
-            @staticmethod
-            def unmake(dev):
-                released.append(dev)
+            def close(self):
+                released.append(self)
 
             def readStream(self, *_a, **_k):
                 return SimpleNamespace(ret=-1)
