@@ -1258,6 +1258,17 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class WorkerTokenTest(unittest.TestCase):
+    def test_api_follows_a_password_changed_while_running(self) -> None:
+        from falconsdr.worker import Api
+        holder = {"token": ""}
+        api = Api("http://x", lambda: holder["token"])
+        self.assertEqual(api.token, "")
+        holder["token"] = "secret"
+        self.assertEqual(api.token, "secret")
+        self.assertEqual(Api("http://x", "plain").token, "plain")
+
+
 class LibraryMaintenanceTest(_LibCase):
     def test_a_failing_step_does_not_end_the_maintenance_thread(self) -> None:
         from unittest import mock

@@ -46,9 +46,13 @@ STATE_FILE = CONFIG_DIR / "worker_state.json"
 
 
 class Api:
-    def __init__(self, base_url: str, token: str) -> None:
+    def __init__(self, base_url: str, token: "str | Callable[[], str]") -> None:
         self.base = base_url.rstrip("/")
-        self.token = token
+        self._token = token  # a callable is read on every request: the server's own password can change while it runs
+
+    @property
+    def token(self) -> str:
+        return self._token() if callable(self._token) else self._token
 
     def _req(self, method: str, path: str, data: Optional[bytes] = None, headers: Optional[dict] = None,
              timeout: float = 30.0):
@@ -88,7 +92,7 @@ class Api:
 
 
 class Worker(threading.Thread):
-    def __init__(self, base_url: str, token: str, name: str = "", local_root: Optional[Path] = None,
+    def __init__(self, base_url: str, token: "str | Callable[[], str]", name: str = "", local_root: Optional[Path] = None,
                  embedded: bool = False, on_detach: Optional[Callable[[], None]] = None,
                  on_restart: Optional[Callable[[], None]] = None) -> None:
         super().__init__(daemon=True, name="worker")

@@ -149,7 +149,7 @@ def main() -> int:
                   on_quit=stop.set)
         browser_url = f"http://127.0.0.1:{args.port}/"
         # This computer's own transcription helper - talks to its own API.
-        worker = Worker(f"http://127.0.0.1:{args.port}", token, name=os.environ.get("FALCONSDR_WORKER_NAME", ""),
+        worker = Worker(f"http://127.0.0.1:{args.port}", lambda: app.token, name=os.environ.get("FALCONSDR_WORKER_NAME", ""),
                         embedded=True, on_restart=switch_mode)
         worker.start()
         if args.start:
