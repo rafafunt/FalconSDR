@@ -698,7 +698,14 @@ catalog loads; wrap them in a function called at point of use
     so the interpreter can switch threads), saving outside `Library._lock`,
     and no per-file `resolve()` in `rescan()`; gaps >=200 ms went from 3.7 to
     0.4 per minute. Never `json.dumps()` a big structure in a background
-    thread; chunk it. `FALCONSDR_DEBUG_LIVE_AUDIO=1` now also prints GC
+    thread; chunk it. The same thread re-encoded BOTH caches after every new recording (~17% of the receiver's CPU, py-spy
+    2026-10-31): each cache now writes only when its change counter moved, and the derived quality cache at most every
+    5 minutes (`Library._DERIVED_SAVE_INTERVAL_S`; transcripts and favorites stay immediate, `stop()` flushes).
+    **Measure CPU with `py-spy record --format raw` (throwaway venv) before optimizing**: the first guess (the FFT) was
+    only a fifth of it. Per block, same output: `channelizer._power_spectrum` is scipy complex64 (3.4x), the mixer
+    reuses one rotation vector per channel (`Demodulator._mix`), and `StreamResampler` decimates in two stages when the
+    ratio is large (4x; level 0.00005 dB, audio -72 dB; digital voice keeps one stage).
+    `FALCONSDR_DEBUG_LIVE_AUDIO=1` now also prints GC
     pauses >= 20 ms (`[gc ...]`) and, for a tick > 150 ms, where the engine
     thread was (`[stall ...]`, sampled every 5 ms; far fewer samples than
     elapsed/5 ms = the GIL was held in C code). Measure gaps from the client

@@ -42,9 +42,10 @@ _RESCAN_INTERVAL_S = 120.0
 _RETENTION_INTERVAL_S = 600.0
 _SAVE_INTERVAL_S = 5.0
 # The quality cache is derived data (re-measured from the recordings): rewriting 46k entries after every new file
-# was ~17% of the receiver's CPU, so it is written at most this often (and at shutdown). Transcripts and
+# was ~17% of the receiver's CPU, so it is written at most this often (and at shutdown; after a crash the missing
+# entries are simply measured again). Transcripts and
 # favorites are the user's work and are written as soon as they change.
-_DERIVED_SAVE_INTERVAL_S = 60.0
+_DERIVED_SAVE_INTERVAL_S = 300.0
 
 
 def _from_fields(cls, raw: dict):
