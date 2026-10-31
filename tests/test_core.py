@@ -1452,6 +1452,32 @@ class NativeSdrTest(unittest.TestCase):
         self.assertEqual(nothing[0]["driver"], "hackrf_native")
         self.assertEqual(listing([], []), [])                               # not plugged in: nothing to show
 
+    def test_native_libraries_are_asked_in_a_child_process_that_may_die(self) -> None:
+        import subprocess
+        from types import SimpleNamespace
+        from unittest import mock
+        from falconsdr import sdr_native
+        good = json.dumps({"hackrf": True, "airspy": False, "devices": [{"driver": "hackrf_native", "serial": "ab"}]})
+        cases = [
+            (SimpleNamespace(stdout="library noise\n" + good + "\n"), True),            # the answer is the last JSON line
+            (SimpleNamespace(stdout=""), False),                                          # killed by a segfault: nothing printed
+            (SimpleNamespace(stdout="not json\n{broken"), False),
+            (subprocess.TimeoutExpired("x", 15), False),
+            (FileNotFoundError("no interpreter"), False),
+        ]
+        for outcome, ok in cases:
+            sdr_native._status = None
+            run = mock.Mock(side_effect=outcome) if isinstance(outcome, Exception) else mock.Mock(return_value=outcome)
+            with mock.patch.object(sdr_native.subprocess, "run", run):
+                status = sdr_native.native_status()
+                again = sdr_native.native_status()                                        # cached: no second child
+            self.assertEqual(run.call_count, 1)
+            self.assertIs(status, again)
+            self.assertEqual(status["hackrf"], ok)
+            self.assertEqual(len(status["devices"]), 1 if ok else 0)
+            self.assertIn("--list-native-sdr", run.call_args[0][0])
+        sdr_native._status = None
+
     def test_open_real_backend_picks_the_way(self) -> None:
         from unittest import mock
         from falconsdr import sdr_backend as sb, sdr_native

@@ -614,9 +614,9 @@ def enumerate_devices() -> list[dict]:
     """Every real device to offer, one entry per way to open it: RTL-SDR natively (librtlsdr) and through
     SoapySDR, HackRF/Airspy through SoapySDR and - experimental - through libhackrf/libairspy. The first
     entry of a receiver is the default."""
-    from .sdr_native import native_enumerate
+    from .sdr_native import native_status
     soapy = SoapyBackend.enumerate_devices()
-    native = native_enumerate()
+    native = native_status()["devices"]
     rtl_native = RtlSdrBackend.enumerate_devices()
     return rtl_native + [d for d in soapy if d.get("driver") == "rtlsdr"] \
         + [d for d in soapy if d.get("driver") not in ("rtlsdr",)] + native

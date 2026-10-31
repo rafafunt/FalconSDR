@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -534,8 +536,41 @@ class AirspyBackend(_NativeStreamBackend):
                  "serial": f"{serials[i]:016X}"} for i in range(max(0, count))]
 
 
-def native_enumerate() -> list[dict]:
-    return HackRfBackend.enumerate_devices() + AirspyBackend.enumerate_devices()
+def enumerate_here() -> dict:
+    """What libhackrf/libairspy report, asked IN THIS PROCESS: {"hackrf": loads, "airspy": loads, "devices": [...]}.
+    The server must not do this itself - see native_status()."""
+    devices = HackRfBackend.enumerate_devices() + AirspyBackend.enumerate_devices()
+    return {"hackrf": hackrf_library() is not None, "airspy": airspy_library() is not None, "devices": devices}
+
+
+_status_lock = threading.Lock()
+_status: tuple[float, dict] | None = None
+_EMPTY_STATUS = {"hackrf": False, "airspy": False, "devices": []}
+
+
+def native_status(max_age_s: float = 15.0) -> dict:
+    """enumerate_here() answered by a child process (``main.py --list-native-sdr``), cached for a few seconds.
+
+    Calling libhackrf inside the server process segfaulted on the first /api/settings after a switch to SoapySDR
+    (hackrf_device_list, 2026-10-31, three crashes): SoapySDR/librtlsdr already hold libusb there ("API misuse!
+    Using non-default context as implicit default"), and the same call is fine alone. A crash in a child costs
+    nothing - the answer is then "nothing found". Opening a chosen HackRF/Airspy to scan with is still in-process
+    (do not mix them with an RTL-SDR dongle in extra_devices until someone has tried that on real hardware)."""
+    global _status
+    with _status_lock:
+        if _status is not None and time.monotonic() - _status[0] < max_age_s:
+            return _status[1]
+        cmd = [sys.executable, "--list-native-sdr"] if getattr(sys, "frozen", False) else \
+            [sys.executable, str(Path(__file__).resolve().parent.parent / "main.py"), "--list-native-sdr"]
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+            data = json.loads(next(line for line in reversed(out.splitlines()) if line.startswith("{")))
+            status = {"hackrf": bool(data["hackrf"]), "airspy": bool(data["airspy"]), "devices": list(data["devices"])}
+        except (OSError, subprocess.SubprocessError, StopIteration, ValueError, KeyError, TypeError):
+            status = dict(_EMPTY_STATUS)
+        _status = (time.monotonic(), status)
+        return status
 
 
 # USB ids of receivers that need more than the built-in RTL-SDR path (Linux; sysfs needs no library).

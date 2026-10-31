@@ -87,10 +87,16 @@ def main() -> int:
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--version", action="version", version=f"FalconSDR {__version__}")
     parser.add_argument("--self-test", action="store_true", help="check this install has everything it needs, then exit")
+    parser.add_argument("--list-native-sdr", action="store_true", help=argparse.SUPPRESS)  # asked by the server itself
     parser.add_argument("--probe-sdr", nargs="?", const="", default=None, metavar="DRIVER",
                         help="measure the receiver with the scanner stopped, print a report, then exit")
     args = parser.parse_args()
 
+    if args.list_native_sdr:
+        import json
+        from falconsdr import sdr_native
+        print(json.dumps(sdr_native.enumerate_here()), flush=True)
+        return 0
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if sys.stdout is None or sys.stderr is None:
         # Windowed build (no console): keep the log where support can find it.

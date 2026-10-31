@@ -407,7 +407,7 @@ class Controller:
                 "digital": digital_voice.is_digital_installed(),
                 "platform": sys.platform,
                 "soapy": HAVE_SOAPY,
-                "native": {"hackrf": sdr_native.hackrf_library() is not None, "airspy": sdr_native.airspy_library() is not None},
+                "native": {k: sdr_native.native_status()[k] for k in ("hackrf", "airspy")},
                 "usb_seen": sdr_native.usb_receivers_seen(),
                 "autostart": autostart.is_enabled() if autostart.supported() else None,
             },

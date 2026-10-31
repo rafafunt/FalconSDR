@@ -36,7 +36,7 @@ def _checks():
         missing = [name for name, lib in (("libhackrf", hack), ("libairspy", air)) if lib is None]
         if required and missing:
             raise RuntimeError(f"{' and '.join(missing)} could not be loaded from the bundle")
-        sdr_native.native_enumerate()
+        sdr_native.enumerate_here()    # in this process: nothing else holds libusb in a self-test
         return "libhackrf and libairspy load" if not missing else f"not bundled here ({', '.join(missing)} missing - fine for a source install)"
 
     def web_ui():
