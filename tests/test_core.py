@@ -1397,6 +1397,30 @@ class WorkerTokenTest(unittest.TestCase):
         self.assertEqual(Api("http://x", "plain").token, "plain")
 
 
+class MergePatchTest(unittest.TestCase):
+    def _ctl(self):
+        from falconsdr import controller as controller_mod
+        cfg = AppConfig()
+        cfg.recording.output_dir = tempfile.mkdtemp(dir=_HOME)
+        return controller_mod.Controller(cfg)
+
+    def test_a_bad_value_applies_nothing(self) -> None:
+        ctl = self._ctl()
+        before = (ctl.config.trigger_level_dbfs, ctl.config.default_blacklist_margin_hz)
+        with self.assertRaises(ValueError):
+            ctl.patch_config({"trigger_level_dbfs": -10.0, "default_blacklist_margin_hz": "abc"})
+        self.assertEqual((ctl.config.trigger_level_dbfs, ctl.config.default_blacklist_margin_hz), before)
+
+    def test_null_clears_only_fields_that_may_be_empty(self) -> None:
+        ctl = self._ctl()
+        ctl.patch_config({"location": {"home_lat": 49.5}})
+        ctl.patch_config({"location": {"home_lat": None}})
+        self.assertIsNone(ctl.config.location.home_lat)
+        with self.assertRaises(ValueError):
+            ctl.patch_config({"trigger_level_dbfs": None})
+        self.assertIsInstance(ctl.config.trigger_level_dbfs, float)
+
+
 class CacheKeyTest(_LibCase):
     def _lib_for(self, root: Path) -> Library:
         cfg = AppConfig()

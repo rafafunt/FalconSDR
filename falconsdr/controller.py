@@ -9,13 +9,14 @@ value, so it never holds the scanner up.
 """
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import queue
 import sys
 import threading
 import time
 from collections import deque
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -59,9 +60,15 @@ _ACTIVE = ("SIGNAL_DETECTED", "LINGER")
 _STATE_RANK = ["SIGNAL_DETECTED", "LINGER", "RECONNECTING", "SCANNING", "TUNING", "CALCULATE_NEXT_FREQ", "IDLE"]
 
 
+def _nullable(obj: Any, key: str) -> bool:
+    return any(f.name == key and "None" in str(f.type) for f in fields(obj))
+
+
 def merge_patch(obj: Any, patch: dict) -> None:
     """Applies a partial JSON update to a (nested) config dataclass in place,
-    coercing each value to the field's current type. Unknown keys are ignored."""
+    coercing each value to the field's current type. Unknown keys are ignored.
+    A value that can't be coerced raises (ValueError/TypeError) - patch_config()
+    tries it on a copy first, so a bad request never half-applies."""
     for key, value in patch.items():
         if not hasattr(obj, key):
             continue
@@ -70,8 +77,12 @@ def merge_patch(obj: Any, patch: dict) -> None:
             setattr(obj, key, [_from_dict(_LIST_TYPES[key], b) for b in value if isinstance(b, dict)])
         elif is_dataclass(current) and isinstance(value, dict):
             merge_patch(current, value)
-        elif current is None or value is None:
+        elif current is None:
             setattr(obj, key, value)
+        elif value is None:
+            if not _nullable(obj, key):
+                raise ValueError(f"{key} can't be empty")
+            setattr(obj, key, None)
         else:
             setattr(obj, key, _coerce(current, value))
 
@@ -414,6 +425,7 @@ class Controller:
         old_root = self.config.recording.output_dir
         for locked in ("access_token", "workers"):
             patch.pop(locked, None)
+        merge_patch(copy.deepcopy(self.config), patch)  # rejects a bad value before anything is applied
         merge_patch(self.config, patch)
         # An emptied folder field would otherwise mean "the current directory".
         self.config.recording.output_dir = self.config.recording.output_dir.strip() or DEFAULT_RECORDINGS_DIR
