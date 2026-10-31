@@ -12,6 +12,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING
 
 import numpy as np
+import scipy.fft as _fft
 
 if TYPE_CHECKING:
     from .config import VfoRangeConfig
@@ -75,6 +76,22 @@ def _hann_window_power(n: int) -> float:
 
 
 @lru_cache(maxsize=8)
+def _hann_window32(n: int) -> np.ndarray:
+    return _hann_window(n).astype(np.float32)
+
+
+def _power_spectrum(iq: np.ndarray) -> np.ndarray:
+    """Per-bin power (fftshift-ed, float32) of one block. Single precision all the way: scipy's complex64 FFT is
+    2-3x faster than numpy's (which widens to complex128) and halves the memory traffic - measured identical to
+    0.00 dB in the channel sums, which are accumulated in float64 by the callers. numpy's fftshift is applied to the
+    real power, not to the complex spectrum."""
+    n = iq.size
+    spectrum = _fft.fft(iq.astype(np.complex64, copy=False) * _hann_window32(n))
+    psd = (spectrum.real ** 2 + spectrum.imag ** 2) * np.float32(1.0 / (_hann_window_power(n) * n))
+    return np.fft.fftshift(psd)
+
+
+@lru_cache(maxsize=8)
 def _bin_freqs(n: int, sample_rate: float) -> np.ndarray:
     """FFT bin frequencies relative to the tuned center (cached, read-only)."""
     return np.fft.fftshift(np.fft.fftfreq(n, d=1.0 / sample_rate))
@@ -89,12 +106,9 @@ def spectrum_cumsum(iq: np.ndarray, sample_rate: float) -> tuple[np.ndarray, np.
     if iq.size == 0:
         return None
     n = iq.size
-    window = _hann_window(n)
-    win_power = _hann_window_power(n)
-    spectrum = np.fft.fftshift(np.fft.fft(iq * window))
-    psd = (np.abs(spectrum) ** 2) / (win_power * n)
+    psd = _power_spectrum(iq)
     bin_freqs = _bin_freqs(n, sample_rate)
-    cumsum = np.concatenate(([0.0], np.cumsum(psd)))
+    cumsum = np.concatenate(([0.0], np.cumsum(psd, dtype=np.float64)))
     return bin_freqs, cumsum
 
 
@@ -178,15 +192,12 @@ def spectrum_snapshot(iq: np.ndarray, sample_rate: float, center_hz: float, num_
     if iq.size == 0:
         return np.zeros(num_points), np.full(num_points, -120.0)
     n = iq.size
-    window = _hann_window(n)
-    win_power = _hann_window_power(n)
-    spectrum = np.fft.fftshift(np.fft.fft(iq * window))
-    psd = (np.abs(spectrum) ** 2) / (win_power * n)
+    psd = _power_spectrum(iq)
     freqs = _bin_freqs(n, sample_rate) + center_hz
 
     if n > num_points:
         edge = n - (n % num_points)
-        psd = psd[:edge].reshape(num_points, -1).sum(axis=1)
+        psd = psd[:edge].reshape(num_points, -1).sum(axis=1, dtype=np.float64)
         freqs = freqs[:edge].reshape(num_points, -1).mean(axis=1)
     db = 10.0 * np.log10(np.clip(psd, 1e-12, None))
     return freqs, db

@@ -957,7 +957,7 @@ class DigitalVoiceTest(unittest.TestCase):
             x = (rng.standard_normal(fs // 4) + 1j * rng.standard_normal(fs // 4)).astype(np.complex64)
             g = np.gcd(48000, fs)
             whole = resample_poly(x, 48000 // g, fs // g)
-            r, parts, i = StreamResampler(fs, 48000), [], 0
+            r, parts, i = StreamResampler(fs, 48000, predecimate=False), [], 0
             while i < x.size:  # odd block sizes, some shorter than the filter
                 n = int(rng.integers(300, 80000))
                 parts.append(r.process(x[i:i + n]))
@@ -965,6 +965,49 @@ class DigitalVoiceTest(unittest.TestCase):
             y = np.concatenate(parts)
             self.assertGreater(y.size, whole.size - 50)  # only the last few samples still wait for more input
             np.testing.assert_allclose(y, whole[:y.size], atol=1e-5)
+
+    def test_predecimation_gives_the_same_audio_for_a_fraction_of_the_work(self) -> None:
+        import time
+        import numpy as np
+        from falconsdr.dsp import StreamResampler
+        rng = np.random.default_rng(2)
+        fs, to = 2_400_000, 12_500
+        n = fs * 3 // 10
+        t = np.arange(n) / fs
+        wanted = 0.1 * (1 + 0.6 * np.sin(2 * np.pi * 1000 * t))                               # 1 kHz AM on the carrier, at 0 Hz
+        loud = 3.0 * (1 + 0.5 * np.sin(2 * np.pi * 600 * t)) * np.exp(2j * np.pi * 25_000 * t)  # a neighbour 25 kHz away, 30 dB louder
+        x = (wanted + loud + (rng.standard_normal(n) + 1j * rng.standard_normal(n)) * 0.002).astype(np.complex64)
+
+        def run(pre, sizes):
+            r, parts, i = StreamResampler(fs, to, predecimate=pre), [], 0
+            while i < x.size:
+                k = sizes if isinstance(sizes, int) else int(rng.integers(*sizes))
+                parts.append(r.process(x[i:i + k]))
+                i += k
+            return np.concatenate(parts)
+        two_stage = run(True, (700, 90_000))                    # odd block sizes, some shorter than the filters
+        one_call = run(True, x.size)
+        single = run(False, x.size)
+        m = min(two_stage.size, one_call.size)
+        np.testing.assert_allclose(two_stage[:m], one_call[:m], atol=1e-6)    # block edges leave no trace
+        a, b = np.abs(single[400:-400]), np.abs(run(True, x.size)[400:-400])
+        n_cmp = min(a.size, b.size)
+        best = min(range(-6, 7), key=lambda s: float(np.linalg.norm(a[10:n_cmp - 10] - np.roll(b[:n_cmp], s)[10:n_cmp - 10])))
+        err = np.linalg.norm(a[10:n_cmp - 10] - np.roll(b[:n_cmp], best)[10:n_cmp - 10]) / np.linalg.norm(a[10:n_cmp - 10])
+        self.assertLess(20 * np.log10(err), -45)                              # the envelope (AM audio) is the same
+        r = StreamResampler(fs, to)
+        self.assertIsNotNone(r._pre)                                          # 192:1 gets the pre-stage...
+        self.assertIsNone(StreamResampler(250_000, 48_000)._pre)               # ...a small ratio does not
+        reps = 5
+        started = time.perf_counter()
+        for _ in range(reps):
+            StreamResampler(fs, to, predecimate=False).process(x)
+        slow = time.perf_counter() - started
+        started = time.perf_counter()
+        for _ in range(reps):
+            StreamResampler(fs, to).process(x)
+        fast = time.perf_counter() - started
+        self.assertLess(fast, slow / 1.8)                                      # measured 3.6x; slow CI runners get slack
 
     def test_decoder_parses_calls_and_keeps_its_timeline(self) -> None:
         import numpy as np

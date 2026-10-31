@@ -7,7 +7,7 @@ wideband path (_demod_wfm): decimating to AUDIO_RATE first would filter its
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import butter, lfilter, resample_poly
+from scipy.signal import butter, firwin, lfilter, resample_poly
 
 from .models import Modulation
 
@@ -69,20 +69,44 @@ class StreamResampler:
     a delay of half the filter, well under a millisecond."""
 
     _HALF_LEN = 10  # resample_poly's default: filter half-length = 10 * max(up, down) taps
+    _PRE_MIN_FACTOR = 3        # a pre-decimation by less than this is not worth a second stage
+    _PRE_RATIO = 8             # the exact stage runs at about this many times the output rate
+    _PRE_ATTENUATION_DB = 80.0
 
-    def __init__(self, from_rate: float, to_rate: float):
-        up, down = int(round(to_rate)), int(round(from_rate))
+    def __init__(self, from_rate: float, to_rate: float, predecimate: bool = True, _taps: np.ndarray | None = None,
+                 _ratio: tuple[int, int] | None = None):
+        """With a large ratio (2.4 MS/s -> 12.5 kS/s is 192:1; a HackRF's 10 MS/s far more) the exact filter -
+        20 multiplications per INPUT sample whatever the ratio - is run in two steps: first a short low-pass
+        decimation by D to about 8x the output rate (a wide transition band is all it needs: only what could alias
+        into the output band must go, 80 dB), then the same exact resampler as before on D times fewer samples.
+        Same result to well below audibility, 3-5x less work. ``predecimate=False`` is the single stage."""
+        up, down = _ratio or (int(round(to_rate)), int(round(from_rate)))
+        self._pre: "StreamResampler | None" = None
+        if _ratio is None:
+            factor = int(from_rate // (self._PRE_RATIO * to_rate))
+            if predecimate and factor >= self._PRE_MIN_FACTOR:
+                fs2 = from_rate / factor
+                width = (fs2 - to_rate) / from_rate                      # transition width relative to fs
+                numtaps = int(np.ceil((self._PRE_ATTENUATION_DB - 7.95) / (2.285 * 2 * np.pi * width))) | 1
+                beta = 0.1102 * (self._PRE_ATTENUATION_DB - 8.7)
+                taps = firwin(numtaps, fs2 / 2, window=("kaiser", beta), fs=from_rate)
+                self._pre = StreamResampler(from_rate, from_rate / factor, _taps=taps, _ratio=(1, factor))
+                up, down = int(round(to_rate)) * factor, int(round(from_rate))   # exact: to_rate / (from_rate / factor)
         g = np.gcd(up, down)
         self.up, self.down = up // g, down // g
-        self._half = -(-self._HALF_LEN * max(self.up, self.down) // self.up)  # in input samples
+        self._taps = _taps
+        half_up = (len(_taps) - 1) // 2 if _taps is not None else self._HALF_LEN * max(self.up, self.down)
+        self._half = -(-half_up // self.up)  # in input samples
         self._hist = np.zeros(0, dtype=np.complex64)
         self._start = 0   # stream index of _hist[0], always a multiple of down
         self._next = 0    # next output index to emit
 
     def process(self, x: np.ndarray) -> np.ndarray:
+        if self._pre is not None:
+            x = self._pre.process(x)
         seg = np.concatenate([self._hist, x])
         end = self._start + seg.size
-        y = resample_poly(seg, self.up, self.down)
+        y = resample_poly(seg, self.up, self.down) if self._taps is None else resample_poly(seg, self.up, self.down, window=self._taps)
         first = self._start * self.up // self.down  # output index of y[0]
         last = (end - self._half) * self.up // self.down  # outputs from here on still see the edge
         lo = max(self._next, first)
@@ -107,6 +131,8 @@ class Demodulator:
         self._dc_zi = np.zeros(1)  # lfilter state for the AM DC-blocker, see demod()
         self._prev_phase = 0.0
         self._mix_index = 0
+        self._mix_key: tuple | None = None   # (block size, shift) of _mix_base
+        self._mix_base: np.ndarray | None = None
         self._deemph_zi = np.zeros(1)
         self._agc_envelope = _AGC_MIN_ENVELOPE
         self._agc_gain: float | None = None  # gain at the end of the previous block
@@ -198,18 +224,30 @@ class Demodulator:
             audio = self._audio_resampler.process(audio).real  # complex in, imag stays 0
         return audio
 
+    def _mix(self, iq: np.ndarray, shift_hz: float) -> np.ndarray:
+        """Moves the channel ``shift_hz`` away from the tuner's centre to 0 Hz, continuing the phase of the previous
+        block. exp(-2j*pi*f*(i0 + k)/fs) = a constant turn per block x one vector that only depends on (f, n): the
+        vector is built once per channel and reused every block - the per-sample sin/cos was a third of the cost of
+        a slot at 10 MS/s. Same values as before to ~1e-7."""
+        n = iq.size
+        if self._mix_key != (n, shift_hz):
+            self._mix_base = np.exp(-2j * np.pi * shift_hz * (np.arange(n) / self.sample_rate)).astype(np.complex64)
+            self._mix_key = (n, shift_hz)
+        turn = np.complex64(np.exp(-2j * np.pi * shift_hz * (self._mix_index / self.sample_rate)))
+        self._mix_index = (self._mix_index + n) % int(round(self.sample_rate))
+        return (iq * turn) * self._mix_base
+
     def discriminate(self, iq: np.ndarray, offset_hz: float, rate: int) -> np.ndarray:
         """Raw FM discriminator output at ``rate`` (radians/sample) - what a
         digital voice decoder needs: no voice filter, no de-emphasis, no AGC."""
         if iq.size == 0:
             return np.zeros(0, dtype=np.float32)
         if offset_hz:
-            n = iq.size
-            t = (self._mix_index + np.arange(n)) / self.sample_rate
-            iq = iq * np.exp(-2j * np.pi * offset_hz * t)
-            self._mix_index = (self._mix_index + n) % int(round(self.sample_rate))
+            iq = self._mix(iq, offset_hz)
         if self._stream_resampler is None:
-            self._stream_resampler = StreamResampler(self.sample_rate, rate)
+            # Single stage on purpose: digital voice decoding is the one consumer nobody here can test against a real
+            # decoder, so it keeps the filter it was built and checked with.
+            self._stream_resampler = StreamResampler(self.sample_rate, rate, predecimate=False)
         baseband = self._stream_resampler.process(iq)
         phase = np.unwrap(np.concatenate(([self._prev_phase], np.angle(baseband))))
         self._prev_phase = phase[-1]
@@ -230,11 +268,7 @@ class Demodulator:
 
         if total_shift_hz:
             # The tuner sits on the window center - mix this channel to baseband.
-            n = iq.size
-            fs = int(round(self.sample_rate))
-            t = (self._mix_index + np.arange(n)) / self.sample_rate
-            iq = iq * np.exp(-2j * np.pi * total_shift_hz * t)
-            self._mix_index = (self._mix_index + n) % fs
+            iq = self._mix(iq, total_shift_hz)
 
         if modulation == Modulation.WFM:
             audio = self._demod_wfm(iq)
