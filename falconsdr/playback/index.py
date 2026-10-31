@@ -446,6 +446,7 @@ class Library:
                 if rec is not None:
                     rec.is_favorite = favorite
                     self.favorites.set_favorite(rec.key, favorite)
+        self.favorites.save()  # once, and not while holding the lock the scan thread waits on
 
     def delete(self, rels: Iterable[str]) -> int:
         deleted = 0
@@ -583,6 +584,7 @@ class Library:
                     rec.is_favorite = True
                     self.favorites.set_favorite(rec.key, True)
             self._dirty = True
+        self.favorites.save()
         return n
 
     def upload_target(self, rel: str) -> Path:

@@ -41,14 +41,13 @@ class FavoritesStore:
         return key in self._keys
 
     def set_favorite(self, key: str, favorite: bool) -> None:
+        """In memory only - the caller saves once after a batch (starring 5,000
+        recordings must not rewrite the whole file 5,000 times)."""
         if favorite:
             self._keys.add(key)
         else:
             self._keys.discard(key)
-        self.save()
 
     def remove(self, key: str) -> None:
-        """Removes a single entry (e.g. right after the user manually deletes a recording)."""
-        if key in self._keys:
-            self._keys.discard(key)
-            self.save()
+        """Removes a single entry (e.g. right after the user manually deletes a recording); caller saves."""
+        self._keys.discard(key)

@@ -1340,6 +1340,20 @@ class WorkerTokenTest(unittest.TestCase):
         self.assertEqual(Api("http://x", "plain").token, "plain")
 
 
+class FavoritesBatchTest(_LibCase):
+    def test_starring_many_recordings_saves_the_file_once(self) -> None:
+        from unittest import mock
+        rels = []
+        for khz in range(131000, 131020):
+            rels.append("2026-01-01/" + NAME.format(khz=khz))
+            _wav(self.root, rels[-1])
+        self.lib.rescan()
+        with mock.patch.object(self.lib.favorites, "save") as save:
+            self.lib.set_favorite(rels, True)
+        self.assertEqual(save.call_count, 1)
+        self.assertTrue(all(self.lib.get(r).is_favorite for r in rels))
+
+
 class LibraryLockTest(_LibCase):
     def test_a_slow_query_does_not_hold_the_lock_the_scanner_needs(self) -> None:
         from unittest import mock
