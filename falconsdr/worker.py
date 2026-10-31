@@ -233,7 +233,7 @@ class Worker(threading.Thread):
         try:
             local = Path(job["path"]) if self.embedded else None
             mirror_root = self._mirror_root()
-            if local is None and mirror_root is not None:
+            if local is None and mirror_root is not None and safe_rel(rel):
                 candidate = mirror_root / rel
                 if candidate.is_file() and candidate.stat().st_size == job["size"]:
                     local = candidate
@@ -300,6 +300,9 @@ class Worker(threading.Thread):
         for rel, f in sorted(server.items(), key=lambda kv: kv[0], reverse=True):
             if self._stop.is_set():
                 break
+            if not safe_rel(rel):
+                self.say(f"ignored a suspicious path from the server: {rel[:80]}")
+                continue
             target = root / rel
             if not (target.is_file() and target.stat().st_size == f["size"]):
                 self._status = "copying"
@@ -382,6 +385,13 @@ class Worker(threading.Thread):
         state[done_key] = True
         _save_state(state)
         return True
+
+
+def safe_rel(rel: str) -> bool:
+    """A recording id from the server, as a path below our folder: relative, no "..",
+    and a name FalconSDR itself would have written. The server is trusted only so far."""
+    path = Path(rel)
+    return not path.is_absolute() and ".." not in path.parts and parse_filename(path.name) is not None
 
 
 def _load_state() -> dict:

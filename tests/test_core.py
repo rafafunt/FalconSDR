@@ -1240,6 +1240,43 @@ class WorkerMirrorTest(unittest.TestCase):
         self.assertEqual(w.api.mirrored, ["d/" + NAME.format(khz=1)])
 
 
+class WorkerSafeRelTest(unittest.TestCase):
+    def test_paths_that_leave_the_folder_are_refused(self) -> None:
+        from falconsdr.worker import safe_rel
+        self.assertTrue(safe_rel("2026-01-01/" + NAME.format(khz=131000)))
+        self.assertFalse(safe_rel("../../x/" + NAME.format(khz=131000)))
+        self.assertFalse(safe_rel("/etc/" + NAME.format(khz=131000)))
+        self.assertFalse(safe_rel("2026-01-01/.bashrc"))
+
+    def test_mirror_skips_a_hostile_id_but_copies_the_rest(self) -> None:
+        from falconsdr.worker import Worker
+        good, evil = "d/" + NAME.format(khz=1), "../" + NAME.format(khz=2)
+
+        class FakeApi:
+            base = "http://x"
+            downloaded: list[str] = []
+
+            def get(self, _path):
+                return [{"id": good, "size": 5}, {"id": evil, "size": 5}]
+
+            def download(self, rel, target):
+                self.downloaded.append(rel)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"12345")
+
+            def post(self, *_a, **_k):
+                pass
+
+        root = Path(tempfile.mkdtemp(dir=_HOME)) / "mirror"
+        root.mkdir()
+        w = Worker("http://x", "", local_root=root)
+        w.api = FakeApi()
+        w._settings = {"mirror": True, "mirror_dir": ""}
+        w._mirror()
+        self.assertEqual(w.api.downloaded, [good])
+        self.assertFalse((root.parent / NAME.format(khz=2)).exists())
+
+
 class HttpTest(unittest.TestCase):
     def _serve(self, mode: str, token: str):
         from falconsdr.web.server import App, make_handler
