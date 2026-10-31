@@ -479,6 +479,12 @@ class Library:
             return ""
 
     # -- writing ----------------------------------------------------------
+    def favorite_count(self, rels: Iterable[str]) -> tuple[int, int]:
+        """(favorites, listed) among ``rels`` - the Recordings page needs it for a selection it has not loaded."""
+        with self._lock:
+            recs = [r for r in (self._recs.get(rel) for rel in rels) if r is not None]
+        return sum(1 for r in recs if r.is_favorite), len(recs)
+
     def set_favorite(self, rels: Iterable[str], favorite: bool) -> None:
         with self._lock:
             for rel in rels:

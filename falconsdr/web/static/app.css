@@ -319,6 +319,8 @@ button.day.on { color: var(--on-accent); background: var(--accent-fill); }
 .star:hover { background: var(--fill); }
 .star.on { color: #ff9f0a; }
 .star.on svg.ic { fill: currentColor; }
+.bulk .fav.on { color: #ff9f0a; }
+.bulk .fav.on svg.ic { fill: currentColor; }
 @media (max-width: 680px) {
   .rec { grid-template-columns: 22px minmax(0, 1fr) auto; grid-template-areas: "c w q" "c t t"; gap: 4px 10px; padding: 12px 4px; }
   .rec .chk { grid-area: c; align-self: start; margin-top: 2px; } .rec .when { grid-area: w; } .rec .what { grid-area: t; } .rec .qcell { grid-area: q; }

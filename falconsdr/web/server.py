@@ -496,6 +496,10 @@ def make_handler(app: App):
                             while chunk := src.read(1 << 20):
                                 out.write(chunk)
 
+        def lib_favorite_state(self, _query: dict) -> None:
+            favorites, listed = lib.favorite_count(self._body()["ids"])
+            self._json({"favorites": favorites, "count": listed})
+
         def lib_transcript(self, _query: dict) -> None:
             body = self._body()
             lib.set_transcript_text(str(body["id"]), str(body.get("text", "")))
@@ -660,6 +664,7 @@ def make_handler(app: App):
         ("POST", "/api/library/delete"): Handler.lib_delete,
         ("POST", "/api/library/retention"): Handler.lib_retention_now,
         ("POST", "/api/library/favorite"): Handler.lib_favorite,
+        ("POST", "/api/library/favorite_state"): Handler.lib_favorite_state,
         ("POST", "/api/library/zip"): Handler.lib_zip_prepare,
         ("GET", "/api/library/zip"): Handler.lib_zip,
         ("POST", "/api/library/transcript"): Handler.lib_transcript,

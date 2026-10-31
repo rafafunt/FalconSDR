@@ -195,15 +195,33 @@ export function recordingsView(root) {
     if (old) old.replaceWith(row(it));
   }
 
-  function renderBulk() {
+  // Whether the whole selection is favorite. Loaded recordings say so themselves; a selection that reaches past
+  // them (Select all) is asked of the server. bulkFav stays false until the answer arrives.
+  let bulkFav = false, bulkFavAsk = 0;
+  function updateBulkFav() {
+    const ids = [...selected];
+    const byId = new Map(items.map((i) => [i.id, i]));
+    if (ids.length && ids.every((id) => byId.has(id))) { bulkFav = ids.every((id) => byId.get(id).favorite); return; }
+    bulkFav = false;
+    if (!ids.length) return;
+    const ask = ++bulkFavAsk;
+    api.post('/api/library/favorite_state', { ids }).then((r) => {
+      if (ask !== bulkFavAsk) return;                 // the selection changed meanwhile
+      const now = r.count > 0 && r.favorites === r.count;
+      if (now !== bulkFav) { bulkFav = now; renderBulk(false); }
+    }).catch(() => {});
+  }
+
+  function renderBulk(refresh = true) {
     bulk.classList.toggle('hidden', !selected.size);
     if (!selected.size) return;
+    if (refresh) updateBulkFav();
     mount(bulk, h('div.row.wrap',
       h('b', t('{n} selected', { n: selected.size.toLocaleString() })),
       selected.size < total ? h('button.ghost', { onclick: selectAll }, t('Select all {n}', { n: total.toLocaleString() })) : null,
       h('span.spacer'),
-      h('button', { onclick: () => setFavorite([...selected], true) }, icon('star'), t('Favorite')),
-      h('button', { onclick: () => setFavorite([...selected], false) }, icon('star'), t('Unfavorite')),
+      // One toggle: filled star when every selected recording is a favorite, and a click then removes them.
+      h('button.fav', { class: bulkFav ? 'on' : '', title: bulkFav ? t('Remove from favorites') : t('Add to favorites'), onclick: () => setFavorite([...selected], !bulkFav) }, icon('star'), t('Favorite')),
       h('button', { onclick: () => download([...selected]) }, icon('download'), t('Download')),
       h('button', { onclick: () => transcribe([...selected]) }, icon('text'), t('Transcribe')),
       h('button.danger', { onclick: () => remove([...selected]) }, icon('trash'), t('Delete')),
@@ -224,6 +242,7 @@ export function recordingsView(root) {
       if (current && ids.includes(current.id)) renderPlayer();
       loadFacets();
       if (!favorite && F.sel.includes('fav')) reload();   // they no longer belong to the Favorites view
+      else renderBulk();
     } catch (e) { errorToast(e); }
   }
 

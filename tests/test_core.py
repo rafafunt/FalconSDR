@@ -1905,6 +1905,16 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(err.exception.code, 400)
         err.exception.close()
 
+    def test_the_favorite_state_of_a_selection_is_counted_by_the_server(self) -> None:
+        from types import SimpleNamespace
+        from falconsdr.playback.index import Library
+        lib = object.__new__(Library)
+        lib._lock = threading.Lock()
+        lib._recs = {"a": SimpleNamespace(is_favorite=True), "b": SimpleNamespace(is_favorite=True), "c": SimpleNamespace(is_favorite=False)}
+        self.assertEqual(lib.favorite_count(["a", "b"]), (2, 2))        # all favorite: the UI shows a filled star
+        self.assertEqual(lib.favorite_count(["a", "c", "gone"]), (1, 2))  # mixed; a vanished one is not counted
+        self.assertEqual(lib.favorite_count([]), (0, 0))
+
     def test_a_wrong_password_is_answered_slowly(self) -> None:
         from unittest import mock
         from falconsdr.web import server
