@@ -90,7 +90,7 @@ receiver at [falconsdr.com](https://falconsdr.com).
 | Receiver | How |
 |---|---|
 | RTL-SDR (incl. RTL-SDR Blog V3/V4) | built in on Linux, Windows and macOS |
-| HackRF, Airspy | built in on Windows, `.deb`, `.rpm` and AppImage (experimental) |
+| HackRF, Airspy | built in on Windows, `.deb`, `.rpm` and AppImage; macOS builds after 1.4.0 (experimental) |
 | SDRplay, LimeSDR, USRP, … | through SoapySDR, Linux source install (not tested) |
 
 An RTL-SDR is opened through librtlsdr; on Linux from source also through
@@ -106,7 +106,8 @@ only the fixed widths its board has (for instance 2.5 and 10 MHz on an Airspy
 R2), and FalconSDR picks the nearest. A wider capture needs more processor -
 on a 4-core mini PC about 1, 8 and 19 ms of every 30 ms block go to the
 spectrum at 2.4, 10 and 20 MHz, plus 2, 9 and 17 ms for each transmission being
-recorded. The macOS builds don't carry the HackRF/Airspy libraries.
+recorded. The macOS builds of 1.4.0 don't carry the HackRF/Airspy libraries;
+later ones do (untested on a real Mac).
 
 Developed and tested with an **RTL-SDR Blog V4** on Linux and Windows 11.
 Other receivers and macOS (experimental builds) should work but haven't been
@@ -179,6 +180,10 @@ package, anything else the AppImage. Add `--from-source` to install from a
 git checkout instead: the way to get SoapySDR support (LimeSDR, SDRplay,
 USRP, …, and HackRF/Airspy through SoapySDR instead of the built-in access)
 and the fallback for other CPU architectures or musl distros such as Alpine.
+The built-in HackRF/Airspy access needs their system libraries, which a source
+install does not bring along: add `--with-sdr-libs` (installs `libhackrf0` and
+`libairspy0` with apt, or `hackrf` and `airspyone_host` with dnf, using sudo):
+`curl -fsSL … | bash -s -- --from-source --with-sdr-libs`.
 
 ### Ubuntu / Debian - .deb package
 
@@ -274,7 +279,9 @@ flag in Terminal:
 xattr -dr com.apple.quarantine /Applications/FalconSDR.app
 ```
 
-An RTL-SDR needs no extra driver on macOS.
+An RTL-SDR needs no extra driver on macOS. Builds after 1.4.0 also carry the
+HackRF and Airspy libraries (built-in access, experimental); they only
+check that the libraries load - no real Mac with a HackRF or Airspy has tried them.
 
 ### From source (Linux, Windows, macOS)
 
@@ -300,7 +307,8 @@ The interface opens at `http://127.0.0.1:8765`. To update: `git pull`, run the
   `--system-site-packages`, as above, or it cannot see them. HackRF and Airspy
   can also be opened without SoapySDR (experimental, *SDR device → Access
   method*; the Windows, `.deb`, `.rpm` and AppImage builds already carry the libraries):
-  `sudo apt install libhackrf0 libairspy0`.
+  `sudo apt install libhackrf0 libairspy0`, or run the one-line installer with
+  `--with-sdr-libs`.
 - **Windows:** the dongle needs the WinUSB driver - see *RTL-SDR driver*
   above.
 - **MP3 recordings** use the ffmpeg that comes with the `imageio-ffmpeg`
@@ -334,7 +342,8 @@ with the address to open from any device on your network
 (`http://<receiver-ip>:8765`). Run the same line again to update - settings
 and recordings are kept. Details, other versions and helper computers for
 transcription: [packaging/remote-server/README.md](packaging/remote-server/README.md).
-The service sees the system's SoapySDR: `sudo apt install python3-soapysdr
+It also installs `libhackrf0` and `libairspy0` (small), so a HackRF or Airspy
+works through the built-in access without extra steps. The service sees the system's SoapySDR: `sudo apt install python3-soapysdr
 soapysdr-module-<your receiver>` and restart it (`sudo systemctl restart
 falconsdr-receiver`), then pick the access method under *SDR device*.
 
@@ -405,7 +414,7 @@ falconsdr --probe-sdr   measure the receiver with the scanner stopped (see Hardw
 - **A HackRF or Airspy is plugged in but not listed** - on Linux the Listen
   page names what is missing: SoapySDR (source install; see above) or the
   `libhackrf` / `libairspy` library (`sudo apt install libhackrf0 libairspy0`, Fedora:
-  `sudo dnf install hackrf airspyone_host`). If one way to open a receiver
+  `sudo dnf install hackrf airspyone_host`, or the installer's `--with-sdr-libs`). If one way to open a receiver
   fails, try the other under *SDR device → Access method*.
 - **Nothing gets recorded** - recording is off, the trigger level is too high,
   or the band's modulation is wrong (aviation is AM, most other VHF/UHF voice
@@ -439,7 +448,7 @@ are responsible for how you use this program.
 ## License
 
 GPL-3.0-or-later (see [LICENSE](LICENSE)) - required by `pyrtlsdr` and the
-bundled `librtlsdr`. The Windows/Linux packages list every bundled component
+bundled `librtlsdr`. The Windows, Linux and (after 1.4.0) macOS packages list every bundled component
 and its license in `THIRD-PARTY-LICENSES.txt` (ffmpeg in them is a GPLv3
 build; `libhackrf` and `libairspy` are BSD-3-Clause, `libusb` LGPL-2.1).
 Transcription software and Whisper models are not bundled: they are

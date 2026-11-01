@@ -777,7 +777,7 @@ catalog loads; wrap them in a function called at point of use
     run against a real board** - the author owns an RTL-SDR only. SoapySDR stays the default for both; the native
     path is the way out when SoapySDR is missing/fails (`open_real_backend`: `hackrf`/`airspy` without SoapySDR
     open natively) and a way to compare. `libhackrf`/`libairspy` are loaded by `_find_library` (bundle folder, system
-    package, `FALCONSDR_LIBHACKRF`/`FALCONSDR_LIBAIRSPY`) and **bundled in the Windows build and in every Linux package** (the
+    package, `FALCONSDR_LIBHACKRF`/`FALCONSDR_LIBAIRSPY`) and **bundled in the Windows build, every Linux package and (after 1.4.0) the macOS builds (Homebrew `hackrf`/`airspy`, `--add-binary`, self-test required via `FALCONSDR_REQUIRE_NATIVE_LIBS`; the workflow's `attach` input off = a test build that never touches a release)** (the
     `build-in-docker.sh` scripts install them - Fedora: `hackrf`, `airspyone_host` - and set `FALCONSDR_REQUIRE_NATIVE_LIBS=1`: a missing
     one fails the build and `--self-test` requires them). Licences checked from the sources on 2026-10-31: both libraries BSD-3-Clause
     (GPL-compatible; a binary needs their notice: `fetch_native_libs.py` and `linux-native-libs.sh` append it to
@@ -794,7 +794,7 @@ catalog loads; wrap them in a function called at point of use
     Airspy only captures the rates it lists (2.5/10 MS/s R2, 3/6/10 Mini - not 2.4): `AirspyBackend` raises with the
     list, the UI sets 2.5 MHz when it is picked. HackRF needs 2-20 MS/s. Antenna power (HackRF `antenna_enable`,
     Airspy `rf_bias`) follows gotcha 47: off at open, on as the last step, off in `close()`. `hackrf_init()` is
-    never undone (`hackrf_exit()` fails with a device open). The callback must never raise into C. A busy receiver
+    never undone (`hackrf_exit()` fails with a device open). Source installs get the system libraries from `install.sh --from-source --with-sdr-libs` (apt/dnf, sudo) and `--server` (apt, as root); the notices are `packaging/licenses/libhackrf|libairspy-BSD-3-Clause.txt`. The callback must never raise into C. A busy receiver
     can drop out of a fresh listing, so `Controller.devices()` keeps the saved choice. **libusb**: SoapySDR's modules
     and librtlsdr call `libusb_init(NULL)`/`libusb_exit(NULL)`; without a default context of its own libusb takes
     the first context created as the implicit default and the next `exit(NULL)` frees libhackrf's - then
