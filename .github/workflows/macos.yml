@@ -72,6 +72,19 @@ jobs:
           rc=$?
           cat ~/.config/FalconSDR/falconsdr.log 2>/dev/null
           exit $rc
+      # BSD-3-Clause (libhackrf, libairspy) wants its notice with a binary; the same file the Windows/Linux packages carry.
+      - name: Third-party licences
+        run: |
+          out=dist/FalconSDR.app/Contents/Resources/THIRD-PARTY-LICENSES.txt
+          venv/bin/python packaging/collect_licenses.py "$out"
+          { printf '\n==============================================================================\nlibhackrf (bundled shared library)\n==============================================================================\n\n'
+            cat packaging/licenses/libhackrf-BSD-3-Clause.txt
+            for f in airspy libusb; do
+              for l in "$(brew --prefix "$f")"/LICENSE* "$(brew --prefix "$f")"/COPYING*; do
+                [ -f "$l" ] && { printf '\n==============================================================================\n%s (bundled shared library - Homebrew licence file %s)\n==============================================================================\n\n' "$f" "$(basename "$l")"; cat "$l"; }
+              done
+            done; } >> "$out"
+          grep -c "bundled shared library" "$out"
       - name: Zip the app
         run: ditto -c -k --keepParent dist/FalconSDR.app "FalconSDR-$VERSION-macos-${{ matrix.arch }}-experimental.zip"
       # Kept as a workflow artifact too: a draft release has no tag yet, and a failed attach must not lose the build.
