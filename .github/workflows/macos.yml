@@ -77,12 +77,12 @@ jobs:
         run: |
           out=dist/FalconSDR.app/Contents/Resources/THIRD-PARTY-LICENSES.txt
           venv/bin/python packaging/collect_licenses.py "$out"
-          { printf '\n==============================================================================\nlibhackrf (bundled shared library)\n==============================================================================\n\n'
-            cat packaging/licenses/libhackrf-BSD-3-Clause.txt
-            for f in airspy libusb; do
-              for l in "$(brew --prefix "$f")"/LICENSE* "$(brew --prefix "$f")"/COPYING*; do
-                [ -f "$l" ] && { printf '\n==============================================================================\n%s (bundled shared library - Homebrew licence file %s)\n==============================================================================\n\n' "$f" "$(basename "$l")"; cat "$l"; }
-              done
+          { for f in libhackrf libairspy; do
+              printf '\n==============================================================================\n%s (bundled shared library)\n==============================================================================\n\n' "$f"
+              cat "packaging/licenses/$f-BSD-3-Clause.txt"
+            done
+            for l in "$(brew --prefix libusb)"/COPYING*; do
+              [ -f "$l" ] && { printf '\n==============================================================================\nlibusb (bundled shared library - Homebrew licence file %s)\n==============================================================================\n\n' "$(basename "$l")"; cat "$l"; }
             done; } >> "$out"
           grep -c "bundled shared library" "$out"
       - name: Zip the app
