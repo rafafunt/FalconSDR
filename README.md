@@ -90,7 +90,7 @@ receiver at [falconsdr.com](https://falconsdr.com).
 | Receiver | How |
 |---|---|
 | RTL-SDR (incl. RTL-SDR Blog V3/V4) | built in on Linux, Windows and macOS |
-| HackRF, Airspy | built in on Windows, `.deb`, `.rpm` and AppImage; macOS builds after 1.4.0 (experimental) |
+| HackRF, Airspy | built in on Windows, `.deb`, `.rpm`, AppImage and (since 1.4.1) macOS (experimental) |
 | SDRplay, LimeSDR, USRP, … | through SoapySDR, Linux source install (not tested) |
 
 An RTL-SDR is opened through librtlsdr; on Linux from source also through
@@ -106,8 +106,8 @@ only the fixed widths its board has (for instance 2.5 and 10 MHz on an Airspy
 R2), and FalconSDR picks the nearest. A wider capture needs more processor -
 on a 4-core mini PC about 1, 8 and 19 ms of every 30 ms block go to the
 spectrum at 2.4, 10 and 20 MHz, plus 2, 9 and 17 ms for each transmission being
-recorded. The macOS builds of 1.4.0 don't carry the HackRF/Airspy libraries;
-later ones do (untested on a real Mac).
+recorded. The macOS builds carry the HackRF/Airspy libraries since 1.4.1
+(untested on a real Mac).
 
 Developed and tested with an **RTL-SDR Blog V4** on Linux and Windows 11.
 Other receivers and macOS (experimental builds) should work but haven't been
@@ -279,7 +279,7 @@ flag in Terminal:
 xattr -dr com.apple.quarantine /Applications/FalconSDR.app
 ```
 
-An RTL-SDR needs no extra driver on macOS. Builds after 1.4.0 also carry the
+An RTL-SDR needs no extra driver on macOS. Builds since 1.4.1 also carry the
 HackRF and Airspy libraries (built-in access, experimental); they only
 check that the libraries load - no real Mac with a HackRF or Airspy has tried them.
 
@@ -448,7 +448,7 @@ are responsible for how you use this program.
 ## License
 
 GPL-3.0-or-later (see [LICENSE](LICENSE)) - required by `pyrtlsdr` and the
-bundled `librtlsdr`. The Windows, Linux and (after 1.4.0) macOS packages list every bundled component
+bundled `librtlsdr`. The Windows, Linux and (since 1.4.1) macOS packages list every bundled component
 and its license in `THIRD-PARTY-LICENSES.txt` (ffmpeg in them is a GPLv3
 build; `libhackrf` and `libairspy` are BSD-3-Clause, `libusb` LGPL-2.1).
 Transcription software and Whisper models are not bundled: they are
