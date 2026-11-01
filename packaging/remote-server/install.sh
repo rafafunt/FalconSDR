@@ -16,6 +16,12 @@ if command -v apt-get >/dev/null && ! { command -v rsync && python3 -c "import e
     apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rsync python3-venv >/dev/null
 fi
 
+# HackRF/Airspy without SoapySDR (experimental) use the system libraries - small, and harmless without the hardware.
+if command -v apt-get >/dev/null && ! dpkg -s libhackrf0 libairspy0 >/dev/null 2>&1; then
+    { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libhackrf0 libairspy0 >/dev/null; } ||
+        echo "note: could not install libhackrf0 / libairspy0 (only needed for a HackRF or Airspy without SoapySDR)"
+fi
+
 getent group plugdev >/dev/null || groupadd --system plugdev
 if ! id falconsdr >/dev/null 2>&1; then
     useradd --system --home-dir "$HOME_DIR" --no-create-home --shell /usr/sbin/nologin --groups plugdev falconsdr

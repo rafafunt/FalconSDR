@@ -15,6 +15,10 @@ on:
         description: Branch, tag or commit to build (empty = the tag; set a branch while the release is still a draft)
         required: false
         default: ""
+      attach:
+        description: Attach the zips to the release (untick to only test a build - it never touches a published release)
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -37,6 +41,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # libhackrf + libairspy (BSD-3-Clause; libusb LGPL-2.1) from Homebrew, bundled like on Linux/Windows
+      # (AGENTS.md gotcha 55). The self-test below requires them: a build without them fails.
+      - name: HackRF and Airspy libraries
+        run: |
+          brew install hackrf airspy
+          for lib in libhackrf libairspy; do ls -la "$(brew --prefix)/lib/$lib.dylib"; done
       - name: Build FalconSDR.app
         # Same bundling rules as packaging/linux-deb/build.sh (AGENTS.md gotcha 35/43).
         run: |
@@ -50,8 +60,12 @@ jobs:
             --add-data falconsdr/web/static:falconsdr/web/static \
             --collect-data tzdata --collect-data pyrtlsdrlib \
             --collect-data imageio_ffmpeg --collect-all pip \
+            --add-binary "$(brew --prefix)/lib/libhackrf.dylib:." \
+            --add-binary "$(brew --prefix)/lib/libairspy.dylib:." \
             main.py
       - name: Self-test of the built app
+        env:
+          FALCONSDR_REQUIRE_NATIVE_LIBS: "1"
         run: |
           set +e
           dist/FalconSDR.app/Contents/MacOS/FalconSDR --self-test
@@ -66,6 +80,7 @@ jobs:
           name: macos-${{ matrix.arch }}
           path: FalconSDR-*-macos-*-experimental.zip
       - name: Attach to the release
+        if: inputs.attach
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ inputs.tag }}" "FalconSDR-$VERSION-macos-${{ matrix.arch }}-experimental.zip" --clobber

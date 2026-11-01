@@ -16,7 +16,10 @@
 #     there), and releases that don't publish the matching asset yet).
 #     Run it again - from the folder that holds FalconSDR/ - to update: it
 #     pulls the checkout, resets the venv's settings and reinstalls the
-#     requirements; restart FalconSDR afterwards.
+#     requirements; restart FalconSDR afterwards. HackRF/Airspy without
+#     SoapySDR (experimental) need the system libraries libhackrf/libairspy,
+#     which pip cannot provide: add --with-sdr-libs to have them installed
+#     (apt: libhackrf0 libairspy0, dnf: hackrf airspyone_host; uses sudo).
 #   - `--server` -> headless receiver: a checkout in /opt/falconsdr-src,
 #     packaging/remote-server/install.sh, systemd service started (Debian,
 #     Ubuntu, Raspberry Pi OS). The latest release unless FALCONSDR_REF=
@@ -31,7 +34,9 @@ VERSION="${FALCONSDR_VERSION:-latest}"
 REF="${FALCONSDR_REF:-}"
 FROM_SOURCE=0
 SERVER=0
+WITH_SDR_LIBS=0
 for a in "$@"; do
+  [ "$a" = "--with-sdr-libs" ] && WITH_SDR_LIBS=1
   [ "$a" = "--from-source" ] && FROM_SOURCE=1
   [ "$a" = "--server" ] && SERVER=1
 done
@@ -174,6 +179,22 @@ EOF
   say "Run it with: $dest"
 }
 
+# The HackRF/Airspy libraries are system packages (a pip wheel cannot carry them); the packaged builds bundle them.
+install_sdr_libs() {
+  SUDO=""
+  if [ "$(id -u)" != "0" ]; then need sudo; SUDO=sudo; fi
+  say "Installing the HackRF and Airspy libraries (--with-sdr-libs)..."
+  if have_apt; then
+    { $SUDO apt-get update -qq && $SUDO apt-get install -y libhackrf0 libairspy0; } ||
+      say "Could not install libhackrf0 / libairspy0 - install them by hand if you use a HackRF or Airspy."
+  elif have_dnf; then
+    $SUDO dnf install -y hackrf airspyone_host ||
+      say "Could not install hackrf / airspyone_host - install them by hand if you use a HackRF or Airspy."
+  else
+    say "--with-sdr-libs: no apt or dnf here - install libhackrf and libairspy with your package manager."
+  fi
+}
+
 install_from_source() {
   say "Installing FalconSDR from source (SoapySDR-capable path)..."
   need python3; need git
@@ -193,6 +214,7 @@ install_from_source() {
   # plain venv cannot see it - HackRF & co were silently not found (issue #9).
   python3 -m venv --system-site-packages .venv
   .venv/bin/pip install -r requirements.txt
+  if [ "$WITH_SDR_LIBS" = "1" ]; then install_sdr_libs; fi
   cat <<EOF
 
 FalconSDR $version is ready. Start it with:
@@ -201,7 +223,8 @@ FalconSDR $version is ready. Start it with:
 run this same command again from the folder that contains FalconSDR/.)
 (RTL-SDR udev rule: packaging/linux-deb/60-rtl-sdr.rules - see the README.
 SoapySDR hardware: sudo apt install python3-soapysdr soapysdr-module-<device>, then restart.
-HackRF/Airspy also work without SoapySDR (experimental): libhackrf0 / libairspy0.)
+HackRF/Airspy also work without SoapySDR (experimental): add --with-sdr-libs to this command,
+or install libhackrf0 / libairspy0 yourself.)
 EOF
 }
 
