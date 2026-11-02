@@ -95,8 +95,9 @@ receiver at [falconsdr.com](https://falconsdr.com).
 
 An RTL-SDR is opened through librtlsdr; on Linux from source also through
 SoapySDR - choose under *SDR device → Access method*. HackRF and Airspy work
-through the bundled `libhackrf` / `libairspy` (**untested on real hardware**,
-pick *Access method → libhackrf / libairspy*); on Linux from source they work
+through the bundled `libhackrf` / `libairspy` (experimental: confirmed on a
+real HackRF One, **untested on an Airspy**; pick *Access method → libhackrf /
+libairspy*); on Linux from source they work
 through [SoapySDR](https://github.com/pothosware/SoapySDR) with the matching
 module, or through the same built-in access once `libhackrf0` / `libairspy0`
 are installed.
@@ -110,6 +111,10 @@ recorded. The macOS builds carry the HackRF/Airspy libraries since 1.4.1
 (untested on a real Mac).
 
 Developed and tested with an **RTL-SDR Blog V4** on Linux and Windows 11.
+A **HackRF One** has been checked on Linux (10 MHz capture; SoapySDR and
+libhackrf both scan, libhackrf reported no lost samples) by
+[phutch](https://github.com/phutch) in
+[issue #9](https://github.com/rafafunt/FalconSDR/issues/9) - thank you.
 Other receivers and macOS (experimental builds) should work but haven't been
 tested yet - reports are welcome.
 

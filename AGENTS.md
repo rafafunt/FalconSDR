@@ -773,8 +773,11 @@ catalog loads; wrap them in a function called at point of use
     (`_async_buffer_bytes`), and `close()` leaves the device open if the stream thread will not
     stop (freeing it under a running `rtlsdr_read_async` can crash). Not tried on Windows.
 
-55. **HackRF/Airspy natively (`sdr_native.py`, drivers `hackrf_native`/`airspy_native`) is experimental and has never
-    run against a real board** - the author owns an RTL-SDR only. SoapySDR stays the default for both; the native
+55. **HackRF/Airspy natively (`sdr_native.py`, drivers `hackrf_native`/`airspy_native`) is experimental** - the author owns an RTL-SDR
+    only. **Only a HackRF One has run so far** (a user, Linux 6.12 `+deb13` kernel, 10 MS/s, issue #9, 2026-11-01, `--probe-sdr`: both ways
+    open and scan; no stale blocks after a retune (soapy 26 ms / native 1 ms `set_frequency`, ~73 ms to the first clean
+    block); native lost 0.000 s (soapy: not measured); DC spike +7.7 dB native vs +0.3 dB soapy over the floor - the one open point, see
+    "DC spike" below; Airspy never.) SoapySDR stays the default for both; the native
     path is the way out when SoapySDR is missing/fails (`open_real_backend`: `hackrf`/`airspy` without SoapySDR
     open natively) and a way to compare. `libhackrf`/`libairspy` are loaded by `_find_library` (bundle folder, system
     package, `FALCONSDR_LIBHACKRF`/`FALCONSDR_LIBAIRSPY`) and **bundled in the Windows build, every Linux package and (since 1.4.1) the macOS builds (Homebrew `hackrf`/`airspy`, `--add-binary`, self-test required via `FALCONSDR_REQUIRE_NATIVE_LIBS`; the workflow's `attach` input off = a test build that never touches a release)** (the
