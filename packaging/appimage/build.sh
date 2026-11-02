@@ -18,8 +18,9 @@
 # `binutils` (appimagetool's own dependencies for inspecting binaries).
 #
 # What this build does NOT include, on purpose (same tradeoff as the .deb):
-#   - SoapySDR support - RTL-SDR via the bundled pyrtlsdrlib native backend
-#     is the only supported hardware in this build.
+#   - SoapySDR support - RTL-SDR via the bundled pyrtlsdrlib backend, plus
+#     HackRF/Airspy via the bundled libhackrf/libairspy (AGENTS.md gotcha
+#     55), are the supported hardware in this build.
 #   - No udev rule / DVB-T blacklist can ship inside an AppImage (it runs
 #     unprivileged, installs nothing): on a machine with no RTL-SDR software
 #     installed, copy packaging/linux-deb/60-rtl-sdr.rules to

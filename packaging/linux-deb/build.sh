@@ -12,14 +12,13 @@
 #
 # What this build does NOT include, on purpose (see README.md's "Known
 # limitations" section for the full explanation):
-#   - SoapySDR support (HackRF/LimeSDR/Airspy/SDRplay/USRP/...) - RTL-SDR via
-#     the bundled pyrtlsdrlib native backend is the only supported hardware
-#     in this build. SoapySDR is a system C library with its own plugin
+#   - SoapySDR support (LimeSDR/SDRplay/USRP/...) - RTL-SDR via the bundled
+#     pyrtlsdrlib backend, plus HackRF/Airspy via the bundled libhackrf/
+#     libairspy (AGENTS.md gotcha 55), are the supported hardware in this
+#     build. SoapySDR is a system C library with its own plugin
 #     architecture, not something that freezes cleanly into a single bundle.
-#   - The in-UI "Install transcription" button - it needs a real, writable
-#     Python/pip environment to install into, which a frozen build isn't.
-#   - MP3 recording output - still works, but only if the user separately
-#     has `ffmpeg` on PATH (a system binary this build can't bundle either).
+# (The in-UI "Install transcription" button and MP3 output do work in a
+# frozen build: the bundled pip and imageio-ffmpeg - AGENTS.md gotcha 43.)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -168,8 +167,8 @@ Conflicts: smartscanatc
 Replaces: smartscanatc
 Maintainer: rafafunt <rafafunt@gmail.com>
 Description: Wideband SDR ATC/radio scanner (self-contained build)
- Scans a radio band via RTL-SDR and records audio only for transmissions
- the scanner actually stops on.
+ Scans a radio band with an RTL-SDR (or a HackRF or Airspy, experimental)
+ and records audio only for transmissions the scanner actually stops on.
  .
  The interface runs in the web browser (http://127.0.0.1:8765), which the
  app opens on start; other devices on the network can use it too when run
@@ -178,12 +177,15 @@ Description: Wideband SDR ATC/radio scanner (self-contained build)
  This is a self-contained ("fat") build: its own Python runtime and all
  pip-installable dependencies (numpy, scipy, pyrtlsdrlib) are bundled in
  /opt/$PKG - nothing from the system Python is required. RTL-SDR hardware
- works out of the box.
+ works out of the box; HackRF and Airspy work through the bundled libhackrf
+ and libairspy (experimental: a HackRF One has been confirmed on real
+ hardware, an Airspy has not). MP3 output uses a bundled ffmpeg (a system
+ ffmpeg is used when present), and the optional speech-to-text transcription
+ can be installed from the app's Settings.
  .
- Not included in this build: SoapySDR-based hardware (HackRF, LimeSDR,
- Airspy, SDRplay, USRP - needs a normal pip/source install instead), the
- in-app transcription installer, and MP3 output (needs a separately
- installed system ffmpeg). See /usr/share/doc/$PKG/packaging-README.md.
+ Not included in this build: SoapySDR-based hardware (LimeSDR, SDRplay, USRP
+ - needs a normal pip/source install instead). See
+ /usr/share/doc/$PKG/packaging-README.md.
 CONTROL
 
 echo "-- 4/5: building the package --"

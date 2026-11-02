@@ -11,7 +11,7 @@ BuildRequires:  python3 >= 3.10
 BuildRequires:  python3-pip
 BuildRequires:  binutils
 BuildRequires:  systemd-rpm-macros
-# Runtime: self-contained /opt bundle, RTL-SDR only. ffmpeg is optional
+# Runtime: self-contained /opt bundle (RTL-SDR; HackRF/Airspy natively). ffmpeg is optional
 # (MP3 output falls back to the bundled imageio-ffmpeg binary, system one wins).
 Recommends:     ffmpeg
 # /opt/falconsdr ships its own bundled .so files (Python, numpy, ...):
@@ -26,8 +26,8 @@ Requires:       /usr/bin/udevadm
 Requires(post): /usr/bin/udevadm
 
 %description
-Scans a radio band via RTL-SDR and records audio only for transmissions
-the scanner actually stops on.
+Scans a radio band with an RTL-SDR (or a HackRF or Airspy, experimental)
+and records audio only for transmissions the scanner actually stops on.
 
 The interface runs in the web browser (http://127.0.0.1:8765), which the
 app opens on start; other devices on the network can use it too when run
@@ -36,10 +36,14 @@ with --server.
 This is a self-contained ("fat") build: its own Python runtime and all
 pip-installable dependencies (numpy, scipy, pyrtlsdrlib) are bundled in
 /opt/%{name} - nothing from the system Python is required. RTL-SDR
-hardware works out of the box.
+hardware works out of the box; HackRF and Airspy work through the bundled
+libhackrf and libairspy (experimental: a HackRF One has been confirmed on
+real hardware, an Airspy has not). MP3 output uses a bundled ffmpeg (a
+system ffmpeg is used when present), and the optional speech-to-text
+transcription can be installed from the app's Settings.
 
-Not included in this build: SoapySDR-based hardware (HackRF, LimeSDR,
-Airspy, SDRplay, USRP - needs a normal pip/source install instead).
+Not included in this build: SoapySDR-based hardware (LimeSDR, SDRplay,
+USRP - needs a normal pip/source install instead).
 See /usr/share/doc/%{name}/packaging-README.md.
 
 %prep
