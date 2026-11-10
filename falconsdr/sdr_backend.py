@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import ctypes
 import os
+import socket
+import struct
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -35,6 +37,10 @@ except Exception:  # noqa: BLE001
 #: config.device.driver value selecting RtlSdrBackend - deliberately distinct
 #: from SoapySDR's own "rtlsdr" driver key, so both can coexist on Linux.
 RTLSDR_NATIVE_DRIVER = "rtlsdr_native"
+
+#: config.device.driver value selecting RtlTcpBackend: an RTL-SDR served over the network by rtl_tcp
+#: (device_args "host=...,port=..."), gotcha 56.
+RTLTCP_DRIVER = "rtl_tcp"
 
 
 # Reopening the dongle within seconds of closing it has crashed the process
@@ -583,6 +589,178 @@ class RtlSdrBackend(SdrBackend):
         return devices
 
 
+# ---------------------------------------------------------------- rtl_tcp (network RTL-SDR)
+RTLTCP_DEFAULT_PORT = 1234
+_RTLTCP_MAGIC = b"RTL0"
+_RTLTCP_CONNECT_S = 5.0
+_RTLTCP_READ_TIMEOUT_S = 2.0
+# rtl_tcp commands: 1 byte code + 4 bytes big-endian value.
+_RTLTCP_FREQ, _RTLTCP_RATE, _RTLTCP_GAIN_MODE, _RTLTCP_GAIN, _RTLTCP_BIAS_TEE = 0x01, 0x02, 0x03, 0x04, 0x0E
+# Tuner gains (tenths of a dB) by the tuner id of the greeting (librtlsdr's tables).
+_RTLTCP_R82XX_GAINS = (0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297, 328, 338, 364,
+                       372, 386, 402, 421, 434, 439, 445, 480, 496)
+_RTLTCP_GAINS = {1: (-10, 15, 40, 65, 90, 115, 140, 165, 190, 215, 240, 290, 340, 420),   # E4000
+                 2: (-99, -40, 71, 179, 192),                                              # FC0012
+                 5: _RTLTCP_R82XX_GAINS, 6: _RTLTCP_R82XX_GAINS}                           # R820T, R828D (RTL-SDR Blog V4)
+#: IQ that arrives after a retune command still belongs to the old frequency: the command runs on the server and a USB
+#: transfer (~55 ms at 2.4 MS/s) plus the network's queues are in front of the first clean sample. Measured on a V4
+#: over a LAN: none dropped = up to 3 old 30 ms blocks, 0.1 s = none; 0.15 s keeps a margin for Wi-Fi (gotcha 56).
+_RTLTCP_STALE_S = 0.15
+
+
+def parse_rtl_tcp_args(device_args: str) -> tuple[str, int]:
+    """("host=192.168.1.5,port=1234") -> (host, port); the port defaults to 1234."""
+    args = dict(kv.split("=", 1) for kv in (device_args or "").split(",") if "=" in kv)
+    host = args.get("host", "").strip()
+    if not host:
+        raise RuntimeError(tr("No rtl_tcp address set - enter the host (and port) of the rtl_tcp server."))
+    try:
+        port = int(args.get("port", "") or RTLTCP_DEFAULT_PORT)
+    except ValueError:
+        port = 0
+    if not 0 < port < 65536:
+        raise RuntimeError(tr("The rtl_tcp port must be a number between 1 and 65535."))
+    return host, port
+
+
+class RtlTcpBackend(SdrBackend):
+    """An RTL-SDR on another computer, through its rtl_tcp server (gotcha 56). Same contract as RtlSdrBackend:
+    raw 8-bit IQ from read_raw() (AcquisitionThread converts it with to_iq()), bias-tee only when the user switched
+    it on and off again on close, read() raises instead of returning short.
+
+    rtl_tcp streams continuously and runs retune/gain commands on its own thread, so set_frequency() returns at
+    once and the IQ already received - and the next _RTLTCP_STALE_S of it - is the old frequency: it is dropped.
+    The server takes one client at a time; the stream is plain, unauthenticated TCP (a trusted LAN only)."""
+    label = RTLTCP_DRIVER
+    to_iq = staticmethod(RtlSdrBackend.to_iq)
+
+    def __init__(self, device_args: str, sample_rate: float, gain_mode: str, gain_db: float, bias_tee: bool = False):
+        host, port = parse_rtl_tcp_args(device_args)
+        self.addr = f"{host}:{port}"
+        self.sample_rate = sample_rate
+        self.bias_tee = False  # on only once everything else is set up, like the other backends
+        self._stale = 0        # bytes of the old frequency still to drop
+        self._gains: tuple[int, ...] | None = None
+        self._sock: socket.socket | None = None
+        try:
+            self._sock = socket.create_connection((host, port), timeout=_RTLTCP_CONNECT_S)
+        except OSError as exc:
+            raise RuntimeError(tr("Can't connect to rtl_tcp at {addr} ({error}).").format(addr=self.addr, error=exc)) from exc
+        try:
+            self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 21)
+            self._sock.settimeout(_RTLTCP_CONNECT_S)
+            try:
+                greeting = self._recv_exact(12)
+            except (OSError, RuntimeError) as exc:  # a second client waits unanswered in the server's backlog
+                raise RuntimeError(tr("rtl_tcp at {addr} didn't answer - it serves one program at a time; is another one connected?")
+                                   .format(addr=self.addr)) from exc
+            if greeting[:4] != _RTLTCP_MAGIC:
+                raise RuntimeError(tr("{addr} is not an rtl_tcp server (wrong greeting).").format(addr=self.addr))
+            self.tuner_type = struct.unpack(">I", greeting[4:8])[0]
+            self._gains = _RTLTCP_GAINS.get(self.tuner_type)
+            if self._gains:
+                self.gain_range_db = (min(self._gains) / 10.0, max(self._gains) / 10.0)
+            self._sock.settimeout(_RTLTCP_READ_TIMEOUT_S)
+            self._send(_RTLTCP_RATE, int(sample_rate))
+            self.set_gain(gain_mode, gain_db)
+            if bias_tee:
+                self.bias_tee = True
+                self._send(_RTLTCP_BIAS_TEE, 1)
+        except BaseException:
+            self._close_socket()
+            raise
+
+    # -- commands --------------------------------------------------------
+    def _send(self, command: int, value: int) -> None:
+        try:
+            self._sock.sendall(struct.pack(">BI", command, value & 0xFFFFFFFF))
+        except OSError as exc:
+            raise RuntimeError(tr("rtl_tcp connection lost ({error})").format(error=exc)) from exc
+
+    def set_frequency(self, freq_hz: float) -> None:
+        self._send(_RTLTCP_FREQ, int(freq_hz))
+        self._drain()  # what already arrived is the old frequency; so is the next _RTLTCP_STALE_S of the stream
+        self._stale = int(self.sample_rate * 2 * _RTLTCP_STALE_S)
+
+    def set_gain(self, gain_mode: str, gain_db: float) -> None:
+        if gain_mode == "auto":
+            self._send(_RTLTCP_GAIN_MODE, 0)
+            return
+        tenths = round(gain_db * 10)
+        if self._gains:  # the nearest step the tuner has, like pyrtlsdr's set_gain()
+            tenths = min(self._gains, key=lambda g: abs(g - tenths))
+        self._send(_RTLTCP_GAIN_MODE, 1)
+        self._send(_RTLTCP_GAIN, tenths)
+
+    # -- samples ---------------------------------------------------------
+    @property
+    def streaming(self) -> bool:
+        """Always: the spacing of reads says nothing about lost samples here (what a late read finds is waiting in
+        the socket, not lost), so AcquisitionThread must not report it as IQ loss. Loss on the server side
+        (rtl_tcp drops buffers when a client is too slow) is not visible from here."""
+        return True
+
+    def read(self, num_samples: int) -> np.ndarray:
+        return self.to_iq(self.read_raw(num_samples))
+
+    def read_raw(self, num_samples: int) -> np.ndarray:
+        """Exactly 2 * num_samples bytes of IQ (unconverted); raises when the stream stops."""
+        try:
+            while self._stale > 0:
+                got = self._sock.recv(min(self._stale, 1 << 16))
+                if not got:
+                    raise RuntimeError(tr("rtl_tcp closed the connection"))
+                self._stale -= len(got)
+            return np.frombuffer(self._recv_exact(2 * num_samples), dtype=np.uint8)
+        except socket.timeout as exc:
+            raise RuntimeError(tr("rtl_tcp sent no data for {s:g} s - connection lost or the server is not responding").format(
+                s=_RTLTCP_READ_TIMEOUT_S)) from exc
+        except OSError as exc:
+            raise RuntimeError(tr("rtl_tcp connection lost ({error})").format(error=exc)) from exc
+
+    def _recv_exact(self, n: int) -> bytes:
+        buf = bytearray(n)
+        view, got = memoryview(buf), 0
+        while got < n:
+            k = self._sock.recv_into(view[got:])
+            if k == 0:
+                raise RuntimeError(tr("rtl_tcp closed the connection"))
+            got += k
+        return buf
+
+    def _drain(self) -> None:
+        """Throws away everything already received (not blocking)."""
+        self._sock.setblocking(False)
+        try:
+            for _ in range(64):  # a bound, in case a fast source never lets the buffer run empty
+                if not self._sock.recv(1 << 20):
+                    break
+        except (BlockingIOError, InterruptedError):
+            pass
+        except OSError:
+            pass  # the next read reports it
+        finally:
+            self._sock.settimeout(_RTLTCP_READ_TIMEOUT_S)
+
+    def _close_socket(self) -> None:
+        sock, self._sock = self._sock, None
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            sock.close()
+
+    def close(self) -> None:
+        if self._sock is not None and self.bias_tee:
+            try:
+                self._send(_RTLTCP_BIAS_TEE, 0)  # never leave the antenna powered once FalconSDR lets go
+            except RuntimeError:
+                pass
+        self._close_socket()
+
+
 def _read_serial(lib, index: int) -> str:
     """One dongle's USB serial string (raises if it can't be opened)."""
     from ctypes import c_ubyte
@@ -607,7 +785,7 @@ def device_family(driver: str) -> str:
 
 
 def device_method(driver: str) -> str:
-    return {RTLSDR_NATIVE_DRIVER: "librtlsdr", "hackrf_native": "libhackrf", "airspy_native": "libairspy"}.get(driver, "soapy")
+    return {RTLSDR_NATIVE_DRIVER: "librtlsdr", RTLTCP_DRIVER: "rtl_tcp", "hackrf_native": "libhackrf", "airspy_native": "libairspy"}.get(driver, "soapy")
 
 
 def enumerate_devices() -> list[dict]:
@@ -631,6 +809,8 @@ def open_real_backend(driver: str, device_args: str, sample_rate: float, gain_mo
     "hackrf"/"airspy" through libhackrf/libairspy, so the same config.json works across machines. An
     explicitly chosen way that fails raises (gotcha 8): the UI offers the other way, nothing switches
     silently."""
+    if driver == RTLTCP_DRIVER:
+        return RtlTcpBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee)
     if driver in _NATIVE_ONLY_FAMILIES or (driver in ("hackrf", "airspy") and not HAVE_SOAPY):
         from . import sdr_native
         cls = sdr_native.HackRfBackend if driver.startswith("hackrf") else sdr_native.AirspyBackend

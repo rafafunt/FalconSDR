@@ -815,6 +815,33 @@ catalog loads; wrap them in a function called at point of use
     alive before either library is initialised; the device listing is still asked of a child process
     (`native_status`, `main.py --list-native-sdr`), so a crash there can't take the scanner down.
 
+56. **`rtl_tcp` (an RTL-SDR on another computer, `RtlTcpBackend`, driver `rtl_tcp`, `device_args` `host=...,port=...`) is a
+    network source, not a way to open a local dongle.** Shown as one fixed list entry ("Network receiver (rtl_tcp)", always
+    there, `Controller.devices`); its address is typed in the Listen device card (`listen.js`; the list entry's `args`
+    must follow the typed address or the next render loses the device) and an extra dongle can't be one. Protocol (written
+    from the public behaviour of rtl_tcp, no code copied - the gain tables are librtlsdr's numbers, GPL-2.0-or-later,
+    compatible with ours; stdlib only, no new dependency): a 12 byte greeting `RTL0` + tuner id + gain count, then raw
+    8-bit IQ forever; 5 byte commands (code + big-endian value): 0x01 frequency, 0x02 rate, 0x03 gain mode, 0x04 gain
+    (tenths of dB), 0x0E bias-tee. **The stream does not stop at a retune**, so what had arrived and the next
+    `_RTLTCP_STALE_S` of it is the old frequency: `set_frequency` drains the socket and drops that much. Measured on a V4
+    behind the owner's coalescing proxy over a LAN (`--probe-sdr rtl_tcp`, RTT 1.9 ms): no drop = 2.5 old blocks on
+    average (max 3), 0.1 s = none, first clean block 126 ms / 187 ms at 0.15 s (the value used - margin for Wi-Fi). A
+    slower link needs more. Gain commands are not dropped from the stream (no stall). Bias-T is sent only when the user
+    turned it on (the server may have its own setting: the Linux receiver's `sdr-mode` / rtl_tcp service) and off on
+    close. rtl_tcp serves one client: a second one is accepted into the backlog and never greeted - said as "didn't
+    answer ... another one connected?". `_calibration_key` treats it like librtlsdr (same dongle and IF filter).
+    `streaming` is always True: the spacing of reads says nothing about loss on a TCP stream (late data waits in the
+    socket), the health line's `iq_uncovered` showed a false 37 % otherwise; loss on the server side (rtl_tcp drops
+    buffers for a slow client) is invisible from here. **Verified on the owner's receiver (RTL-SDR Blog V4, Debian rtl_tcp
+    2.0.1, FalconSDR on another PC over a LAN, 2026-11-10):** scan of 9 windows 2.46 s per cycle against 1.81 s with the
+    dongle local (librtlsdr, same code), 0 blocks dropped, a real recording (132.350 MHz, SNR 29.9 dB), noise floors
+    within 0.4 dB of the local read, reconnect after `kill -9 rtl_tcp` (RECONNECTING, retry every 2 s, back ~3 s after
+    the server). The owner's `rtl-tcp-proxy` (coalesces frequency commands to one per 150 ms) changed nothing for a
+    scanner. **Not verified:** bias-T command 0x0E on hardware (the Debian rtl_tcp links `rtlsdr_set_bias_tee`, the
+    command number is from memory; nobody switched the owner's antenna chain on for a test), Wi-Fi, Windows/macOS, an
+    Android rtl_tcp server, other tuners' gain tables (only R820T/R828D and E4000 and FC0012 are listed).
+    Tests: `RtlTcpTest` (fake server, no hardware).
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch

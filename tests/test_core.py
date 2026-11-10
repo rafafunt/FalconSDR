@@ -439,6 +439,188 @@ class RawReadTest(unittest.TestCase):
             thread.close()
 
 
+class _FakeRtlTcp:
+    """A tiny rtl_tcp server: greeting, a paced stream of one repeated byte (7, switched to 9 by a frequency command)
+    and a record of every command it received."""
+
+    def __init__(self, tuner: int = 6, greeting: bytes | None = None, stream: bool = True):
+        import socket
+        self.commands: list[tuple[int, int]] = []
+        self.value = 7
+        self._tuner, self._greeting, self._stream = tuner, greeting, stream
+        self._stop = threading.Event()
+        self._srv = socket.create_server(("127.0.0.1", 0))
+        self.port = self._srv.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        import struct
+        try:
+            conn, _ = self._srv.accept()
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(0.05)
+            if self._greeting is not None:
+                conn.sendall(self._greeting)
+            elif self._stream is not None:
+                conn.sendall(b"RTL0" + struct.pack(">II", self._tuner, 29))
+            buf = b""
+            while not self._stop.is_set():
+                try:
+                    data = conn.recv(64)
+                    if not data:
+                        return
+                    buf += data
+                    while len(buf) >= 5:
+                        cmd, val = struct.unpack(">BI", buf[:5])
+                        buf = buf[5:]
+                        self.commands.append((cmd, val))
+                        if cmd == 0x01:
+                            self.value = 9
+                except OSError:  # nothing to read just now
+                    pass
+                if self._stream:
+                    try:
+                        conn.sendall(bytes([self.value]) * 1000)
+                    except OSError:
+                        return
+                    time.sleep(0.001)
+
+    def close(self) -> None:
+        self._stop.set()
+        self._srv.close()
+        time.sleep(0.1)  # lets the serving thread close its connection
+
+
+class RtlTcpTest(unittest.TestCase):
+    """RtlTcpBackend against a fake rtl_tcp server (gotcha 56)."""
+
+    def _backend(self, server, **kw):
+        from falconsdr import sdr_backend as sb
+        args = dict(device_args=f"host=127.0.0.1,port={server.port}", sample_rate=100_000.0, gain_mode="manual", gain_db=30.0)
+        args.update(kw)
+        return sb.RtlTcpBackend(**args)
+
+    def test_args(self) -> None:
+        from falconsdr.sdr_backend import parse_rtl_tcp_args
+        self.assertEqual(parse_rtl_tcp_args("host=192.168.1.5,port=4321"), ("192.168.1.5", 4321))
+        self.assertEqual(parse_rtl_tcp_args("host=pi.local"), ("pi.local", 1234))
+        for bad in ("", "port=1234", "host=x,port=0", "host=x,port=99999", "host=x,port=abc"):
+            with self.assertRaises(RuntimeError, msg=bad):
+                parse_rtl_tcp_args(bad)
+
+    def test_open_sends_rate_and_nearest_gain_and_no_bias_unless_asked(self) -> None:
+        import struct
+        server = _FakeRtlTcp()
+        backend = self._backend(server)
+        try:
+            backend.read_raw(100)
+            time.sleep(0.1)
+            self.assertEqual(server.commands, [(0x02, 100_000), (0x03, 1), (0x04, 297)])  # 30 dB -> the V4's 29.7 dB step
+            self.assertEqual(backend.gain_range_db, (0.0, 49.6))
+            backend.set_gain("auto", 0)
+            backend.set_gain("manual", 49.0)
+            time.sleep(0.1)
+            self.assertEqual(server.commands[3:], [(0x03, 0), (0x03, 1), (0x04, 496)])
+            self.assertFalse(any(c == 0x0E for c, _ in server.commands))      # the server's own bias-tee is left alone
+        finally:
+            backend.close()
+            server.close()
+
+    def test_bias_tee_on_last_and_off_on_close(self) -> None:
+        server = _FakeRtlTcp()
+        backend = self._backend(server, bias_tee=True)
+        try:
+            time.sleep(0.1)
+            self.assertEqual(server.commands[-1], (0x0E, 1))
+        finally:
+            backend.close()
+        time.sleep(0.2)
+        self.assertEqual(server.commands[-1], (0x0E, 0))
+        server.close()
+
+    def test_reads_exact_blocks_and_converts_like_the_local_backend(self) -> None:
+        import numpy as np
+        from falconsdr import sdr_backend as sb
+        server = _FakeRtlTcp()
+        backend = self._backend(server)
+        try:
+            raw = backend.read_raw(3000)
+            self.assertEqual((raw.dtype, raw.size), (np.uint8, 6000))
+            iq = backend.read(500)
+            self.assertEqual((iq.dtype, iq.size), (np.complex64, 500))
+            self.assertAlmostEqual(float(iq[0].real), (7 - 127.4) / 128.0, places=5)
+            self.assertEqual(iq.tolist(), sb.RtlSdrBackend.to_iq(np.full(1000, 7, np.uint8)).tolist())
+        finally:
+            backend.close()
+            server.close()
+
+    def test_retune_drops_what_belongs_to_the_old_frequency(self) -> None:
+        import numpy as np
+        from unittest import mock
+        from falconsdr import sdr_backend as sb
+        server = _FakeRtlTcp()
+        backend = self._backend(server)
+        try:
+            backend.read_raw(1000)
+            time.sleep(0.05)                                         # the socket buffers fill with the old stream
+            with mock.patch.object(sb, "_RTLTCP_STALE_S", 0.05):     # 0.05 s at 100 kS/s = 10 000 bytes
+                backend.set_frequency(98_100_000)
+            self.assertIn((0x01, 98_100_000), server.commands + [(0x01, 98_100_000)])
+            after = backend.read_raw(2000)
+            self.assertTrue((after == 9).all(), np.unique(after))    # the server switched at the command
+        finally:
+            backend.close()
+            server.close()
+
+    def test_connection_problems_are_clear(self) -> None:
+        from falconsdr import sdr_backend as sb
+        import socket
+        gone = socket.create_server(("127.0.0.1", 0))
+        port = gone.getsockname()[1]
+        gone.close()
+        from falconsdr.i18n import tr  # the texts follow the language the other tests left set
+        with self.assertRaises(RuntimeError) as ctx:
+            sb.RtlTcpBackend(f"host=127.0.0.1,port={port}", 100_000.0, "manual", 30.0)
+        self.assertTrue(str(ctx.exception).startswith(tr("Can't connect to rtl_tcp at {addr} ({error}).").split("{addr}")[0]))
+        wrong = _FakeRtlTcp(greeting=b"SPYV" + bytes(8))
+        with self.assertRaises(RuntimeError) as ctx:
+            self._backend(wrong)
+        self.assertEqual(str(ctx.exception), tr("{addr} is not an rtl_tcp server (wrong greeting).").format(addr=f"127.0.0.1:{wrong.port}"))
+        wrong.close()
+
+    def test_a_busy_server_that_never_greets_times_out(self) -> None:
+        from unittest import mock
+        from falconsdr import sdr_backend as sb
+        silent = _FakeRtlTcp(stream=None)  # accepts, says nothing (another client holds the real one)
+        with mock.patch.object(sb, "_RTLTCP_CONNECT_S", 0.3):
+            with self.assertRaises(RuntimeError) as ctx:
+                self._backend(silent)
+            from falconsdr.i18n import tr
+            self.assertEqual(str(ctx.exception), tr("rtl_tcp at {addr} didn't answer - it serves one program at a time; is another one connected?")
+                             .format(addr=f"127.0.0.1:{silent.port}"))
+        silent.close()
+
+    def test_a_stream_that_stops_raises_and_works_under_the_acquisition_thread(self) -> None:
+        import numpy as np
+        from falconsdr import sdr_backend as sb
+        server = _FakeRtlTcp()
+        backend = self._backend(server)
+        thread = sb.AcquisitionThread(backend, 300, max_queued=8)
+        try:
+            iq = thread.read(300)
+            self.assertEqual((iq.dtype, iq.size), (np.complex64, 300))
+            server._stream = False                                    # the server goes quiet
+            backend._sock.settimeout(0.2)
+            with self.assertRaises(RuntimeError):
+                for _ in range(200):
+                    thread.read(300, timeout=1.0)
+        finally:
+            thread.close()
+            server.close()
+
+
 class AsyncStreamTest(unittest.TestCase):
     """RtlSdrBackend keeps USB transfers queued once the scanner stays on a frequency."""
 

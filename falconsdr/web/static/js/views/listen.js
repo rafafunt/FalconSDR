@@ -11,7 +11,7 @@ const isWindows = () => S.settings.capabilities.platform === 'win32';
 
 // How a receiver is opened (config.device.driver): the label is chosen here, at the point of use, so it follows the language.
 const methodLabel = (m) => ({
-  soapy: t('SoapySDR'), librtlsdr: t('librtlsdr'),
+  soapy: t('SoapySDR'), librtlsdr: t('librtlsdr'), rtl_tcp: t('rtl_tcp'),
   libhackrf: t('libhackrf (experimental)'), libairspy: t('libairspy (experimental)'),
 }[m] || m);
 const stripMethod = (label) => label.replace(/ \((librtlsdr|libhackrf|libairspy)\)/, '');
@@ -301,13 +301,26 @@ export function listenView(root) {
       ? select(myGroup.entries.map((d, i) => [i, methodLabel(d.method)]), myGroup.entries.indexOf(here), (v) => patchDevice(myGroup.entries[+v]))
       : null;
     const bias = biasTeeToggle(c.device.bias_tee, (v) => { patchConfig({ device: { bias_tee: v } }); renderDevice(); });
+    // An RTL-SDR on another computer (rtl_tcp): nothing to detect, so its address is typed here. "host" or "host:port";
+    // kept in device_args as host=...,port=... - and in the list entry, or the next render would not find the device.
+    const netEntry = devices.find((d) => d.driver === 'rtl_tcp');
+    const netArgs = Object.fromEntries((c.device.device_args || '').split(',').filter((kv) => kv.includes('=')).map((kv) => kv.split(/=(.*)/s).slice(0, 2)));
+    const addr = c.device.driver === 'rtl_tcp' ? h('input', {
+      type: 'text', placeholder: '192.168.1.20:1234', spellcheck: false, autocapitalize: 'off', value: netArgs.host ? `${netArgs.host}${netArgs.port && netArgs.port !== '1234' ? ':' + netArgs.port : ''}` : '',
+      onchange: (e) => {
+        const m = e.target.value.trim().replace(/^tcp:\/\//, '').match(/^(.*?)(?::(\d+))?$/);
+        const args = m && m[1] ? `host=${m[1]},port=${m[2] || 1234}` : '';
+        if (netEntry) netEntry.args = args;
+        patchConfig({ device: { device_args: args } });
+      },
+    }) : null;
     const bw = h('input', { type: 'number', min: 0.25, max: 61.44, step: 0.01, value: (c.device.sample_rate_hz / 1e6).toFixed(2), onchange: (e) => patchConfig({ device: { sample_rate_hz: +e.target.value * 1e6 } }) });
     // Experimental: more dongles scanning together - each takes its share of the capture windows.
     const extra = c.device.extra_devices || [];
     // An extra dongle must be a specific one - and never a simulation next to real hardware (fake
     // transmissions in the library, part of the band no longer really listened to).
     const sim = c.device.driver === 'simulated';
-    const choices = devices.filter((d) => d.driver !== 'auto' && (d.driver === 'simulated') === sim);
+    const choices = devices.filter((d) => d.driver !== 'auto' && d.driver !== 'rtl_tcp' && (d.driver === 'simulated') === sim);  // a network receiver has its own address: not here
     const setExtra = (list) => { patchConfig({ device: { extra_devices: list } }); renderDevice(); };
     const extraInputs = [];
     const extraRows = extra.map((x, i) => {
@@ -337,13 +350,15 @@ export function listenView(root) {
         setExtra([...extra, { driver: d.driver, device_args: d.args }]);
       },
     }, icon('plus'), t('Scan with another dongle (experimental)'));
-    deviceInputs = [sel, ...(methods ? [methods] : []), bw, bias.querySelector('input'), add, ...extraInputs];
+    deviceInputs = [sel, ...(methods ? [methods] : []), ...(addr ? [addr] : []), bw, bias.querySelector('input'), add, ...extraInputs];
     mount(device,
       h('div.card-head', h('h2', t('SDR device'))),
       h('div.fields',
         h('label.field', t('Device'), sel),
         methods ? h('label.field', t('Access method'), methods) : null,
+        addr ? h('label.field', t('rtl_tcp address'), addr) : null,
         h('label.field', t('Capture width (MHz)'), bw)),
+      addr ? h('span.faint.small', t('The RTL-SDR on another computer, through its rtl_tcp server (host or host:port, default port 1234). It serves one program at a time, the stream is not encrypted - use it on a trusted network. Retuning takes longer than with a local dongle, so scanning many windows is slower.')) : null,
       methods ? h('span.faint.small', t('How FalconSDR talks to this receiver. The first choice is the default; the other one is the fallback when it will not open, and a way to compare.')) : null,
       missingReceiverNotice(devices),
       bias,

@@ -82,6 +82,8 @@ receiver at [falconsdr.com](https://falconsdr.com).
   server, container).
 - Other computers connect to it to transcribe recordings with their GPU
   and/or keep a verified local copy of the library.
+- An RTL-SDR on another computer works as a source too, through its `rtl_tcp`
+  server ([network receiver](#network-receiver-rtl_tcp)).
 - Optional access password; English and Polish interface (more languages are
   one translation file away).
 
@@ -351,6 +353,32 @@ It also installs `libhackrf0` and `libairspy0` (small), so a HackRF or Airspy
 works through the built-in access without extra steps. The service sees the system's SoapySDR: `sudo apt install python3-soapysdr
 soapysdr-module-<your receiver>` and restart it (`sudo systemctl restart
 falconsdr-receiver`), then pick the access method under *SDR device*.
+
+### Network receiver (rtl_tcp)
+
+An RTL-SDR plugged into another computer (a Raspberry Pi at the antenna, a
+box in the attic, a phone running an `rtl_tcp` app) can be the receiver of
+the scanner: on that computer run `rtl_tcp -a 0.0.0.0` (package `rtl-sdr`),
+then on the Listen page choose *SDR device → Network receiver (rtl_tcp)* and
+type its address (`192.168.1.20` or `192.168.1.20:1234`). Scanning, recording,
+transcription and the web interface stay on the computer running FalconSDR.
+
+Good to know:
+- `rtl_tcp` serves **one program at a time** and the stream is **not
+  encrypted** - use it on a trusted network only.
+- 2.4 MHz of capture is about 38 Mbit/s: wired Ethernet is fine, Wi-Fi can be
+  marginal (pick a smaller capture width if blocks are lost).
+- A retune is sent over the network and takes longer than with a dongle on
+  USB: on a wired LAN with an RTL-SDR Blog V4 the first clean block came
+  after ~180 ms instead of ~100 ms, and a full cycle of 9 capture windows
+  took 2.5 s instead of 1.8 s. Scanning many windows is slower; one frequency
+  or a few windows are not affected.
+- If `rtl_tcp` stops, FalconSDR shows *Reconnecting* and resumes by itself
+  once the server is back (run `rtl_tcp` as a service that restarts).
+- It does not make a weak USB host stronger: the server still reads the
+  dongle over its own USB.
+- Bias-T is only switched on when you turn it on here (and off again when the
+  scanner stops); the server's own setting is otherwise left alone.
 
 ## First steps
 

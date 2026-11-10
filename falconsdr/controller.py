@@ -30,7 +30,7 @@ from .playback.index import Library
 from .playback.transcription_availability import is_transcription_installed
 from . import sdr_native
 from .scanner_engine import AUDIO_RATE, ScannerEngine, SharedFrequencies
-from .sdr_backend import HAVE_SOAPY, device_family, device_method, enumerate_devices
+from .sdr_backend import HAVE_SOAPY, RTLTCP_DRIVER, device_family, device_method, enumerate_devices
 
 # Bounds each listener's backlog so a slow or stalled browser can never make
 # the engine wait (old chunks are dropped, not queued forever).
@@ -420,11 +420,16 @@ class Controller:
         for dev in enumerate_devices():
             out.append(self._device_entry(dev.get("driver", "auto"), {k: str(v) for k, v in dev.items()},
                                           dev.get("label") or dev.get("driver", "device")))
+        # An RTL-SDR on another computer (rtl_tcp): nothing to detect - its address is typed on the Listen page and
+        # kept in device_args, which this entry carries while it is the chosen one.
+        out.append({"driver": RTLTCP_DRIVER, "args": self.config.device.device_args if self.config.device.driver == RTLTCP_DRIVER else "",
+                    "label": i18n.tr("Network receiver (rtl_tcp)"), "family": RTLTCP_DRIVER, "method": device_method(RTLTCP_DRIVER),
+                    "group": RTLTCP_DRIVER})
         # A busy receiver (the scanner has it open) can drop out of a fresh listing - the saved choice must not.
         saved = [(self.config.device.driver, self.config.device.device_args)] + \
                 [(x.get("driver", ""), x.get("device_args", "")) for x in self.config.device.extra_devices]
         for driver, args in saved:
-            if driver and driver not in ("auto", "simulated") and not any(e["driver"] == driver and e["args"] == args for e in out):
+            if driver and driver not in ("auto", "simulated", RTLTCP_DRIVER) and not any(e["driver"] == driver and e["args"] == args for e in out):
                 fields_ = dict(kv.split("=", 1) for kv in args.split(",") if "=" in kv)
                 entry = self._device_entry(driver, fields_, fields_.get("label") or driver, args)
                 # The same receiver listed with other details (busy, or another SoapySDR version): the saved

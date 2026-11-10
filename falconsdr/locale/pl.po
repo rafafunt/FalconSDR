@@ -2769,3 +2769,39 @@ msgstr "Sortuj według: {col}"
 
 msgid "Sort by scanned / not scanned"
 msgstr "Sortuj według skanowania włączone / wyłączone"
+
+msgid "Network receiver (rtl_tcp)"
+msgstr "Odbiornik w sieci (rtl_tcp)"
+
+msgid "rtl_tcp address"
+msgstr "Adres rtl_tcp"
+
+msgid "rtl_tcp"
+msgstr "rtl_tcp"
+
+msgid "The RTL-SDR on another computer, through its rtl_tcp server (host or host:port, default port 1234). It serves one program at a time, the stream is not encrypted - use it on a trusted network. Retuning takes longer than with a local dongle, so scanning many windows is slower."
+msgstr "RTL-SDR w innym komputerze, przez jego serwer rtl_tcp (host albo host:port, domyślny port 1234). Obsługuje jeden program naraz, strumień nie jest szyfrowany - używaj w zaufanej sieci. Zmiana częstotliwości trwa dłużej niż z lokalnym dongle, więc skanowanie wielu okien jest wolniejsze."
+
+msgid "No rtl_tcp address set - enter the host (and port) of the rtl_tcp server."
+msgstr "Nie ustawiono adresu rtl_tcp - wpisz host (i port) serwera rtl_tcp."
+
+msgid "The rtl_tcp port must be a number between 1 and 65535."
+msgstr "Port rtl_tcp musi być liczbą od 1 do 65535."
+
+msgid "Can't connect to rtl_tcp at {addr} ({error})."
+msgstr "Nie można połączyć się z rtl_tcp pod {addr} ({error})."
+
+msgid "rtl_tcp at {addr} didn't answer - it serves one program at a time; is another one connected?"
+msgstr "rtl_tcp pod {addr} nie odpowiada - obsługuje jeden program naraz; czy podłączył się inny?"
+
+msgid "{addr} is not an rtl_tcp server (wrong greeting)."
+msgstr "{addr} nie jest serwerem rtl_tcp (zły komunikat powitalny)."
+
+msgid "rtl_tcp connection lost ({error})"
+msgstr "Utracono połączenie z rtl_tcp ({error})"
+
+msgid "rtl_tcp closed the connection"
+msgstr "rtl_tcp zamknął połączenie"
+
+msgid "rtl_tcp sent no data for {s:g} s - connection lost or the server is not responding"
+msgstr "rtl_tcp nie przysłał danych przez {s:g} s - połączenie utracone albo serwer nie odpowiada"

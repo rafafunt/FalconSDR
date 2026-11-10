@@ -996,7 +996,7 @@ class ScannerEngine(threading.Thread):
         what the compensation was built from); another path or width - SoapySDR's different IF filter, a HackRF's
         flat passband - gets its own, so one receiver never corrects with another's curve."""
         label = getattr(self._backend, "label", "") if self._backend is not None else ""
-        if label in ("", "rtlsdr_native", "simulated"):
+        if label in ("", "rtlsdr_native", "rtl_tcp", "simulated"):  # rtl_tcp = the same dongle and IF filter, served over the network
             return gain_mode
         return f"{gain_mode}@{label}@{self.sample_rate_hz / 1e6:g}"
 
