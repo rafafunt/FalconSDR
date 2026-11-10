@@ -2754,3 +2754,6 @@ msgstr "Odbiorniki o różnej szerokości przechwytu dzielą skanowanie proporcj
 
 msgid "This receiver captures {actual:.2f} MHz, not {wanted:.2f} MHz - scanning with {actual:.2f} MHz."
 msgstr "Ten odbiornik przechwytuje {actual:.2f} MHz, a nie {wanted:.2f} MHz - skanuję z {actual:.2f} MHz."
+
+msgid "Optional - a name typed here is used instead of the folder above."
+msgstr "Opcjonalnie - wpisana tu nazwa zastąpi folder wybrany powyżej."

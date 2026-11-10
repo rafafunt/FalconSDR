@@ -428,17 +428,16 @@ export function recordingsView(root) {
     const hz = carrierHz(it.freq_khz / 1000);  // filenames keep whole kHz; back onto the exact raster
     const existing = channels.find((c) => c.freq_hz === hz);
     const folders = [...new Set([...cfg().channel_folders, ...channels.map((c) => c.folder).filter(Boolean)])];
-    const dl = h('datalist#folders', folders.map((f) => h('option', { value: f })));
-    document.body.append(dl);
     const v = await formDialog(t('Save {f} MHz', { f: fmtChannel(hz) }), [
       { key: 'name', label: t('Name'), value: existing ? existing.name : '', placeholder: t('e.g. Downtown Tower') },
-      { key: 'folder', label: t('Folder'), value: existing ? existing.folder : '', list: 'folders' },
+      { key: 'folder', label: t('Folder'), type: 'select', value: existing ? existing.folder : '', options: [['', t('(no folder)')], ...folders.map((f) => [f, f])] },
+      { key: 'newFolder', label: t('New folder'), hint: t('Optional - a name typed here is used instead of the folder above.') },
     ]);
-    dl.remove();
     if (!v) return;
-    if (existing) Object.assign(existing, { name: v.name.trim(), folder: v.folder.trim() });
-    else channels.push({ freq_hz: hz, name: v.name.trim(), modulation: 'AM', enabled: true, folder: v.folder.trim(), weight: 0 });
-    if (v.folder.trim() && !cfg().channel_folders.includes(v.folder.trim())) patchConfig({ channel_folders: [...cfg().channel_folders, v.folder.trim()] });
+    const folder = v.newFolder.trim() || v.folder;
+    if (existing) Object.assign(existing, { name: v.name.trim(), folder });
+    else channels.push({ freq_hz: hz, name: v.name.trim(), modulation: 'AM', enabled: true, folder, weight: 0 });
+    if (folder && !cfg().channel_folders.includes(folder)) patchConfig({ channel_folders: [...cfg().channel_folders, folder] });
     await saveChannels(channels);
     toast(t('Saved to the Memory List'), 'good');
     items.filter((x) => x.freq_khz === it.freq_khz).forEach((x) => { x.name = v.name.trim(); refreshRow(x); });
