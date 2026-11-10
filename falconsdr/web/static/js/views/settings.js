@@ -489,6 +489,8 @@ export function settingsView(root, hash) {
     mount(body('advanced'),
       setting(t('Debug mode'), t('Adds a “Simulation (no hardware)” device for testing without a receiver.'),
         toggle('', cfg().debug_mode, async (v) => { patchConfig({ debug_mode: v }); setTimeout(loadSettings, 700); })),
+      setting(t('Continuous RTL-SDR reading'), t('While the scanner stays on a frequency, an RTL-SDR read through librtlsdr (Windows, macOS and the receiver) is read as a continuous stream, which removes the buzz caused by lost samples. Turn it off if scanning freezes or the receiver keeps disconnecting; the buzz may come back. Takes effect the next time scanning starts.'),
+        toggle('', cfg().device.async_read, (v) => patchConfig({ device: { async_read: v } }))),
       setting(t('Reset to defaults'), t('Settings, Memory List, blacklist and custom presets back to a fresh install. Recordings, the password and connected computers are kept.'),
         h('button.danger', {
           onclick: async () => {

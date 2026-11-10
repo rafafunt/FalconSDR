@@ -751,7 +751,7 @@ catalog loads; wrap them in a function called at point of use
 
 54. **`RtlSdrBackend` (librtlsdr: Windows, macOS, the .deb, the receiver) switches from blocking
     reads to an async stream once the scanner has stayed on a frequency for 8 reads**
-    (`_ASYNC_AFTER_READS`; `DeviceConfig.async_read`, default on). Between two blocking
+    (`_ASYNC_AFTER_READS`; `DeviceConfig.async_read`, default on; Settings → Advanced "Continuous RTL-SDR reading" switches it off, read when the device opens). Between two blocking
     `rtlsdr_read_sync` calls no transfer is pending and the dongle drops samples: measured on the
     receiver (real dongle, 40 s at 131.9 MHz) **0.78 %** lost with light GIL load and **2.16 %**
     with a 120 ms Python stall every 1.5 s - a splice every 30 ms (the buzz of issue #6) and a
