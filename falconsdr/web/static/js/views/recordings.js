@@ -284,7 +284,7 @@ export function recordingsView(root) {
   const wave = h('canvas');
   const waveBox = h('div.wave', { onclick: (e) => { const r = waveBox.getBoundingClientRect(); if (audio.duration) audio.currentTime = ((e.clientX - r.left) / r.width) * audio.duration; } }, wave);
   const playBtn = h('button.primary.icon', { title: t('Play or pause (Space)'), onclick: () => (audio.paused ? audio.play() : audio.pause()) });
-  const timeText = h('span.mono.small.muted');
+  const timeText = h('span.mono.small.muted.time');
 
   function open(it, autoplay = true) {
     current = it;
@@ -400,7 +400,7 @@ export function recordingsView(root) {
   }
 
   function site(name, url) {
-    return h('button.ghost', { onclick: () => openMap(url), title: `${name} - ${t('Flight replay at this moment')}`, 'aria-label': name },
+    return h('button.ghost.site', { onclick: () => openMap(url), title: `${name} - ${t('Flight replay at this moment')}`, 'aria-label': name },
       icon('external'), h('span.lbl.keep', name));
   }
 

@@ -108,6 +108,8 @@ main { overflow: auto; padding: 24px 24px 40px; }
   }
   .nav a { flex: 1; flex-direction: column; gap: 2px; font-size: 11px; font-weight: 500; padding: 6px 2px; min-height: 48px; justify-content: center; }
   .nav a.active { background: none; }
+  .nav a { min-width: 0; }
+  .nav a span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }  /* 6 tabs on a 320px screen: cut with an ellipsis, not off the edge */
   .nav a svg.ic { width: 24px; height: 24px; }
   main { padding: 16px 16px calc(96px + env(safe-area-inset-bottom)); }
   h1 { font-size: 26px; }
@@ -303,6 +305,7 @@ button.day.on { color: var(--on-accent); background: var(--accent-fill); }
   padding: 10px 8px; border-top: 1px solid var(--separator); cursor: pointer;
 }
 .rec:first-child { border-top: 0; }
+.rec { scroll-margin-bottom: 40vh; }  /* scrollIntoView of the playing row must clear the player */
 .rec:hover { background: color-mix(in srgb, var(--fill) 60%, transparent); }
 .rec.selected, tr.selected td { background: var(--accent-tint); }
 .rec.active { background: var(--accent-tint); box-shadow: inset 3px 0 0 var(--accent); }
@@ -329,7 +332,7 @@ button.day.on { color: var(--on-accent); background: var(--accent-fill); }
 }
 .bulk { position: sticky; top: 0; z-index: 5; background: var(--surface); padding: 8px 0; border-bottom: 1px solid var(--separator); }
 .player {
-  position: sticky; bottom: 0; z-index: 10; margin: 0 -16px -16px; padding: 14px 16px;
+  position: sticky; bottom: -40px; z-index: 10; margin: 0 -16px -16px; padding: 14px 16px;  /* -40px: main's bottom padding counts too */
   background: var(--surface);  /* opaque: list text ghosting through a translucent player was distracting */
   border-top: 1px solid var(--separator); border-radius: 0 0 var(--radius) var(--radius); display: flex; flex-direction: column; gap: 10px;
 }
@@ -337,9 +340,22 @@ button.day.on { color: var(--on-accent); background: var(--accent-fill); }
 .wave canvas { width: 100%; height: 100%; display: block; }
 .transcript { font-size: 15px; line-height: 1.55; white-space: pre-wrap; }
 .transcript.none { color: var(--secondary); font-style: italic; }
+@media (max-width: 860px) {
+  /* Docked right above the tab bar (63px + safe area). Not sticky: a sticky offset also counts main's 96px bottom
+     padding, which left the player floating mid-screen with list rows under it. Capped, scrolls inside itself. */
+  .player {
+    position: fixed; left: 0; right: 0; bottom: calc(63px + env(safe-area-inset-bottom)); margin: 0;
+    max-height: 46vh; max-height: 46dvh; overflow-y: auto; overscroll-behavior: contain;
+    border-radius: 14px 14px 0 0; box-shadow: 0 -4px 16px rgb(0 0 0 / .16);
+  }
+  .rec { scroll-margin-bottom: calc(46vh + 63px); }  /* scrollIntoView of the playing row must clear the player */
+  main:has(.player:not(.hidden)) { padding-bottom: calc(96px + 46vh + env(safe-area-inset-bottom)); }  /* the last rows stay reachable */
+}
+@media (max-width: 380px) { .player .time { display: none; } }  /* so download and delete stay on the controls row */
 @media (max-width: 680px) {
   /* compact player above the tab bar: the list stays usable behind it */
-  .player { bottom: calc(60px + env(safe-area-inset-bottom)); gap: 8px; padding: 10px 12px; }
+  .player { gap: 6px; padding: 8px 12px; }
+  .player .site { order: 1; }  /* aviation links wrap to their own row; download/delete stay with the controls */
   .player .transcript { max-height: 4.8em; overflow: auto; font-size: 14px; }
   .player .lbl { display: none; }
   .player .lbl.keep { display: inline; }
