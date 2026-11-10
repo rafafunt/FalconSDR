@@ -2763,3 +2763,9 @@ msgstr "Ciągły odczyt RTL-SDR"
 
 msgid "While the scanner stays on a frequency, an RTL-SDR read through librtlsdr (Windows, macOS and the receiver) is read as a continuous stream, which removes the buzz caused by lost samples. Turn it off if scanning freezes or the receiver keeps disconnecting; the buzz may come back. Takes effect the next time scanning starts."
 msgstr "Gdy skaner zostaje na jednej częstotliwości, RTL-SDR obsługiwany przez librtlsdr (Windows, macOS i odbiornik) jest czytany ciągłym strumieniem, co usuwa brzęczenie od gubionych próbek. Wyłącz, jeśli skanowanie się zawiesza albo odbiornik ciągle się rozłącza; brzęczenie może wrócić. Działa od następnego uruchomienia skanowania."
+
+msgid "Sort by {col}"
+msgstr "Sortuj według: {col}"
+
+msgid "Sort by scanned / not scanned"
+msgstr "Sortuj według skanowania włączone / wyłączone"

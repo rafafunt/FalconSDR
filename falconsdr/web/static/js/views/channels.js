@@ -5,6 +5,43 @@ import { S, cfg, loadSettings, on, patchConfig, saveBlacklist, saveChannels } fr
 import { modLabel, modOptions } from './bands.js';
 let tab = 'memory';
 
+// Sortable column headers (click: sort by it, click again: reverse). `dir` is the first click's direction:
+// 1 = ascending (A-Z, low-high), -1 = descending (highest / newest / switched on first).
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+const SORTS = {
+  memory: { storage: 'channelsSort', cols: {
+    on: { get: (c) => (c.enabled ? 1 : 0), dir: -1 },
+    freq: { get: (c) => c.freq_hz, dir: 1 },
+    name: { get: (c) => c.name || '', text: true, dir: 1 },
+    mod: { get: (c) => modLabel(c.modulation), text: true, dir: 1 },
+    weight: { get: (c) => c.weight || 0, dir: -1 },
+  } },
+  blacklist: { storage: 'blacklistSort', cols: {
+    freq: { get: (b) => b.freq_hz, dir: 1 },
+    margin: { get: (b) => b.margin_hz, dir: -1 },
+    label: { get: (b) => (b.label === 'Auto-lockout (SKIP)' ? t('Skipped from the Listen page') : b.label || ''), text: true, dir: 1 },
+    added: { get: (b) => b.date_added || '', text: true, dir: -1 },
+  } },
+};
+const sortState = {};
+for (const [name, def] of Object.entries(SORTS)) {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(def.storage)); } catch { /* private window: start from the default */ }
+  sortState[name] = saved && def.cols[saved.key] && (saved.dir === 1 || saved.dir === -1) ? saved : { key: 'freq', dir: 1 };
+}
+
+function sorted(name, list) {
+  const { key, dir } = sortState[name];
+  const col = SORTS[name].cols[key];
+  return [...list].sort((a, b) => {
+    const x = col.get(a), y = col.get(b);
+    // An empty text (no name, no description) goes last either way - reversing must not bury the real entries.
+    if (col.text && (x === '') !== (y === '')) return x === '' ? 1 : -1;
+    const c = col.text ? collator.compare(x, y) : x - y;
+    return c ? c * dir : SORTS[name].cols.freq.get(a) - SORTS[name].cols.freq.get(b);
+  });
+}
+
 export function channelsView(root) {
   const offs = [];
   const body = h('div.col');
@@ -58,6 +95,18 @@ export function channelsView(root) {
     else if ((e.ctrlKey || e.metaKey) && e.key === 'a') { e.preventDefault(); shown().forEach((x) => sel.add(x)); syncSel(); }
   };
   document.addEventListener('keydown', onKey);
+
+  function sortTh(name, key, label, title) {
+    const st = sortState[name], active = st.key === key;
+    const flip = () => {
+      sortState[name] = active ? { key, dir: -st.dir } : { key, dir: SORTS[name].cols[key].dir };
+      try { localStorage.setItem(SORTS[name].storage, JSON.stringify(sortState[name])); } catch { /* not remembered, still sorted */ }
+      render();
+    };
+    return h('th', { 'aria-sort': active ? (st.dir === 1 ? 'ascending' : 'descending') : 'none' },
+      h('button.sort', { class: active ? 'on' : '', title: title || t('Sort by {col}', { col: label }), onclick: flip },
+        label, h('span.arrow', active ? (st.dir === 1 ? '▲' : '▼') : '↕')));
+  }
 
   function render() {
     rowOf.clear();
@@ -153,7 +202,7 @@ export function channelsView(root) {
   function memory() {
     const q = query.trim().toLowerCase();
     const match = (c) => !q || `${fmtChannel(c.freq_hz)} ${fmtMHz(c.freq_hz, 4)} ${c.name} ${c.modulation} ${c.folder}`.toLowerCase().includes(q);
-    const channels = S.settings.channels.filter(match).sort((a, b) => a.freq_hz - b.freq_hz);
+    const channels = sorted('memory', S.settings.channels.filter(match));
     const groups = [['', channels.filter((c) => !c.folder)], ...folders().map((f) => [f, channels.filter((c) => c.folder === f)])];
     const search = h('input', { type: 'search', placeholder: t('Search frequency, name, folder…'), value: query, oninput: (e) => { query = e.target.value; const pos = e.target.selectionStart; render(); const el = body.querySelector('input[type=search]'); el.focus(); el.setSelectionRange(pos, pos); } });
     const rows = [];
@@ -185,7 +234,7 @@ export function channelsView(root) {
         h('button.ghost.small', { onclick: () => loadCurated('fire') }, t('Add Polish fire brigade frequencies'))),
       S.settings.channels.length
         ? h('div.table-wrap', h('table',
-          h('thead', h('tr', h('th', ''), h('th', t('MHz')), h('th', t('Name')), h('th', t('Mode')), h('th', t('Weight')), h('th', ''))),
+          h('thead', h('tr', sortTh('memory', 'on', '✓', t('Sort by scanned / not scanned')), sortTh('memory', 'freq', t('MHz')), sortTh('memory', 'name', t('Name')), sortTh('memory', 'mod', t('Mode')), sortTh('memory', 'weight', t('Weight')), h('th', ''))),
           h('tbody', rows)))
         : h('div.empty', icon('channels'), h('div', t('No saved channels yet. Add one, or save a frequency straight from a recording.'))));
   }
@@ -205,7 +254,7 @@ export function channelsView(root) {
 
   function blacklist() {
     const q = bq.trim().toLowerCase();
-    const list = S.settings.blacklist.filter((b) => !q || `${fmtChannel(b.freq_hz)} ${fmtMHz(b.freq_hz, 4)} ${b.label} ${b.date_added}`.toLowerCase().includes(q)).sort((a, b) => a.freq_hz - b.freq_hz);
+    const list = sorted('blacklist', S.settings.blacklist.filter((b) => !q || `${fmtChannel(b.freq_hz)} ${fmtMHz(b.freq_hz, 4)} ${b.label} ${b.date_added}`.toLowerCase().includes(q)));
     const search = h('input', { type: 'search', placeholder: t('Search blacklist…'), value: bq, oninput: (e) => { bq = e.target.value; render(); const el = body.querySelector('input[type=search]'); el.focus(); } });
     return h('section.card',
       h('div.row.wrap', h('div.grow', search), h('button.primary', { onclick: addBlacklist }, icon('plus'), t('Add'))),
@@ -214,7 +263,7 @@ export function channelsView(root) {
         h('input', { type: 'number', value: cfg().default_blacklist_margin_hz / 1000, min: 0, step: 0.5, style: { width: '110px' }, onchange: (e) => patchConfig({ default_blacklist_margin_hz: Math.round(Math.max(0, +e.target.value) * 1000) }) })),
       list.length
         ? h('div.table-wrap', h('table',
-          h('thead', h('tr', h('th', t('MHz')), h('th', t('Margin')), h('th', t('Description')), h('th', t('Added')), h('th', ''))),
+          h('thead', h('tr', sortTh('blacklist', 'freq', t('MHz')), sortTh('blacklist', 'margin', t('Margin')), sortTh('blacklist', 'label', t('Description')), sortTh('blacklist', 'added', t('Added')), h('th', ''))),
           h('tbody', list.map((b) => selectable(b, h('tr',
             h('td.mono', fmtChannel(b.freq_hz)),
             h('td.mono', `±${(b.margin_hz / 1000).toFixed(1)} kHz`),

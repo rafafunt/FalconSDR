@@ -374,6 +374,11 @@ td .actions { display: flex; gap: 2px; justify-content: flex-end; }
 .folder-row td { background: var(--bg); font-weight: 600; cursor: pointer; }
 @media (prefers-color-scheme: dark) { .folder-row td { background: var(--fill); } }
 .table-wrap { overflow-x: auto; margin: 0 -16px; padding: 0 6px; }
+th button.sort { all: unset; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; border-radius: 6px; padding: 2px 4px; margin: -2px -4px; }
+th button.sort:hover, th button.sort:focus-visible { color: var(--label); }
+th button.sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+th button.sort .arrow { font-size: 9px; opacity: .35; }
+th button.sort.on, th button.sort.on .arrow { color: var(--accent); opacity: 1; }
 
 /* ---- statistics ---------------------------------------------------------------------- */
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 12px; }
@@ -429,5 +434,6 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 @media (pointer: coarse) {
   button, .btn, input, select { min-height: 44px; }
   button.icon { min-width: 44px; }
+  th button.sort { min-height: 44px; }  /* `all: unset` on the header button would drop the 44pt target */
   .seg button { min-height: 40px; }  /* + the 2px track padding = 44 */
 }
