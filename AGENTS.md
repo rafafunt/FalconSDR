@@ -598,6 +598,16 @@ catalog loads; wrap them in a function called at point of use
     returns exactly n samples (zeros while nothing is decoded) so the slot's
     timeline never drifts. Only decoded audio is `real` for the Recorder - an
     encrypted call is muted by dsd-fme and must not leave a silent file.
+    **What the decoder is fed** (`Demodulator.discriminate`, issue "DMR silent"): the carrier's frequency error
+    is taken out first (`_remove_offset`, mean phase step per block, skipped for blocks without the carrier -
+    TDMA gaps) - 1 kHz of offset is ~5200 int16 of DC after `DsdDecoder.feed`'s x40000, so a dongle with a few ppm
+    error clipped the input - then a 6.5 kHz channel filter (`_channel_filter`): a neighbour 10 dB weaker wrecked
+    the discriminator (capture), and the noise bandwidth is 3.7x smaller. Measured on synthetic 4FSK: 0 % clipped
+    up to +-20 kHz (was 100 % from +10 kHz), neighbour -10 dB correlation 0.47 -> 0.99; +0.2 ms per 30 ms block.
+    **Never tested against a real dsd-fme/DMR signal** (the owner has neither) - confirm with a reporter before
+    calling it fixed. A digital slot also **ignores squelch** (`_process_one_slot`): the decoder has already
+    consumed its voice, and squelch (RF level) muted it in the gaps of a TDMA carrier = single syllables.
+    Analog paths don't touch any of this (`demod()` is bit-identical to before; only `discriminate()` changed).
     **`DsdDecoder`'s argument list stays input/output/mode only - never add a
     key or privacy option** (`-b`, `-H`, `-1`, `-k`/`-K`, `-4`, ... - a dozen,
     see `dsd-fme -h`): no decryption, ever. Without the add-on, DMR/YSF channels play as NFM. In the

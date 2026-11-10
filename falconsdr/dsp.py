@@ -37,6 +37,7 @@ _AGC_MAX_GAIN = 6.0
 # so the opposite side (noise, a neighbour) is rejected.
 SSB_BANDWIDTH_HZ = 2700.0
 _SSB_HALF_BW_HZ = SSB_BANDWIDTH_HZ / 2.0
+_DIGITAL_CHANNEL_CUTOFF_HZ = 6500.0  # -6 dB of the channel filter in front of the digital-voice discriminator (12.5 kHz channel)
 
 # AM/NFM audio lowpass after demodulation. Voice ends at ~3 kHz; above it
 # real recordings held only noise (~1 dB SNR) and narrowband spikes the
@@ -143,6 +144,12 @@ class Demodulator:
         self._voice_lpf_ba = None
         self._voice_lpf_zi = None
         self._stream_resampler: StreamResampler | None = None  # discriminate() only
+        self._afc_rad = 0.0        # discriminate(): frequency offset of the carrier, radians/sample
+        self._afc_phase = 0.0
+        self._afc_power = 0.0      # recent peak block power, to skip blocks without the carrier
+        self._afc_started = False
+        self._chan_taps: np.ndarray | None = None
+        self._chan_zi: np.ndarray | None = None
         self._decim_resampler: StreamResampler | None = None  # _decimate() / WFM stage 1
         self._audio_resampler: StreamResampler | None = None  # WFM stage 2 (real audio)
 
@@ -158,6 +165,8 @@ class Demodulator:
         self._voice_lpf_zi = None
         self._decim_resampler = None
         self._audio_resampler = None
+        self._afc_rad, self._afc_phase, self._afc_power, self._afc_started = 0.0, 0.0, 0.0, False
+        self._chan_zi = None
 
     def _ensure_ssb_filter(self) -> None:
         if self._ssb_ba is not None:
@@ -249,9 +258,36 @@ class Demodulator:
             # decoder, so it keeps the filter it was built and checked with.
             self._stream_resampler = StreamResampler(self.sample_rate, rate, predecimate=False)
         baseband = self._stream_resampler.process(iq)
+        if baseband.size < 2:
+            return np.zeros(0, dtype=np.float32)
+        baseband = self._channel_filter(self._remove_offset(baseband), rate)
         phase = np.unwrap(np.concatenate(([self._prev_phase], np.angle(baseband))))
         self._prev_phase = phase[-1]
         return np.diff(phase).astype(np.float32)
+
+    def _remove_offset(self, bb: np.ndarray) -> np.ndarray:
+        """Takes the carrier's frequency error (a dongle's ppm: ~5 kHz of discriminator DC at 450 MHz) out of the
+        baseband before the channel filter: the DC would clip the int16 the decoder reads, and an offset past the
+        filter edge would cut the signal. Estimate = mean phase step of the whole block (power-weighted, 4FSK
+        averages to zero), smoothed; blocks without the carrier (TDMA gaps) are skipped."""
+        power = float(np.mean(bb.real ** 2 + bb.imag ** 2))
+        if not self._afc_started or power >= 0.25 * self._afc_power:
+            est = float(np.angle(np.sum(bb[1:] * np.conj(bb[:-1]))))
+            self._afc_rad = est if not self._afc_started else self._afc_rad + 0.3 * (est - self._afc_rad)
+            self._afc_started = True
+        self._afc_power = max(power, 0.98 * self._afc_power)
+        turn = np.exp(-1j * (self._afc_phase + self._afc_rad * np.arange(bb.size))).astype(np.complex64)
+        self._afc_phase = (self._afc_phase + self._afc_rad * bb.size) % (2 * np.pi)
+        return bb * turn
+
+    def _channel_filter(self, bb: np.ndarray, rate: int) -> np.ndarray:
+        """One 12.5 kHz channel (DMR, C4FM) out of the 48 kHz baseband: a neighbouring channel 10 dB weaker
+        otherwise wrecks the FM discriminator (capture), and the noise bandwidth is 3.7x smaller."""
+        if self._chan_taps is None or self._chan_zi is None:
+            self._chan_taps = firwin(101, _DIGITAL_CHANNEL_CUTOFF_HZ, fs=rate).astype(np.float32)
+            self._chan_zi = np.zeros(self._chan_taps.size - 1, dtype=np.complex64)
+        out, self._chan_zi = lfilter(self._chan_taps, [1.0], bb, zi=self._chan_zi)
+        return out.astype(np.complex64)
 
     def demod(self, iq: np.ndarray, modulation: Modulation, offset_hz: float = 0.0) -> np.ndarray:
         """Returns mono audio as a 1-D float32 array."""

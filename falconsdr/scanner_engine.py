@@ -1766,6 +1766,9 @@ class ScannerEngine(threading.Thread):
         """Demodulates one slot from the shared, read-only ``iq`` (may run on
         the slot pool)."""
         if slot.dsd is not None:
+            # The decoder decides what is voice. Squelch (RF level) would mute decoded speech in the gaps of a TDMA
+            # carrier (30 ms on / 30 ms off with one slot in use) and leave single syllables.
+            squelched = False
             slot.dsd.feed(slot.demod.discriminate(iq, slot.offset_hz, digital_voice.DISCRIMINATOR_RATE))
             audio = slot.dsd.read(round(iq.size * AUDIO_RATE / slot.demod.sample_rate))
             call = (slot.dsd.talkgroup, slot.dsd.source)

@@ -1009,6 +1009,63 @@ class DigitalVoiceTest(unittest.TestCase):
         fast = time.perf_counter() - started
         self.assertLess(fast, slow / 1.8)                                      # measured 3.6x; slow CI runners get slack
 
+    @staticmethod
+    def _fsk4_iq(seconds, offset_hz, neighbour_db=None, fs=2_400_000):
+        """4FSK (+-648/+-1944 Hz, 4800 baud) at fs, a carrier offset, optionally a neighbour 12.5 kHz up."""
+        import numpy as np
+        rng = np.random.default_rng(7)
+        sps = fs // 4800
+        freq = np.repeat(rng.choice([-3, -1, 1, 3], int(seconds * 4800)) * 648.0, sps)
+        iq = np.exp(2j * np.pi * np.cumsum(freq + offset_hz) / fs)
+        if neighbour_db is not None:
+            other = np.repeat(rng.choice([-3, -1, 1, 3], freq.size // sps) * 648.0, sps)
+            iq = iq + 10 ** (neighbour_db / 20) * np.exp(2j * np.pi * np.cumsum(other + 12500.0) / fs)
+        return iq.astype(np.complex64), freq
+
+    @staticmethod
+    def _discriminated(iq, fs=2_400_000):
+        import numpy as np
+        from falconsdr.dsp import Demodulator
+        demod, block = Demodulator(fs, 48000), int(fs * 0.03)
+        return np.concatenate([demod.discriminate(iq[i:i + block], 0.0, 48000) for i in range(0, iq.size - block, block)])
+
+    def test_discriminator_takes_out_the_carrier_offset(self) -> None:
+        """A dongle's ppm error used to ride on the discriminator output (5200 int16 per kHz) and clip it."""
+        import numpy as np
+        for offset in (0.0, 5000.0, -8000.0, 20000.0):
+            out = self._discriminated(self._fsk4_iq(0.6, offset)[0])[1000:]
+            self.assertLess(abs(float(out.mean())), 0.03, offset)             # rad/sample; 0.03 = 230 Hz
+            self.assertLess(float(np.abs(out).max()) * 40000, 32767, offset)  # what DsdDecoder.feed scales to int16
+
+    def test_discriminator_rejects_a_neighbouring_channel(self) -> None:
+        import numpy as np
+        iq, freq = self._fsk4_iq(0.6, 0.0, neighbour_db=-10.0)
+        out = self._discriminated(iq)[1000:]
+        ref = (2 * np.pi * freq[::50] / 48000)[1000:1000 + out.size]
+        out = out[:ref.size]
+        best = max(float(np.corrcoef(out[max(lag, 0):out.size + min(lag, 0)], ref[max(-lag, 0):ref.size + min(-lag, 0)])[0, 1])
+                   for lag in range(-80, 81, 2))                              # the channel filter delays by ~50 samples
+        self.assertGreater(best, 0.9)                                         # 0.47 without the channel filter
+
+    def test_digital_slot_ignores_squelch_analog_still_obeys(self) -> None:
+        import numpy as np
+        from types import SimpleNamespace
+        from falconsdr.models import Modulation
+        from falconsdr.scanner_engine import ScannerEngine
+        played = []
+        engine = SimpleNamespace(_play_and_record_slot=lambda slot, audio, squelched: played.append(squelched),
+                                 signals=SimpleNamespace(log=SimpleNamespace(emit=lambda *a: None)))
+        iq = np.zeros(1000, np.complex64)
+        demod = SimpleNamespace(sample_rate=1000, discriminate=lambda *a: np.zeros(48, np.float32),
+                                demod=lambda *a: np.zeros(12, np.float32))
+        digital = SimpleNamespace(dsd=SimpleNamespace(feed=lambda x: None, read=lambda n: np.zeros(n, np.float32),
+                                                      talkgroup="", source=""),
+                                  demod=demod, offset_hz=0.0, modulation=Modulation.DMR, freq_hz=1, announced_call=None)
+        analog = SimpleNamespace(dsd=None, demod=demod, offset_hz=0.0, modulation=Modulation.NFM, freq_hz=1)
+        ScannerEngine._process_one_slot(engine, digital, iq, True)
+        ScannerEngine._process_one_slot(engine, analog, iq, True)
+        self.assertEqual(played, [False, True])
+
     def test_decoder_parses_calls_and_keeps_its_timeline(self) -> None:
         import numpy as np
         from falconsdr import digital_voice
