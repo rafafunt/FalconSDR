@@ -85,6 +85,13 @@ jobs:
               [ -f "$l" ] && { printf '\n==============================================================================\nlibusb (bundled shared library - Homebrew licence file %s)\n==============================================================================\n\n' "$(basename "$l")"; cat "$l"; }
             done; } >> "$out"
           grep -c "bundled shared library" "$out"
+      # PyInstaller seals the bundle (ad-hoc) when it builds it; the licence file above was added afterwards, which
+      # breaks the seal ("file added") and Gatekeeper then calls a downloaded app "damaged" (issue #11). Seal it
+      # again (the nested code is already signed), then fail the build if the signature is not valid.
+      - name: Re-seal and verify the signature
+        run: |
+          codesign --force --sign - dist/FalconSDR.app
+          codesign --verify --deep --strict --verbose=2 dist/FalconSDR.app
       - name: Zip the app
         run: ditto -c -k --keepParent dist/FalconSDR.app "FalconSDR-$VERSION-macos-${{ matrix.arch }}-experimental.zip"
       # Kept as a workflow artifact too: a draft release has no tag yet, and a failed attach must not lose the build.

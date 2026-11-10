@@ -275,10 +275,10 @@ These builds are made automatically and pass the same self-test as the other
 packages, but haven't been tried on a real Mac with an SDR yet - feedback in
 [Discussions](../../discussions) is very welcome.
 
-The app isn't signed by Apple. The first time, right-click it → **Open**
-(or System Settings → Privacy & Security → **Open Anyway**). If macOS says
-the app "is damaged", that's the same missing signature; clear the download
-flag in Terminal:
+The app isn't signed by Apple. The first time, try to open it, then go to
+System Settings → Privacy & Security → **Open Anyway** (since macOS 15 Sequoia
+right-click → Open no longer skips this check; on older macOS it does). If
+macOS says the app "is damaged", clear the download flag in Terminal:
 
 ```
 xattr -dr com.apple.quarantine /Applications/FalconSDR.app
