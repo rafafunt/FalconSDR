@@ -1,5 +1,5 @@
 Name:           falconsdr
-Version:        1.4.1
+Version:        1.5.0
 Release:        1%{?dist}
 Summary:        Wideband SDR ATC/radio scanner (self-contained build)
 License:        GPL-3.0-or-later
@@ -117,6 +117,9 @@ fi
 %{_modprobedir}/blacklist-rtl-dvb.conf
 
 %changelog
+* Wed Nov 11 2026 rafafunt - 1.5.0-1
+- 1.5.0: an RTL-SDR on another computer as a source (rtl_tcp), sortable columns in Channels, a phone-friendly recordings player, picking an existing folder when saving a frequency, a switch for the RTL-SDR stream (Settings > Advanced), digital voice (DMR/C4FM) input fixes, macOS signature re-sealed.
+
 * Sun Nov 01 2026 rafafunt - 1.4.1-1
 - 1.4.1: HackRF/Airspy libraries in the macOS builds, the headless receiver installs them, install.sh --from-source updates a checkout and takes --with-sdr-libs.
 
