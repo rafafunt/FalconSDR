@@ -378,7 +378,8 @@ Good to know:
 - It does not make a weak USB host stronger: the server still reads the
   dongle over its own USB.
 - Bias-T is only switched on when you turn it on here (and off again when the
-  scanner stops); the server's own setting is otherwise left alone.
+  scanner stops cleanly - if the connection is lost it stays as it was until
+  the next session); the server's own setting is otherwise left alone.
 
 ## First steps
 

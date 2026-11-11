@@ -306,9 +306,12 @@ export function listenView(root) {
     const netEntry = devices.find((d) => d.driver === 'rtl_tcp');
     const netArgs = Object.fromEntries((c.device.device_args || '').split(',').filter((kv) => kv.includes('=')).map((kv) => kv.split(/=(.*)/s).slice(0, 2)));
     const addr = c.device.driver === 'rtl_tcp' ? h('input', {
-      type: 'text', placeholder: '192.168.1.20:1234', spellcheck: false, autocapitalize: 'off', value: netArgs.host ? `${netArgs.host}${netArgs.port && netArgs.port !== '1234' ? ':' + netArgs.port : ''}` : '',
+      type: 'text', placeholder: '192.168.1.20:1234', spellcheck: false, autocapitalize: 'off',
+      value: netArgs.host ? `${netArgs.host.includes(':') ? `[${netArgs.host}]` : netArgs.host}${netArgs.port && netArgs.port !== '1234' ? ':' + netArgs.port : ''}` : '',
       onchange: (e) => {
-        const m = e.target.value.trim().replace(/^tcp:\/\//, '').match(/^(.*?)(?::(\d+))?$/);
+        // host, host:port, [ipv6]:port or a bare IPv6 address (more than one colon: all of it is the host)
+        const raw = e.target.value.trim().replace(/^tcp:\/\//, '');
+        const m = raw.match(/^\[(.+)\](?::(\d+))?$/) || (raw.split(':').length > 2 ? [raw, raw] : raw.match(/^(.*?)(?::(\d+))?$/));
         const args = m && m[1] ? `host=${m[1]},port=${m[2] || 1234}` : '';
         if (netEntry) netEntry.args = args;
         patchConfig({ device: { device_args: args } });

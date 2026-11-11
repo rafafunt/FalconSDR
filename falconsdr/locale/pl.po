@@ -2805,3 +2805,6 @@ msgstr "rtl_tcp zamknął połączenie"
 
 msgid "rtl_tcp sent no data for {s:g} s - connection lost or the server is not responding"
 msgstr "rtl_tcp nie przysłał danych przez {s:g} s - połączenie utracone albo serwer nie odpowiada"
+
+msgid "An RTL-SDR captures 0.23-0.30 or 0.90-3.20 MHz; {rate:g} MHz is not possible - change the capture width."
+msgstr "RTL-SDR przechwytuje 0,23-0,30 albo 0,90-3,20 MHz; {rate:g} MHz nie jest możliwe - zmień szerokość przechwytu."

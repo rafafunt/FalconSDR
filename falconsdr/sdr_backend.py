@@ -603,9 +603,13 @@ _RTLTCP_GAINS = {1: (-10, 15, 40, 65, 90, 115, 140, 165, 190, 215, 240, 290, 340
                  2: (-99, -40, 71, 179, 192),                                              # FC0012
                  5: _RTLTCP_R82XX_GAINS, 6: _RTLTCP_R82XX_GAINS}                           # R820T, R828D (RTL-SDR Blog V4)
 #: IQ that arrives after a retune command still belongs to the old frequency: the command runs on the server and a USB
-#: transfer (~55 ms at 2.4 MS/s) plus the network's queues are in front of the first clean sample. Measured on a V4
-#: over a LAN: none dropped = up to 3 old 30 ms blocks, 0.1 s = none; 0.15 s keeps a margin for Wi-Fi (gotcha 56).
+#: transfer (~55 ms at 2.4 MS/s) plus the network's queues are in front of the first clean sample. Everything that
+#: arrives within this many seconds of the command is dropped (by the clock, not by byte count: a backlog the server
+#: built up while this side was stalled arrives faster than real time and would slip past a byte count). Measured on a
+#: V4 over a LAN: nothing dropped = up to 3 old 30 ms blocks, 0.1 s = none; 0.15 s keeps a margin for Wi-Fi (gotcha 56).
 _RTLTCP_STALE_S = 0.15
+#: The sample rates librtlsdr takes; rtl_tcp ignores a refusal and goes on at the old rate, so check here.
+_RTLTCP_RATE_RANGES_HZ = ((225_001, 300_000), (900_001, 3_200_000))
 
 
 def parse_rtl_tcp_args(device_args: str) -> tuple[str, int]:
@@ -636,10 +640,13 @@ class RtlTcpBackend(SdrBackend):
 
     def __init__(self, device_args: str, sample_rate: float, gain_mode: str, gain_db: float, bias_tee: bool = False):
         host, port = parse_rtl_tcp_args(device_args)
+        if not any(lo <= sample_rate <= hi for lo, hi in _RTLTCP_RATE_RANGES_HZ):
+            raise RuntimeError(tr("An RTL-SDR captures 0.23-0.30 or 0.90-3.20 MHz; {rate:g} MHz is not possible - change the capture width.")
+                               .format(rate=sample_rate / 1e6))
         self.addr = f"{host}:{port}"
         self.sample_rate = sample_rate
         self.bias_tee = False  # on only once everything else is set up, like the other backends
-        self._stale = 0        # bytes of the old frequency still to drop
+        self._discard_until = 0.0  # time.monotonic() until which the IQ is still the old frequency's
         self._gains: tuple[int, ...] | None = None
         self._sock: socket.socket | None = None
         try:
@@ -680,8 +687,10 @@ class RtlTcpBackend(SdrBackend):
 
     def set_frequency(self, freq_hz: float) -> None:
         self._send(_RTLTCP_FREQ, int(freq_hz))
+        if self.bias_tee:  # like the other backends: some drivers re-derive the bias-tee on a retune
+            self._send(_RTLTCP_BIAS_TEE, 1)
         self._drain()  # what already arrived is the old frequency; so is the next _RTLTCP_STALE_S of the stream
-        self._stale = int(self.sample_rate * 2 * _RTLTCP_STALE_S)
+        self._discard_until = time.monotonic() + _RTLTCP_STALE_S
 
     def set_gain(self, gain_mode: str, gain_db: float) -> None:
         if gain_mode == "auto":
@@ -707,11 +716,9 @@ class RtlTcpBackend(SdrBackend):
     def read_raw(self, num_samples: int) -> np.ndarray:
         """Exactly 2 * num_samples bytes of IQ (unconverted); raises when the stream stops."""
         try:
-            while self._stale > 0:
-                got = self._sock.recv(min(self._stale, 1 << 16))
-                if not got:
+            while time.monotonic() < self._discard_until:
+                if not self._sock.recv(1 << 16):
                     raise RuntimeError(tr("rtl_tcp closed the connection"))
-                self._stale -= len(got)
             return np.frombuffer(self._recv_exact(2 * num_samples), dtype=np.uint8)
         except socket.timeout as exc:
             raise RuntimeError(tr("rtl_tcp sent no data for {s:g} s - connection lost or the server is not responding").format(

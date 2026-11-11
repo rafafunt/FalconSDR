@@ -443,10 +443,11 @@ class _FakeRtlTcp:
     """A tiny rtl_tcp server: greeting, a paced stream of one repeated byte (7, switched to 9 by a frequency command)
     and a record of every command it received."""
 
-    def __init__(self, tuner: int = 6, greeting: bytes | None = None, stream: bool = True):
+    def __init__(self, tuner: int = 6, greeting: bytes | None = None, stream: bool = True, retune_delay: float = 0.0):
         import socket
         self.commands: list[tuple[int, int]] = []
         self.value = 7
+        self._retune_delay, self._flip_at = retune_delay, None
         self._tuner, self._greeting, self._stream = tuner, greeting, stream
         self._stop = threading.Event()
         self._srv = socket.create_server(("127.0.0.1", 0))
@@ -460,7 +461,7 @@ class _FakeRtlTcp:
         except OSError:
             return
         with conn:
-            conn.settimeout(0.05)
+            conn.settimeout(0.002)
             if self._greeting is not None:
                 conn.sendall(self._greeting)
             elif self._stream is not None:
@@ -476,10 +477,12 @@ class _FakeRtlTcp:
                         cmd, val = struct.unpack(">BI", buf[:5])
                         buf = buf[5:]
                         self.commands.append((cmd, val))
-                        if cmd == 0x01:
-                            self.value = 9
+                        if cmd == 0x01:  # a retune takes a moment on the real server: the old frequency keeps coming
+                            self._flip_at = time.monotonic() + self._retune_delay
                 except OSError:  # nothing to read just now
                     pass
+                if self._flip_at is not None and time.monotonic() >= self._flip_at:
+                    self.value = 9
                 if self._stream:
                     try:
                         conn.sendall(bytes([self.value]) * 1000)
@@ -498,7 +501,7 @@ class RtlTcpTest(unittest.TestCase):
 
     def _backend(self, server, **kw):
         from falconsdr import sdr_backend as sb
-        args = dict(device_args=f"host=127.0.0.1,port={server.port}", sample_rate=100_000.0, gain_mode="manual", gain_db=30.0)
+        args = dict(device_args=f"host=127.0.0.1,port={server.port}", sample_rate=1_000_000.0, gain_mode="manual", gain_db=30.0)
         args.update(kw)
         return sb.RtlTcpBackend(**args)
 
@@ -517,7 +520,7 @@ class RtlTcpTest(unittest.TestCase):
         try:
             backend.read_raw(100)
             time.sleep(0.1)
-            self.assertEqual(server.commands, [(0x02, 100_000), (0x03, 1), (0x04, 297)])  # 30 dB -> the V4's 29.7 dB step
+            self.assertEqual(server.commands, [(0x02, 1_000_000), (0x03, 1), (0x04, 297)])  # 30 dB -> the V4's 29.7 dB step
             self.assertEqual(backend.gain_range_db, (0.0, 49.6))
             backend.set_gain("auto", 0)
             backend.set_gain("manual", 49.0)
@@ -540,6 +543,32 @@ class RtlTcpTest(unittest.TestCase):
         self.assertEqual(server.commands[-1], (0x0E, 0))
         server.close()
 
+    def test_a_rate_the_dongle_cannot_do_is_refused_before_connecting(self) -> None:
+        from falconsdr import sdr_backend as sb
+        for rate in (500_000.0, 3_600_000.0, 61_440_000.0):
+            with self.assertRaises(RuntimeError, msg=rate):
+                sb.RtlTcpBackend("host=127.0.0.1,port=9", rate, "manual", 30.0)  # nothing listens: it must not even try
+
+    def test_bias_tee_is_asserted_again_after_a_retune_only_when_on(self) -> None:
+        server = _FakeRtlTcp()
+        backend = self._backend(server, bias_tee=True)
+        try:
+            backend.set_frequency(98_100_000)
+            time.sleep(0.2)
+            self.assertEqual(server.commands[-2:], [(0x01, 98_100_000), (0x0E, 1)])
+        finally:
+            backend.close()
+            server.close()
+        off = _FakeRtlTcp()
+        backend = self._backend(off)
+        try:
+            backend.set_frequency(98_100_000)
+            time.sleep(0.2)
+            self.assertFalse(any(c == 0x0E for c, _ in off.commands))
+        finally:
+            backend.close()
+            off.close()
+
     def test_reads_exact_blocks_and_converts_like_the_local_backend(self) -> None:
         import numpy as np
         from falconsdr import sdr_backend as sb
@@ -560,19 +589,22 @@ class RtlTcpTest(unittest.TestCase):
         import numpy as np
         from unittest import mock
         from falconsdr import sdr_backend as sb
-        server = _FakeRtlTcp()
-        backend = self._backend(server)
-        try:
-            backend.read_raw(1000)
-            time.sleep(0.05)                                         # the socket buffers fill with the old stream
-            with mock.patch.object(sb, "_RTLTCP_STALE_S", 0.05):     # 0.05 s at 100 kS/s = 10 000 bytes
-                backend.set_frequency(98_100_000)
-            self.assertIn((0x01, 98_100_000), server.commands + [(0x01, 98_100_000)])
-            after = backend.read_raw(2000)
-            self.assertTrue((after == 9).all(), np.unique(after))    # the server switched at the command
-        finally:
-            backend.close()
-            server.close()
+        for stale, expect_all_new in ((0.4, True), (0.0, False)):  # the server needs 0.15 s to retune
+            server = _FakeRtlTcp(retune_delay=0.15)
+            backend = self._backend(server)
+            try:
+                backend.read_raw(1000)
+                with mock.patch.object(sb, "_RTLTCP_STALE_S", stale):
+                    backend.set_frequency(98_100_000)
+                after = backend.read_raw(2000)
+                self.assertIn((0x01, 98_100_000), server.commands)
+                if expect_all_new:
+                    self.assertTrue((after == 9).all(), np.unique(after))
+                else:
+                    self.assertTrue((after == 7).any(), "without the drop, old-frequency IQ comes through")
+            finally:
+                backend.close()
+                server.close()
 
     def test_connection_problems_are_clear(self) -> None:
         from falconsdr import sdr_backend as sb
@@ -582,7 +614,7 @@ class RtlTcpTest(unittest.TestCase):
         gone.close()
         from falconsdr.i18n import tr  # the texts follow the language the other tests left set
         with self.assertRaises(RuntimeError) as ctx:
-            sb.RtlTcpBackend(f"host=127.0.0.1,port={port}", 100_000.0, "manual", 30.0)
+            sb.RtlTcpBackend(f"host=127.0.0.1,port={port}", 1_000_000.0, "manual", 30.0)
         self.assertTrue(str(ctx.exception).startswith(tr("Can't connect to rtl_tcp at {addr} ({error}).").split("{addr}")[0]))
         wrong = _FakeRtlTcp(greeting=b"SPYV" + bytes(8))
         with self.assertRaises(RuntimeError) as ctx:

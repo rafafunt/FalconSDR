@@ -608,6 +608,9 @@ catalog loads; wrap them in a function called at point of use
     calling it fixed. A digital slot also **ignores squelch** (`_process_one_slot`): the decoder has already
     consumed its voice, and squelch (RF level) muted it in the gaps of a TDMA carrier = single syllables.
     Analog paths don't touch any of this (`demod()` is bit-identical to before; only `discriminate()` changed).
+    Known limit: the offset is estimated on the *unfiltered* 48 kHz baseband, so a neighbour stronger than the target pulls
+    the estimate toward itself (no worse than before - it captured the discriminator anyway); the fix would be a wider first
+    filter before the estimate.
     **`DsdDecoder`'s argument list stays input/output/mode only - never add a
     key or privacy option** (`-b`, `-H`, `-1`, `-k`/`-K`, `-4`, ... - a dozen,
     see `dsd-fme -h`): no decryption, ever. Without the add-on, DMR/YSF channels play as NFM. In the
@@ -822,8 +825,11 @@ catalog loads; wrap them in a function called at point of use
     from the public behaviour of rtl_tcp, no code copied - the gain tables are librtlsdr's numbers, GPL-2.0-or-later,
     compatible with ours; stdlib only, no new dependency): a 12 byte greeting `RTL0` + tuner id + gain count, then raw
     8-bit IQ forever; 5 byte commands (code + big-endian value): 0x01 frequency, 0x02 rate, 0x03 gain mode, 0x04 gain
-    (tenths of dB), 0x0E bias-tee. **The stream does not stop at a retune**, so what had arrived and the next
-    `_RTLTCP_STALE_S` of it is the old frequency: `set_frequency` drains the socket and drops that much. Measured on a V4
+    (tenths of dB), 0x0E bias-tee. **The stream does not stop at a retune**, so what had arrived and everything that comes in the next
+    `_RTLTCP_STALE_S` seconds is the old frequency: `set_frequency` drains the socket and `read_raw` drops by the clock
+    (not by byte count: a backlog built up while this side stalled arrives faster than real time).
+    The sample rate is checked against librtlsdr's ranges before connecting (rtl_tcp ignores a refused rate and goes on
+    at the old one = silently wrong frequencies). With Bias-T on it is sent again after every retune, like the others. Measured on a V4
     behind the owner's coalescing proxy over a LAN (`--probe-sdr rtl_tcp`, RTT 1.9 ms): no drop = 2.5 old blocks on
     average (max 3), 0.1 s = none, first clean block 126 ms / 187 ms at 0.15 s (the value used - margin for Wi-Fi). A
     slower link needs more. Gain commands are not dropped from the stream (no stall). Bias-T is sent only when the user
