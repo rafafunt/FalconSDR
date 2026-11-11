@@ -26,7 +26,9 @@ receiver at [falconsdr.com](https://falconsdr.com).
   several simultaneous conversations on different frequencies are caught and
   recorded in parallel, not one after another.
 - Any number of bands (start, stop, step, modulation) plus a Memory List of
-  named single channels in folders. Ready-made presets for common bands.
+  named single channels in folders - sortable by any column, like the
+  blacklist (click a header, click again to reverse). Ready-made presets for
+  common bands.
 - Priority weights for bands and channels, and a short "recency boost" that
   revisits a frequency right after it was active, to catch the reply.
 - Per-band overrides: trigger level, gain, hold time, squelch, noise
@@ -93,6 +95,7 @@ receiver at [falconsdr.com](https://falconsdr.com).
 |---|---|
 | RTL-SDR (incl. RTL-SDR Blog V3/V4) | built in on Linux, Windows and macOS |
 | HackRF, Airspy | built in on Windows, `.deb`, `.rpm`, AppImage and (since 1.4.1) macOS (experimental) |
+| An RTL-SDR on another computer | over the network through its `rtl_tcp` server (since 1.5.0, see [Network receiver](#network-receiver-rtl_tcp)) |
 | SDRplay, LimeSDR, USRP, … | through SoapySDR, Linux source install (not tested) |
 
 An RTL-SDR is opened through librtlsdr; on Linux from source also through
@@ -122,7 +125,8 @@ tested yet - reports are welcome.
 
 **Testing a receiver:** stop the scanner and run `falconsdr --probe-sdr`
 (from source: `python main.py --probe-sdr`; add `hackrf_native` / `hackrf` /
-`airspy_native` / `airspy` to pick the way it is opened; on Windows the output
+`airspy_native` / `airspy` to pick the way it is opened, or `rtl_tcp` to
+measure the server whose address is saved on the Listen page; on Windows the output
 goes to `%USERPROFILE%\.config\FalconSDR\falconsdr.log`). It measures the
 gain steps, the DC spike, how many blocks after a retune still hold the old
 frequency, and sample losses, and prints one `RESULT {...}`
@@ -286,6 +290,12 @@ macOS says the app "is damaged", clear the download flag in Terminal:
 xattr -dr com.apple.quarantine /Applications/FalconSDR.app
 ```
 
+Builds before 1.5.0 had a broken signature seal (a licence file was added
+after the app was signed), which is a likely reason macOS calls a downloaded
+app "damaged". From 1.5.0 the build seals it again and checks the signature,
+so the message should no longer appear; if it does, the command above is the
+fix (and please tell us in [Discussions](../../discussions)).
+
 An RTL-SDR needs no extra driver on macOS. Builds since 1.4.1 also carry the
 HackRF and Airspy libraries (built-in access, experimental); they only
 check that the libraries load - no real Mac with a HackRF or Airspy has tried them.
@@ -356,7 +366,7 @@ falconsdr-receiver`), then pick the access method under *SDR device*.
 
 ### Network receiver (rtl_tcp)
 
-An RTL-SDR plugged into another computer (a Raspberry Pi at the antenna, a
+New in 1.5.0. An RTL-SDR plugged into another computer (a Raspberry Pi at the antenna, a
 box in the attic, a phone running an `rtl_tcp` app) can be the receiver of
 the scanner: on that computer run `rtl_tcp -a 0.0.0.0` (package `rtl-sdr`),
 then on the Listen page choose *SDR device → Network receiver (rtl_tcp)* and
@@ -450,6 +460,11 @@ falconsdr --probe-sdr   measure the receiver with the scanner stopped (see Hardw
   `libhackrf` / `libairspy` library (`sudo apt install libhackrf0 libairspy0`, Fedora:
   `sudo dnf install hackrf airspyone_host`, or the installer's `--with-sdr-libs`). If one way to open a receiver
   fails, try the other under *SDR device → Access method*.
+- **Scanning freezes or the receiver keeps disconnecting** (reported with an
+  RTL-SDR v3 on Windows) - switch *Settings → Advanced → Continuous RTL-SDR
+  reading* off and start the scan again. It is read as a continuous stream
+  while the scanner stays on a frequency; with it off the buzz that 1.3.0
+  fixed may come back. Please tell us in an issue whether it helped.
 - **Nothing gets recorded** - recording is off, the trigger level is too high,
   or the band's modulation is wrong (aviation is AM, most other VHF/UHF voice
   is NFM).
