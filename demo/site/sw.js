@@ -11,6 +11,8 @@ const STATE_VERSION = 4;  // bump when saved state stops matching the code (clip
 const DEVICES = [
   { driver: 'demo-rtl', label: 'Demo RTL-SDR (simulated, 2.4 MHz)', rate: 2.4e6, gain: [0, 49.6] },
   { driver: 'demo-wide', label: 'Demo wideband SDR (simulated, 10 MHz)', rate: 10e6, gain: [0, 59] },
+  // The app's "Network receiver (rtl_tcp)": the address field is real UI, nothing is contacted - it scans like the first one.
+  { driver: 'rtl_tcp', label: 'Network receiver (rtl_tcp)', rate: 2.4e6, gain: [0, 49.6] },
 ];
 const KEEPALIVE_S = 5;
 
@@ -881,7 +883,8 @@ function live(since = Infinity) {
 function settings() {
   return {
     version: FX.version, config: st.config, channels: st.channels, blacklist: st.blacklist, presets: st.presets,
-    devices: DEVICES.map((d) => ({ driver: d.driver, args: '', label: tr(d.label), rate: d.rate })),
+    // Like Controller.devices(): the network entry carries the typed address while it is the chosen one, or the UI loses it.
+    devices: DEVICES.map((d) => ({ driver: d.driver, args: d.driver === 'rtl_tcp' && st.config.device.driver === 'rtl_tcp' ? st.config.device.device_args || '' : '', label: tr(d.label), rate: d.rate })),
     languages: FX.languages,
     capabilities: { ffmpeg: true, transcription_installed: true, digital: false, platform: 'linux', autostart: null },
     curated: FX.curated, mode: 'local', password_set: false,

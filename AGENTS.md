@@ -846,6 +846,8 @@ catalog loads; wrap them in a function called at point of use
     scanner. **Not verified:** bias-T command 0x0E on hardware (the Debian rtl_tcp links `rtlsdr_set_bias_tee`, the
     command number is from memory; nobody switched the owner's antenna chain on for a test), Wi-Fi, Windows/macOS, an
     Android rtl_tcp server, other tuners' gain tables (only R820T/R828D and E4000 and FC0012 are listed).
+    The online demo lists it too (`demo/site/sw.js` `DEVICES`, simulated like the others; its `args` carries the typed address
+    while chosen, as `Controller.devices()` does) - a UI change needs `demo/build.py` + `demo/deploy.sh`, see gotcha 46.
     Tests: `RtlTcpTest` (fake server, no hardware).
 
 ## Testing without touching the user's real config/recordings
