@@ -167,6 +167,16 @@ class LibraryTest(_LibCase):
         self.assertEqual(sorted(self.lib._recs), ["2026-10-02/2026-10-02_12-00-00_124625.wav",
                                                   "2026-10-02/2026-10-02_13-00-00_124625.wav"])
 
+    def test_item_reports_the_voice_level_in_dbfs(self) -> None:
+        from falconsdr.playback.models import QualityMetrics
+        _wav(self.root, "2026-10-01/2026-10-01_12-00-00_130875.wav")
+        self.lib.rescan()
+        rel, rec = next(iter(self.lib._recs.items()))
+        rec.quality = QualityMetrics(100.0, 3276.8, 30.0, 0.0, 80.0, 5.0)    # signal 0.1 of the 16-bit scale
+        self.assertEqual(self.lib.item(rel, rec, {})["level"], -20.0)
+        rec.quality = QualityMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, readable=False)
+        self.assertIsNone(self.lib.item(rel, rec, {})["level"])
+
     def test_folders_at_any_depth_are_listed_and_follow_changes(self) -> None:
         import os
         nested = _wav(self.root, "archive/2026-10/2026-10-03_12-00-00_130875.wav")

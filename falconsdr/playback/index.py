@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -365,6 +366,8 @@ class Library:
             "duration": qm.duration_sec if qm else None,
             "quality": round(qm.quality_score, 1) if qm and qm.readable else None,
             "snr": round(qm.snr_db, 1) if qm and qm.readable else None,
+            # Voice level in dBFS (the library's signal level is on the 16-bit scale): the player evens it out.
+            "level": round(20.0 * math.log10(qm.signal_level / 32768.0), 1) if qm and qm.readable and qm.signal_level > 0 else None,
             "clipping": round(qm.clipping_ratio, 4) if qm and qm.readable else None,
             "transcript": transcript_dict(rec.transcript),
             "queued": leased,
