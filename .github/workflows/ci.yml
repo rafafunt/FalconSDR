@@ -19,7 +19,7 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - run: python -m compileall -q main.py falconsdr tests
-      - run: python -m unittest tests/test_core.py -v
+      - run: python -m unittest tests/test_core.py tests/test_addons.py -v
       - if: runner.os == 'Linux'
         run: for f in falconsdr/web/static/js/*.js falconsdr/web/static/js/views/*.js; do node --check "$f"; done
       # New packaging must stay valid without building full bundles in CI:
