@@ -3,7 +3,7 @@
 import { api, confirmDialog, errorToast, fmtChannel, fmtMHz, h, icon, modal, mount, select, seg, slider, t, toast, toggle } from '../core.js';
 import { BOOST_STEPS_DB, liveAudio } from '../live-audio.js';
 import { S, cfg, confirmRecording, on, patchConfig, setFastPolling } from '../state.js';
-import { NAMES, eventLine } from './messages.js';
+import { NAMES, eventLine, fold, levelControl, passes } from './messages.js';
 import { askCustomRange, askSingleFrequency, bandEditor, bandRange, clearOverrides, hasOverrides, presetPicker } from './bands.js';
 
 // Windows needs the WinUSB driver on the dongle (SDR++, SDR# and friends need the
@@ -102,12 +102,15 @@ export function listenView(root) {
   // program decodes right now, and the way back.
   const addonRecent = h('div.col');
   const addonTitle = h('div.row.wrap');
+  const addonNote = h('p.muted', { style: { margin: '4px 0 8px' } });
+  const addonFilter = h('div.row.wrap');
+  const addonBars = h('div.col', { style: { gap: '4px' } });
   const addonPanel = h('section.card.addon-panel.hidden',
     addonTitle,
-    h('p.muted', { style: { margin: '4px 0 8px' } }, t('The scanner is paused: this program has the receiver. What it decodes appears here and in Messages. There is no spectrum while it runs.')),
+    addonNote,
     h('div.row.wrap', h('button.primary.big', { onclick: async () => { try { await api.post('/api/addons/stop', {}); } catch (e) { errorToast(e); } } }, icon('stop'), t('Stop and resume scanning')),
       h('a.btn.ghost', { href: '#/messages' }, t('Open Messages'))),
-    addonRecent);
+    addonFilter, addonBars, addonRecent);
   let addonPoll = null;
   let addonLastId = 0;
   let addonSeen = [];
@@ -132,18 +135,39 @@ export function listenView(root) {
     const names = NAMES();
     const since = live.addon_since ? Math.max(0, Math.round(Date.now() / 1000 - live.addon_since)) : 0;
     const clock = `${Math.floor(since / 60)}:${String(since % 60).padStart(2, '0')}`;
-    const shown = addonSeen.filter((e) => e.layer !== 'link');
+    const shown = addonSeen.filter(passes);
+    addonNote.textContent = live.running
+      ? t('This program has one receiver; the others keep scanning. What it decodes appears here and in Messages.')
+      : t('The scanner is paused: this program has the receiver. What it decodes appears here and in Messages.');
+    mount(addonFilter, live.addon === 'vdl2' ? levelControl(drawAddon) : null);
+    // Which channels are busy (a small stand-in for a spectrum): messages per frequency in the last 5 minutes.
+    const recent = addonSeen.filter((e) => e.freq_hz && e.ts > Date.now() / 1000 - 300);
+    const perFreq = new Map();
+    for (const e of recent) {
+      const c = perFreq.get(e.freq_hz) || { n: 0, sum: 0, levels: 0 };
+      c.n += 1;
+      if (typeof e.sig_level === 'number') { c.sum += e.sig_level; c.levels += 1; }
+      perFreq.set(e.freq_hz, c);
+    }
+    const top = Math.max(1, ...[...perFreq.values()].map((c) => c.n));
+    mount(addonBars, ...[...perFreq.entries()].sort((a, b) => a[0] - b[0]).map(([f, c]) => h('div.row', { style: { gap: '10px' } },
+      h('span.mono.small.muted', { style: { width: '70px' } }, (f / 1e6).toFixed(3)),
+      h('div.chan-bar', h('div', { style: { width: `${Math.max(3, 100 * c.n / top)}%` } })),
+      h('span.small.muted', { style: { minWidth: '90px', textAlign: 'right' } }, c.levels ? `${c.n} · ${(c.sum / c.levels).toFixed(0)} dB` : String(c.n)))));
     mount(addonTitle, h('span.chip.good.live', h('span.dot'), t('{name} is using the receiver', { name: names[live.addon] || live.addon })),
       h('span.faint.small', t('running for {time}', { time: clock })), h('span.spacer'),
       h('span.faint.small', t('{n} messages decoded', { n: addonSeen.length })));
-    mount(addonRecent, ...(shown.length ? shown.slice(-8).reverse().map((e) => eventLine(e))
+    const groups = fold(shown).slice(-8).reverse();
+    mount(addonRecent, ...(groups.length ? groups.map((g) => eventLine(g.last, g.count))
       : [h('div.empty', t('Waiting for the first message…'))]));
   }
 
   function syncAddonPanel() {
     const id = S.live && S.live.addon;
-    hero.classList.toggle('hidden', !!id);
-    spectrumCard.classList.toggle('hidden', !!id);
+    // Several receivers: the others keep scanning, so the scanner stays on screen next to the panel.
+    const paused = !!id && !(S.live && S.live.running);
+    hero.classList.toggle('hidden', paused);
+    spectrumCard.classList.toggle('hidden', paused);
     addonPanel.classList.toggle('hidden', !id);
     if (id && !addonPoll) { addonLastId = 0; addonSeen = []; addonName = id; pollAddon(); addonPoll = setInterval(pollAddon, 2000); }
     if (!id && addonPoll) { clearInterval(addonPoll); addonPoll = null; }

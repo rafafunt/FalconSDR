@@ -35,7 +35,12 @@ def device_range_hz(device) -> tuple[int, int]:
 def device_ranges(config: AppConfig) -> list[tuple[int, int]]:
     """One range per dongle, in the Controller's engine order (config.device first)."""
     extra = [d for d in config.device.extra_devices if isinstance(d, dict) and d.get("driver")]
-    return [device_range_hz(config.device), *(device_range_hz(d) for d in extra)]
+    ranges = [device_range_hz(config.device), *(device_range_hz(d) for d in extra)]
+    # A receiver an add-on holds (Controller._held, set by run_addon) scans nothing: the others take its share.
+    for k in getattr(config, "_held_dongles", ()):
+        if k < len(ranges):
+            ranges[k] = (OPEN_END_HZ, OPEN_END_HZ)
+    return ranges
 
 
 def device_rates(config: AppConfig) -> list[float]:

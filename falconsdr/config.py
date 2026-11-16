@@ -307,6 +307,10 @@ class AddonsConfig:
     acars_frequencies_hz: list = field(default_factory=lambda: [131_525_000, 131_725_000, 131_825_000])
     aprs_frequencies_hz: list = field(default_factory=lambda: [144_800_000])
     vdl2_frequencies_hz: list = field(default_factory=lambda: [136_725_000, 136_775_000, 136_825_000, 136_875_000, 136_975_000])
+    # Which receiver (index in the Controller's order: 0 = the main one, then the extra dongles) an add-on uses.
+    # External programs hold that one receiver while the others keep scanning; a built-in decoder only decodes
+    # what that receiver hears (no entry = any receiver).
+    receivers: dict = field(default_factory=dict)
     listen_to_data: bool = False                  # hear (and record) the data channels like any other
     paths: dict = field(default_factory=dict)     # id -> explicit path of an external program ("" = find it)
     extra_args: dict = field(default_factory=dict)  # id -> extra command line of an external program

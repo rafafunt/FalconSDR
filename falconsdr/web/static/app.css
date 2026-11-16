@@ -441,6 +441,8 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 .spinner { display: inline-block; width: 14px; height: 14px; margin-right: 8px; vertical-align: -2px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+.chan-bar { flex: 1; height: 8px; background: var(--fill); border-radius: 4px; overflow: hidden; }
+.chan-bar > div { height: 100%; background: var(--accent); border-radius: 4px; }
 .msg-text { overflow-wrap: anywhere; }
 .msg-line b { font-weight: 600; }
 .sensor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 4px; }

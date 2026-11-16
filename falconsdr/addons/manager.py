@@ -90,9 +90,11 @@ class Claim:
 
 
 class AddonManager:
-    def __init__(self, config: AppConfig, log: Callable[[str], None] = lambda _m: None):
+    def __init__(self, config: AppConfig, log: Callable[[str], None] = lambda _m: None,
+                 on_stopped: Callable[[], None] = lambda: None):
         self._config = config
         self._log = log
+        self._on_stopped = on_stopped     # an external program ended (by itself or stopped): the Controller gives its receiver back
         self.hub = EventHub(CONFIG_DIR / "addons", config.addons.keep_days)
         self._lock = threading.Lock()
         self._stats: dict[str, dict[str, int]] = defaultdict(lambda: {"slots": 0, "events": 0})
@@ -125,6 +127,7 @@ class AddonManager:
                 "installed": spec.kind == "builtin" or program is not None, "program": program or "",
                 "running": self.running_external == spec.id,
                 "frequencies": list(getattr(cfg, spec.frequencies)) if spec.frequencies else [],
+                "receiver": self.receiver(spec.id, 0 if spec.kind == "external" else -1),
                 "path": str(cfg.paths.get(spec.id, "")), "extra_args": str(cfg.extra_args.get(spec.id, "")),
                 "install_hint": _install_hint(spec) if spec.kind == "external" and program is None else "",
                 "managed": bool(program) and Path(program).is_relative_to(BIN_DIR),
@@ -147,6 +150,8 @@ class AddonManager:
         if "frequencies" in patch and spec.frequencies:
             freqs = sorted({int(f) for f in patch["frequencies"] if 1_000_000 <= int(f) <= 6_000_000_000})
             setattr(cfg, spec.frequencies, freqs)
+        if "receiver" in patch:
+            cfg.receivers = {**cfg.receivers, addon_id: int(patch["receiver"])}
         if "path" in patch:
             cfg.paths = {**cfg.paths, addon_id: str(patch["path"]).strip()}
         if "extra_args" in patch:
@@ -156,11 +161,18 @@ class AddonManager:
         self._config.save()
 
     # -- built-in decoders on scanner slots --------------------------------------------------------
-    def claim(self, freq_hz: int) -> Claim | None:
+    def receiver(self, addon_id: str, default: int = -1) -> int:
+        """The receiver chosen for an add-on (index; -1 = any)."""
+        value = self._config.addons.receivers.get(addon_id, default)
+        return value if isinstance(value, int) else default
+
+    def claim(self, freq_hz: int, receiver: int = 0) -> Claim | None:
         cfg = self._config.addons
         for spec in CATALOG:
             if spec.kind != "builtin" or spec.id not in cfg.enabled:
                 continue
+            if self.receiver(spec.id) not in (-1, receiver):
+                continue          # this add-on listens on another receiver
             if any(abs(freq_hz - int(f)) <= CLAIM_TOLERANCE_HZ for f in getattr(cfg, spec.frequencies)):
                 make = AcarsDecoder if spec.id == "acars" else AprsDecoder
                 self._stats[spec.id]["slots"] += 1
@@ -245,6 +257,7 @@ class AddonManager:
                     shown = " ".join(tail[-3:])
                     self.last_error = f"{addon_id}: exit {code} {shown}".strip()
                     self._log(tr("{name} stopped by itself (exit {code}) {tail}").format(name=spec.name, code=code, tail=shown))
+            self._on_stopped()
 
         runner = ExternalRunner(argv, on_line, on_exit)
         with self._lock:

@@ -2,12 +2,21 @@
 // from their programs. Newest first; repeats are folded into one row with a counter; VDL2 link-layer chatter
 // is hidden unless asked for; sensors are shown as one card per device. Also used by the Listen page while an
 // external program holds the receiver (eventLine).
-import { api, fmtTime, h, mount, t } from '../core.js';
+import { api, fmtTime, h, mount, seg, t } from '../core.js';
 import { S, cfg, on } from '../state.js';
 
 export const NAMES = () => ({ acars: 'ACARS', aprs: 'APRS', rtl_433: t('Sensors'), vdl2: 'VDL2' });
 const MAX_ROWS = 800;
 const REPEAT_WINDOW_S = 180;
+
+// How much of VDL2 to show: only ACARS messages (the text), those and other data frames, or everything
+// including the acknowledgements and polls that make up most of the traffic.
+const LEVELS = () => [['acars', t('Messages')], ['data', t('Messages and data')], ['all', t('All frames')]];
+export const vdl2Level = () => { try { return localStorage.getItem('vdl2Level') || 'acars'; } catch { return 'acars'; } };
+export const passes = (e) => e.kind !== 'vdl2' || vdl2Level() === 'all' || (vdl2Level() === 'data' ? e.layer !== 'link' : e.layer === 'acars');
+export function levelControl(onchange) {
+  return seg(LEVELS(), vdl2Level(), (v) => { try { localStorage.setItem('vdl2Level', v); } catch { /* private window */ } onchange(); });
+}
 
 const pref = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch { return d; } };
 const setPref = (k, v) => { try { localStorage.setItem(k, v ? '1' : '0'); } catch { /* private window */ } };
@@ -63,7 +72,7 @@ export function eventLine(e, count = 1) {
 }
 
 // -- grouping --------------------------------------------------------------------------------------------
-function fold(events) {
+export function fold(events) {
   const open = new Map();
   const groups = [];
   for (const e of events) {   // oldest first
@@ -84,7 +93,6 @@ export function messagesView(root) {
   let query = '';
   let paused = false;
   let timer = null;
-  let contentOnly = pref('msgContentOnly', true);   // hide VDL2 link-layer frames
   let fold_ = pref('msgFold', true);
   const open = new Set();
 
@@ -98,7 +106,7 @@ export function messagesView(root) {
   mount(root, h('div.page', h('div.page-head', h('h1', t('Messages'))),
     h('section.card', banner, h('div.row.wrap', chips, h('span.spacer'), search, pauseBtn, clearBtn), options, list)));
 
-  const visible = (e) => !(contentOnly && e.kind === 'vdl2' && e.layer === 'link');
+  const visible = passes;
 
   function drawChips() {
     const names = NAMES();
@@ -109,8 +117,7 @@ export function messagesView(root) {
       id ? `${names[id]}${counts[id] ? ` · ${counts[id]}` : ''}` : t('All'))));
     const hasVdl2 = rows.some((r) => r.kind === 'vdl2') && (!filter || filter === 'vdl2');
     mount(options,
-      hasVdl2 ? h('label.switch.small', h('input', { type: 'checkbox', checked: contentOnly, onchange: (e) => { contentOnly = e.target.checked; setPref('msgContentOnly', contentOnly); draw(); } }),
-        h('span.label', t('Hide link-layer frames (acknowledgements, polls)'))) : null,
+      hasVdl2 ? h('div.row', h('span.small.muted', 'VDL2'), levelControl(draw)) : null,
       filter === 'rtl_433' ? null : h('label.switch.small', h('input', { type: 'checkbox', checked: fold_, onchange: (e) => { fold_ = e.target.checked; setPref('msgFold', fold_); draw(); } }),
         h('span.label', t('Fold repeats'))));
   }

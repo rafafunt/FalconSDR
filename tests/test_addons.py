@@ -422,8 +422,8 @@ class TwoReceiversTest(unittest.TestCase):
                 self.assertFalse(second.is_alive())
                 self.assertTrue(first.is_alive())                        # the main receiver keeps scanning
                 self.assertEqual(ctl.live()["addon"], "rtl_433")
-                with self.assertRaises(RuntimeError):
-                    ctl.start()                                          # not while an add-on holds a receiver
+                ctl.start()                                              # a no-op: the main receiver already scans
+                self.assertTrue(first.is_alive())
                 ctl.stop_addon()
                 self.assertEqual(ctl.live()["addon"], "")
                 time.sleep(0.5)
@@ -433,6 +433,101 @@ class TwoReceiversTest(unittest.TestCase):
         finally:
             ctl.addons.stop_external()
             ctl.shutdown()
+
+    def test_the_scanner_can_start_while_an_add_on_holds_the_other_receiver(self) -> None:
+        import time
+        from unittest import mock
+        from falconsdr.addons import manager as mgr
+        from falconsdr.antenna_range import OPEN_END_HZ, device_ranges
+        from falconsdr.config import AppConfig
+        from falconsdr.controller import Controller
+        folder = tempfile.mkdtemp(dir=_HOME)
+        program = _script(folder, "import time\ntime.sleep(60)\n")
+        cfg = AppConfig()
+        cfg.debug_mode, cfg.device.driver = True, "simulated"
+        cfg.device.extra_devices = [{"driver": "simulated", "device_args": "serial=2"}]
+        ctl = Controller(cfg)
+        ctl.addons.configure("rtl_433", {"path": program, "receiver": 1})        # the add-on's own receiver
+        try:
+            with (mock.patch.object(mgr.SoapyBackend, "_wait_for_reopen_cooldown", lambda: None),
+                  mock.patch.object(mgr.AddonManager, "_device_args", lambda self, a, d: [])):
+                ctl.run_addon("rtl_433")                                 # no scanner running yet; receiver 1 from the setting
+                self.assertEqual(device_ranges(cfg)[1], (OPEN_END_HZ, OPEN_END_HZ))      # it scans nothing
+                ctl.start()
+                self.assertEqual(len(ctl._engines), 2)
+                self.assertTrue(ctl._engines[0].is_alive())
+                self.assertFalse(ctl._engines[1].is_alive())             # its place is kept, not started
+                self.assertTrue(ctl.live()["running"])
+                ctl.stop_addon()
+                time.sleep(0.5)
+                self.assertTrue(ctl._engines[1].is_alive())              # the receiver is back in the scan
+                self.assertNotIn(1, ctl._held)
+                ctl.stop()
+        finally:
+            ctl.addons.stop_external()
+            ctl.shutdown()
+
+    def test_a_program_that_ends_by_itself_gives_its_receiver_back(self) -> None:
+        import time
+        from unittest import mock
+        from falconsdr.addons import manager as mgr
+        from falconsdr.config import AppConfig
+        from falconsdr.controller import Controller
+        folder = tempfile.mkdtemp(dir=_HOME)
+        program = _script(folder, "import time\ntime.sleep(1.5)\n")             # exits 0 after a moment
+        cfg = AppConfig()
+        cfg.debug_mode, cfg.device.driver = True, "simulated"
+        cfg.device.extra_devices = [{"driver": "simulated", "device_args": "serial=2"}]
+        ctl = Controller(cfg)
+        ctl.addons.configure("rtl_433", {"path": program, "receiver": 1})
+        try:
+            with (mock.patch.object(mgr.SoapyBackend, "_wait_for_reopen_cooldown", lambda: None),
+                  mock.patch.object(mgr.AddonManager, "_device_args", lambda self, a, d: [])):
+                ctl.start()
+                ctl.run_addon("rtl_433")
+                self.assertIn(1, ctl._held)
+                for _ in range(100):
+                    if 1 not in ctl._held:
+                        break
+                    time.sleep(0.1)
+                self.assertNotIn(1, ctl._held)
+                time.sleep(0.5)
+                self.assertTrue(ctl._engines[1].is_alive())
+        finally:
+            ctl.addons.stop_external()
+            ctl.shutdown()
+
+    def test_with_one_receiver_the_scanner_cannot_start_while_an_add_on_holds_it(self) -> None:
+        from unittest import mock
+        from falconsdr.addons import manager as mgr
+        from falconsdr.config import AppConfig
+        from falconsdr.controller import Controller
+        folder = tempfile.mkdtemp(dir=_HOME)
+        program = _script(folder, "import time\ntime.sleep(60)\n")
+        cfg = AppConfig()
+        cfg.debug_mode, cfg.device.driver = True, "simulated"
+        ctl = Controller(cfg)
+        ctl.addons.configure("rtl_433", {"path": program})
+        try:
+            with (mock.patch.object(mgr.SoapyBackend, "_wait_for_reopen_cooldown", lambda: None),
+                  mock.patch.object(mgr.AddonManager, "_device_args", lambda self, a, d: [])):
+                ctl.run_addon("rtl_433")
+                with self.assertRaises(RuntimeError):
+                    ctl.start()
+        finally:
+            ctl.addons.stop_external()
+            ctl.shutdown()
+
+    def test_a_built_in_decoder_listens_only_on_its_receiver(self) -> None:
+        from falconsdr.addons.manager import AddonManager
+        from falconsdr.config import AppConfig
+        m = AddonManager(AppConfig())
+        m.configure("aprs", {"enabled": True, "receiver": 1})
+        self.assertIsNone(m.claim(144_800_000, 0))
+        self.assertIsNotNone(m.claim(144_800_000, 1))
+        m.configure("aprs", {"receiver": -1})                        # any receiver again
+        self.assertIsNotNone(m.claim(144_800_000, 0))
+
 
     def test_with_one_receiver_the_scanner_pauses_and_resumes(self) -> None:
         import time

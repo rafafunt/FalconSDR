@@ -1834,7 +1834,7 @@ class ScannerEngine(threading.Thread):
         recorder = Recorder(self.config.recording, AUDIO_RATE)
         name = self._channel_name_map.get(freq_hz) or self._channel_name_by_khz.get(round(freq_hz / 1000), "")
         modulation = self._channel_mod_map.get(freq_hz, Modulation.AM)
-        claim = self.addons.claim(freq_hz) if self.addons is not None else None
+        claim = self.addons.claim(freq_hz, self._share[0]) if self.addons is not None else None
         if claim is not None:
             modulation = claim.modulation      # the decoder needs this demodulation whatever the band says
         offset_hz = float(freq_hz - window.center_hz)

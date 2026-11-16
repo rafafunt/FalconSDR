@@ -3084,3 +3084,27 @@ msgstr "Cichym nagraniom podkręca głośność, głośne ściszą, żeby brzmia
 
 msgid "FalconSDR, GPL-3.0-or-later"
 msgstr "FalconSDR, GPL-3.0 lub nowsza"
+
+msgid "Messages and data"
+msgstr "Wiadomości i dane"
+
+msgid "All frames"
+msgstr "Wszystkie ramki"
+
+msgid "This program has one receiver; the others keep scanning. What it decodes appears here and in Messages."
+msgstr "Ten program ma jeden odbiornik; pozostałe skanują dalej. To, co dekoduje, widać tu i w Wiadomościach."
+
+msgid "The scanner is paused: this program has the receiver. What it decodes appears here and in Messages."
+msgstr "Skaner jest wstrzymany: ten program ma odbiornik. To, co dekoduje, widać tu i w Wiadomościach."
+
+msgid "Any receiver"
+msgstr "Dowolny odbiornik"
+
+msgid "Decode only what this receiver hears."
+msgstr "Dekoduje tylko to, co słyszy ten odbiornik."
+
+msgid "This program takes this receiver; the others keep scanning."
+msgstr "Ten program zajmuje ten odbiornik; pozostałe skanują dalej."
+
+msgid "It needs its receiver for itself: that receiver stops scanning while it runs."
+msgstr "Potrzebuje swojego odbiornika tylko dla siebie: ten odbiornik nie skanuje na czas jego pracy."

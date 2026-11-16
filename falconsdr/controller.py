@@ -126,10 +126,12 @@ class Controller:
         self.workers: dict[str, dict] = {}   # name -> last heartbeat (in memory only)
         self.worker_commands: dict[str, list[str]] = {}
         self.library = Library(self.config, self.open_recording_paths, self.freq_names)
-        self.addons = AddonManager(self.config, self.log)
+        self.addons = AddonManager(self.config, self.log, self._addon_ended)
+        self._held: set[int] = set()            # receivers an external add-on holds (antenna_range.device_ranges reads it)
+        self.config._held_dongles = self._held
+        self._addon_dongle: Optional[int] = None
         self._shared: Optional[SharedFrequencies] = None
-        # An external add-on took a receiver: what to start again when it stops - None, "all" or a dongle index.
-        self._resume: Optional[Any] = None
+        self._resume = False    # one receiver only: the scanner was running when an add-on took it
         self.log(i18n.tr("Ready."))
 
     @staticmethod
@@ -142,13 +144,18 @@ class Controller:
     def start_background(self) -> None:
         self.library.start()
 
+    @staticmethod
+    def _join(engine: ScannerEngine, timeout: float) -> None:
+        if engine.ident is not None:    # a receiver an add-on holds has an engine that was never started
+            engine.join(timeout=timeout)
+
     def shutdown(self) -> None:
         self.addons.stop_external()
         engines = self._engines
         for engine in engines:
             engine.request_stop()
         for engine in engines:
-            engine.join(timeout=5.0)
+            self._join(engine, 5.0)
         self.library.stop()
 
     # -- helpers used by the library ----------------------------------------
@@ -185,7 +192,9 @@ class Controller:
             self._start()
 
     def _start(self) -> None:
-        if self.addons.running_external:
+        devices = self._devices()
+        held = {k for k in self._held if k < len(devices)}
+        if held and len(held) >= len(devices):
             raise RuntimeError(i18n.tr("An add-on is using the receiver - stop it first."))
         with self._lock:
             existing = list(self._engines)
@@ -195,10 +204,9 @@ class Controller:
             # Start right after Stop: let the old engines finish first, never
             # two engines fighting over one dongle.
             for e in existing:
-                e.join(timeout=8.0)
+                self._join(e, 8.0)
             if any(e.is_alive() for e in existing):
                 raise RuntimeError(i18n.tr("Scanner is still stopping - try again"))
-        devices = self._devices()
         shared = SharedFrequencies() if len(devices) > 1 else None
         self._shared = shared
         engines = [
@@ -211,10 +219,12 @@ class Controller:
             if self._solo_band is not None and self._solo_band < len(self.config.bands):
                 engine.set_solo_band(self.config.bands[self._solo_band])
         with self._lock:
-            self._engines, self._finished, self._audible = engines, set(), 0
+            # A held receiver keeps an engine that is never started (so the lists stay aligned with the receivers).
+            self._engines, self._finished, self._audible = engines, set(held), min(set(range(len(engines))) - held)
             self._lives = [{**self._idle_live(), "state": "CALCULATE_NEXT_FREQ"} for _ in engines]
-        for engine in engines:
-            engine.start()
+        for k, engine in enumerate(engines):
+            if k not in held:
+                engine.start()
 
     def _connect(self, k: int, engine: ScannerEngine, count: int) -> None:
         s = engine.signals
@@ -240,15 +250,18 @@ class Controller:
             engine.request_stop()
 
     # -- external add-ons (rtl_433, dumpvdl2): they hold one receiver instead of the scanner -----------
-    def run_addon(self, addon_id: str, dongle: int = 0) -> None:
-        """Hands receiver ``dongle`` (0 = the main one, then the extra dongles) to an external program. With one
-        receiver the scanner pauses; with several only that receiver's engine does and the others keep scanning."""
+    def run_addon(self, addon_id: str, dongle: Optional[int] = None) -> None:
+        """Hands a receiver (``dongle``, else the one chosen for the add-on) to an external program. With one
+        receiver the scanner pauses; with several only that receiver's engine does, the others take over its
+        share of the scan plan and keep scanning - and the scanner can be started or stopped meanwhile."""
         with self._start_lock:
             if self.addons.running_external:
                 raise RuntimeError(i18n.tr("Another add-on is running - stop it first."))
             devices = self._devices()
+            if dongle is None:
+                dongle = self.addons.receiver(addon_id, 0)
             if not 0 <= dongle < len(devices):
-                raise ValueError("No such receiver")
+                dongle = 0      # the receiver that was chosen has been removed since
             with self._lock:
                 engines = list(self._engines)
             targets = engines if len(devices) == 1 else engines[dongle:dongle + 1]
@@ -256,13 +269,17 @@ class Controller:
             for engine in targets:
                 engine.request_stop()
             for engine in targets:
-                engine.join(timeout=8.0)
+                self._join(engine, 8.0)
             if any(e.is_alive() for e in targets):
                 raise RuntimeError(i18n.tr("Scanner is still stopping - try again"))
-            self._resume = (("all" if len(devices) == 1 else dongle) if targets else None)
-            device = asdict(self.config.device) if devices[dongle] is None else devices[dongle]
+            self._resume = bool(targets) and len(devices) == 1
+            self._held.add(dongle)
+            self._addon_dongle = dongle
+            for e in engines:
+                if e not in targets and e.is_alive():
+                    e.request_rebuild()       # they take over what this receiver scanned
             try:
-                self.addons.start_external(addon_id, device)
+                self.addons.start_external(addon_id, asdict(self.config.device) if devices[dongle] is None else devices[dongle])
             except Exception:
                 self._resume_scanning()
                 raise
@@ -272,12 +289,31 @@ class Controller:
         with self._start_lock:
             self._resume_scanning()
 
+    def _addon_ended(self) -> None:
+        """An external program ended (its own exit or a stop): give its receiver back, off the reader's thread."""
+        def release() -> None:
+            with self._start_lock:
+                self._resume_scanning()
+        threading.Thread(target=release, daemon=True, name="addon-release").start()
+
     def _resume_scanning(self) -> None:
-        resume, self._resume = self._resume, None
-        if resume == "all":
-            self._start()
-        elif isinstance(resume, int):
-            self._restart_engine(resume)
+        dongle, self._addon_dongle = self._addon_dongle, None
+        if dongle is None:
+            return
+        self._held.discard(dongle)
+        devices = self._devices()
+        if len(devices) == 1:
+            resume, self._resume = self._resume, False
+            if resume:
+                self._start()
+            return
+        with self._lock:
+            running = bool(self._engines)
+        if running:
+            self._restart_engine(dongle)
+            for e in list(self._engines):
+                if e.is_alive():
+                    e.request_rebuild()       # they give the share back
 
     def _restart_engine(self, k: int) -> None:
         """Starts the engine of one receiver again while the others keep scanning."""
@@ -285,7 +321,7 @@ class Controller:
             if k >= len(self._engines):
                 return
             old = self._engines[k]
-        old.join(timeout=8.0)
+        self._join(old, 8.0)
         devices = self._devices()
         engine = ScannerEngine(self.config, self.channels, self.blacklist, device=devices[k] if k < len(devices) else None,
                                share=(k, len(devices)), shared=self._shared)

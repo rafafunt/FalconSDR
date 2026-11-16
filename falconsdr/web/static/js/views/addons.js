@@ -20,6 +20,12 @@ function addToScan(a) {
   return patchConfig({ bands: [...cfg().bands, band] });
 }
 
+const devName = (d) => {
+  const args = String(d.device_args || '');
+  return (args.match(/label=([^,]+)/) || args.match(/serial=([^,]+)/) || [])[1] || d.driver || '';
+};
+const receiverName = (i) => (i === 0 ? t('Receiver 1 (main)') : `${t('Receiver {n}', { n: i + 1 })} (${devName(cfg().device.extra_devices[i - 1])})`);
+
 function setting(title, desc, control) {
   return h('div.setting', h('div', h('b', title), desc ? h('p', desc) : null), control);
 }
@@ -29,7 +35,6 @@ export function decodersCard(box) {
   let busy = false;
   let starting = '';   // the add-on being started: stopping the scanner and waiting for the receiver takes seconds
   let timer = null;
-  let dongle = 0;     // which receiver an external program takes when there are several
 
   async function act(path, body) {
     busy = true;
@@ -60,6 +65,16 @@ export function decodersCard(box) {
     return h('div.row.wrap', input, save);
   }
 
+  // With several receivers each add-on gets its own: an external program holds that one while the others
+  // keep scanning; a built-in decoder only decodes what that one hears.
+  function receiverPicker(a) {
+    const extras = cfg().device.extra_devices || [];
+    if (!extras.length) return null;
+    const options = [...(a.kind === 'builtin' ? [['-1', t('Any receiver')]] : []), ...[0, ...extras.map((_, i) => i + 1)].map((i) => [String(i), receiverName(i)])];
+    return setting(t('Receiver'), a.kind === 'builtin' ? t('Decode only what this receiver hears.') : t('This program takes this receiver; the others keep scanning.'),
+      select(options, String(a.receiver), (v) => act('/api/addons/configure', { id: a.id, receiver: +v }), { style: { width: 'auto' }, disabled: a.running }));
+  }
+
   function card(a) {
     const external = a.kind === 'external';
     const status = [
@@ -84,6 +99,8 @@ export function decodersCard(box) {
             h('button', { onclick: async () => { await addToScan(a); await loadSettings(); render(); } }, t('Add to scanned bands'))));
         }
         parts.push(setting(t('Channels (MHz)'), '', frequencyEditor(a)));
+        const picker = receiverPicker(a);
+        if (picker) parts.push(picker);
         parts.push(h('p.faint.small', { style: { margin: 0 } },
           t('Channels heard: {slots} · messages decoded: {events}', { slots: a.stats.slots, events: a.stats.events })));
         parts.push(h('a', { href: '#/messages' }, t('Open Messages')));
@@ -113,17 +130,18 @@ export function decodersCard(box) {
       const args = h('input', { value: a.extra_args, placeholder: t('Extra options, for example -g 40'), style: { width: '320px' } });
       parts.push(setting(t('Extra options'), t('Added to the command line.'),
         h('div.row.wrap', args, h('button', { onclick: () => act('/api/addons/configure', { id: a.id, extra_args: args.value }) }, t('Save')))));
-      const extras = cfg().device.extra_devices || [];
-      const pick = extras.length && !a.running ? select(
-        [['0', t('Receiver 1 (main)')], ...extras.map((d, i) => [String(i + 1), t('Receiver {n}', { n: i + 2 }) + (d.device_args ? ` (${d.device_args})` : '')])],
-        String(dongle), (v) => { dongle = +v; }, { style: { width: 'auto' }, 'aria-label': t('Receiver to use') }) : null;
-      parts.push(h('div.row.wrap', pick,
+      const picker = receiverPicker(a);
+      const several = (cfg().device.extra_devices || []).length > 0;
+      if (picker) parts.push(picker);
+      parts.push(h('div.row.wrap',
         starting === a.id
           ? h('button.primary', { disabled: true }, h('span.spinner'), t('Starting…'))
           : a.running
             ? h('button.primary', { onclick: () => act('/api/addons/stop') }, icon('stop'), t('Stop and resume scanning'))
-            : h('button.primary', { disabled: !!starting, onclick: () => act('/api/addons/run', { id: a.id, dongle }) }, icon('play'), t('Start (pauses the scanner)')),
-        h('span.faint.small', t('It needs the receiver for itself: the scanner stops while it runs.'))));
+            : h('button.primary', { disabled: !!starting, onclick: () => act('/api/addons/run', { id: a.id }) }, icon('play'),
+              several ? t('Start') : t('Start (pauses the scanner)')),
+        h('span.faint.small', several ? t('It needs its receiver for itself: that receiver stops scanning while it runs.')
+          : t('It needs the receiver for itself: the scanner stops while it runs.'))));
       if (a.error) parts.push(h('span', { style: { color: 'var(--red)' } }, a.error));
     }
     return h('div.col', { style: { gap: '8px', paddingBottom: '12px' } }, ...parts);

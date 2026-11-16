@@ -919,6 +919,15 @@ catalog loads; wrap them in a function called at point of use
     program that dies with that error within 10 s is started again (3 tries). With several receivers
     `Controller.run_addon(id, dongle)` pauses only that engine (`_restart_engine` brings it back); the others scan on.
     Everything but the Linux build of dumpvdl2 is unrun on Windows/macOS - say so before claiming support.
+    **Receivers**: `AddonsConfig.receivers` = per add-on receiver index (external: the one it holds, default 0; built-in:
+    -1 = any, else `claim(freq, engine_index)` only on that receiver). A held receiver goes into `Controller._held` =
+    `config._held_dongles`, which `antenna_range.device_ranges` turns into an empty range, so the other engines take
+    over its share of the plan (`request_rebuild`) and give it back afterwards. While it is held the scanner can still
+    start: that receiver keeps an engine that is *never started* (lists stay aligned with the receivers; use
+    `Controller._join`, never `Thread.join` directly, on engines). `_addon_ended` (program exit or Stop) releases the
+    receiver off the reader thread; with ONE receiver the scanner cannot start while an add-on holds it. VDL2 messages
+    carry `layer` ("acars"/"data"/"link", guessed from dumpvdl2's `avlc` keys): the UI shows only "acars" by default.
+    Tested with simulated receivers only.
 
 ## Testing without touching the user's real config/recordings
 
