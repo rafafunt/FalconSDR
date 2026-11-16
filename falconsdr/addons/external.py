@@ -4,6 +4,7 @@ programs the user installs, so their licences stay theirs (AGENTS.md gotcha 58).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -19,6 +20,18 @@ from ..config import CONFIG_DIR
 BIN_DIR = CONFIG_DIR / "addons" / "bin"
 
 
+def tool_path() -> str:
+    """PATH for finding and running tools. A macOS app started from the Finder gets only /usr/bin:/bin, without Homebrew."""
+    path = os.environ.get("PATH", "")
+    if sys.platform == "darwin":
+        path = os.pathsep.join(filter(None, [path, "/opt/homebrew/bin", "/usr/local/bin"]))
+    return path
+
+
+def which(name: str) -> str | None:
+    return shutil.which(name, path=tool_path())
+
+
 def find_program(names: tuple[str, ...], override: str = "", addon_id: str = "") -> str | None:
     """The user's explicit path, else the copy FalconSDR installed (or the user put in its folder), else the program on PATH."""
     if override:
@@ -28,7 +41,7 @@ def find_program(names: tuple[str, ...], override: str = "", addon_id: str = "")
             if candidate.is_file():
                 return str(candidate)
     for name in names:
-        found = shutil.which(name)
+        found = which(name)
         if found:
             return found
     return None

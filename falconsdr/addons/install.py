@@ -21,10 +21,10 @@ import threading
 import zipfile
 from pathlib import Path
 
-from ..audio_transcode import system_env
+from ..audio_transcode import NO_WINDOW, system_env
 from ..digital_voice import _urlopen     # the certificate fallbacks of a packaged build
 from ..i18n import tr
-from .external import BIN_DIR
+from .external import BIN_DIR, tool_path, which
 
 # Pinned releases and the SHA-256 of the *gunzipped* tar (GitHub may re-compress a tag's tarball). Update together.
 _VDL2_SOURCES = (
@@ -133,8 +133,9 @@ def _install_vdl2() -> None:
     addon_id = "vdl2"
     try:
         _say(addon_id, "dumpvdl2 (GPL-3.0) and libacars (MIT) are built here from the authors' source code.")
-        missing = [tool for tool in ("cmake", "make", "cc", "pkg-config") if not shutil.which(tool)]
+        missing = [tool for tool in ("cmake", "make", "cc", "pkg-config") if not which(tool)]
         env = dict(system_env() or os.environ)
+        env["PATH"] = tool_path()
         prefix = install_dir(addon_id) / "prefix"
         for var in ("PKG_CONFIG_PATH",):
             env[var] = os.pathsep.join(filter(None, [str(prefix / "lib" / "pkgconfig"), str(prefix / "lib64" / "pkgconfig"), env.get(var, "")]))
@@ -206,11 +207,25 @@ def _install_rtl433() -> None:
             raise RuntimeError("rtl_433 was unpacked but not found")
         if sys.platform != "win32":
             exe.chmod(0o755)                    # a zip does not keep the executable bit
+        # The macOS build links Homebrew's librtlsdr and libusb, the Windows one needs the VC++ runtime: say so now, not at the first start.
+        kwargs = {"creationflags": NO_WINDOW} if sys.platform == "win32" else {}
+        try:
+            check = subprocess.run([str(exe), "-V"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+                                   env=system_env(), stdin=subprocess.DEVNULL, **kwargs)
+            ok = "rtl_433" in (check.stdout + check.stderr)
+            reason = (check.stderr or check.stdout).strip().splitlines()[-1:] or [""]
+        except (OSError, subprocess.SubprocessError) as exc:
+            ok, reason = False, [str(exc)]
+        if not ok:
+            if sys.platform == "darwin":
+                with _lock:
+                    _states[addon_id]["hint"] = "brew install librtlsdr libusb openssl@3"
+            raise RuntimeError("rtl_433 was installed but does not start: " + reason[0][:200])
         _say(addon_id, "Done.")
     except Exception as exc:
         with _lock:
             _states[addon_id]["error"] = str(exc)
-            if sys.platform == "darwin":
+            if sys.platform == "darwin" and not _states[addon_id].get("hint"):
                 _states[addon_id]["hint"] = "brew install rtl_433"
     finally:
         with _lock:

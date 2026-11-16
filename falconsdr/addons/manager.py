@@ -3,6 +3,7 @@ external program that may hold the dongle. Owned by the Controller (see AGENTS.m
 from __future__ import annotations
 
 import re
+import os
 import shlex
 import sys
 import threading
@@ -283,7 +284,7 @@ class AddonManager:
     def _argv(self, addon_id: str, program: str, device: dict):
         cfg = self._config.addons
         opts = clean_options(addon_id, cfg.options.get(addon_id, {}), {})
-        extra = shlex.split(str(cfg.extra_args.get(addon_id, "")))
+        extra = shlex.split(str(cfg.extra_args.get(addon_id, "")), posix=os.name != "nt")      # posix mode would eat the backslashes of a Windows path
         gain = [] if opts["gain"] == "" else [("--gain" if addon_id == "vdl2" else "-g"), f"{float(opts['gain']):g}"]
         ppm = [] if not opts["ppm"] else [("--correction" if addon_id == "vdl2" else "-p"), str(int(opts["ppm"]))]
         if addon_id == "vdl2":

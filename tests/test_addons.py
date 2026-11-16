@@ -568,7 +568,7 @@ class InstallerTest(unittest.TestCase):
             z.writestr("rtl_433.exe" if sys.platform == "win32" else "rtl_433", "#!/bin/sh\n")
         return buf.getvalue()
 
-    def _run(self, data: bytes, sha: str):
+    def _run(self, data: bytes, sha: str, start_output: str = "rtl_433 version 25.12"):
         import contextlib
         import io
         import time
@@ -580,7 +580,10 @@ class InstallerTest(unittest.TestCase):
         @contextlib.contextmanager
         def fake_urlopen(url):
             yield io.BytesIO(data)
+        import types
+        starts = types.SimpleNamespace(stdout="", stderr=start_output, returncode=0)
         with (mock.patch.object(install, "BIN_DIR", folder), mock.patch.object(install, "_urlopen", fake_urlopen),
+              mock.patch.object(install.subprocess, "run", lambda *a, **k: starts),          # the check that the program starts (-V)
               mock.patch.object(install, "_rtl433_asset", lambda: ("https://example.invalid/rtl_433.zip", sha))):
             install.start("rtl_433")
             for _ in range(100):
@@ -601,6 +604,13 @@ class InstallerTest(unittest.TestCase):
         if sys.platform != "win32":
             self.assertTrue(os.access(exe, os.X_OK))
 
+    def test_a_download_that_does_not_start_is_reported_at_install_time(self) -> None:
+        import hashlib
+        data = self._fake_zip()
+        st, _ = self._run(data, hashlib.sha256(data).hexdigest(), "dyld: Library not loaded: /opt/homebrew/opt/librtlsdr/lib/librtlsdr.0.dylib")
+        self.assertIn("does not start", st["error"])
+        self.assertIn("Library not loaded", st["error"])
+
     def test_another_file_than_the_tested_one_is_refused(self) -> None:
         st, where = self._run(self._fake_zip(), "0" * 64)
         self.assertIn("not the tested version", st["error"])
@@ -613,7 +623,7 @@ class InstallerTest(unittest.TestCase):
         from falconsdr.addons import install
         if sys.platform == "win32":
             self.skipTest("dumpvdl2 is built on Linux and macOS")
-        with mock.patch.object(install.shutil, "which", lambda name: None):
+        with mock.patch.object(install, "which", lambda name: None):
             install.start("vdl2")
             for _ in range(100):
                 if not install.state("vdl2")["running"]:

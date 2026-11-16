@@ -213,12 +213,26 @@ def _mqtt_string(s: str) -> bytes:
     return len(raw).to_bytes(2, "big") + raw
 
 
+def _tls_socket(host: str, port: int):
+    """A TLS connection, trying the certificate fallbacks of a packaged build when the default store does not know the broker's CA."""
+    error: Exception | None = None
+    for context in _contexts():
+        sock = socket.create_connection((host, port), timeout=_TIMEOUT_S)
+        try:
+            return (context or ssl.create_default_context()).wrap_socket(sock, server_hostname=host)
+        except ssl.SSLCertVerificationError as exc:
+            sock.close()
+            error = error or exc
+        except OSError:
+            sock.close()
+            raise
+    raise error or RuntimeError("TLS failed")
+
+
 def mqtt_publish(host: str, port: int, tls: bool, username: str, password: str, topic: str, payload: bytes) -> None:
     """One QoS 0 message over MQTT 3.1.1 (CONNECT, PUBLISH, DISCONNECT) - all this needs, no dependency."""
-    sock = socket.create_connection((host, port), timeout=_TIMEOUT_S)
+    sock = _tls_socket(host, port) if tls else socket.create_connection((host, port), timeout=_TIMEOUT_S)
     try:
-        if tls:
-            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
         flags = 0x02 | (0x80 if username else 0) | (0x40 if username and password else 0)
         body = _mqtt_string("MQTT") + bytes([4, flags]) + (30).to_bytes(2, "big") + _mqtt_string("falconsdr-" + secrets.token_hex(3))
         if username:
