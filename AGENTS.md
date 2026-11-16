@@ -642,6 +642,8 @@ catalog loads; wrap them in a function called at point of use
     dongles recorded 14/28/50 % of them, no duplicates - the default 5 s
     linger is what holds a single dongle back.
 
+    The Listen card gives every extra dongle what the first has: the receiver list (one entry per physical receiver, `group`), the "Access method" choice when there are several, and the rtl_tcp address. One physical receiver can be opened once - the first dongle's list and the extras' lists hide each other's (the server does not enforce it: `Controller._devices()` indexes must stay aligned with `extra_devices`).
+
     **Antenna range** (`antenna_range.py`; `DeviceConfig.range_start_hz`/`range_stop_hz`, same two
     keys in an `extra_devices` dict; 0 = open end, default no limit): with any range set,
     `_rebuild_windows` uses `split_by_range` instead of `_partition_windows` - every engine
@@ -838,7 +840,7 @@ catalog loads; wrap them in a function called at point of use
 56. **`rtl_tcp` (an RTL-SDR on another computer, `RtlTcpBackend`, driver `rtl_tcp`, `device_args` `host=...,port=...`) is a
     network source, not a way to open a local dongle.** Shown as one fixed list entry ("Network receiver (rtl_tcp)", always
     there, `Controller.devices`); its address is typed in the Listen device card (`listen.js`; the list entry's `args`
-    must follow the typed address or the next render loses the device) and an extra dongle can't be one. Protocol (written
+    must follow the typed address or the next render loses the device) and an extra dongle can be one too (own address per extra; any number of network receivers, never two with the same empty address). Protocol (written
     from the public behaviour of rtl_tcp, no code copied - the gain tables are librtlsdr's numbers, GPL-2.0-or-later,
     compatible with ours; stdlib only, no new dependency): a 12 byte greeting `RTL0` + tuner id + gain count, then raw
     8-bit IQ forever; 5 byte commands (code + big-endian value): 0x01 frequency, 0x02 rate, 0x03 gain mode, 0x04 gain

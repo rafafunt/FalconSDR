@@ -3884,3 +3884,9 @@ msgstr "(+{n} kolejnych od ostatniego powiadomienia)"
 
 msgid "Select all"
 msgstr "Zaznacz wszystkie"
+
+msgid "An extra dongle already uses this receiver."
+msgstr "Ten odbiornik jest już używany przez dodatkowy dongiel."
+
+msgid "This receiver is already used above - it can only be opened once."
+msgstr "Ten odbiornik jest już użyty wyżej - można go otworzyć tylko raz."

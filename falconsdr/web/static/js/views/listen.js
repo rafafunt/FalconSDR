@@ -378,7 +378,11 @@ export function listenView(root) {
       patchConfig({ device: patch });
       renderDevice();
     };
-    const sel = select(groups.map((g, i) => [i, stripMethod(g.entries[0].label)]), groups.indexOf(myGroup), (v) => patchDevice(groups[+v].entries[0]));
+    const takenByExtra = (g) => g.group !== 'rtl_tcp' && (c.device.extra_devices || []).some((x) => g.entries.some((d) => d.driver === x.driver && d.args === x.device_args));
+    const sel = select(groups.map((g, i) => [i, stripMethod(g.entries[0].label)]), groups.indexOf(myGroup), (v) => {
+      if (takenByExtra(groups[+v])) { toast(t('An extra dongle already uses this receiver.'), 'bad'); renderDevice(); return; }
+      patchDevice(groups[+v].entries[0]);
+    });
     const methods = myGroup.entries.length > 1
       ? select(myGroup.entries.map((d, i) => [i, methodLabel(d.method)]), myGroup.entries.indexOf(here), (v) => patchDevice(myGroup.entries[+v]))
       : null;
@@ -386,53 +390,74 @@ export function listenView(root) {
     // An RTL-SDR on another computer (rtl_tcp): nothing to detect, so its address is typed here. "host" or "host:port";
     // kept in device_args as host=...,port=... - and in the list entry, or the next render would not find the device.
     const netEntry = devices.find((d) => d.driver === 'rtl_tcp');
-    const netArgs = Object.fromEntries((c.device.device_args || '').split(',').filter((kv) => kv.includes('=')).map((kv) => kv.split(/=(.*)/s).slice(0, 2)));
-    const addr = c.device.driver === 'rtl_tcp' ? h('input', {
-      type: 'text', placeholder: '192.168.1.20:1234', spellcheck: false, autocapitalize: 'off',
-      value: netArgs.host ? `${netArgs.host.includes(':') ? `[${netArgs.host}]` : netArgs.host}${netArgs.port && netArgs.port !== '1234' ? ':' + netArgs.port : ''}` : '',
-      onchange: (e) => {
-        // host, host:port, [ipv6]:port or a bare IPv6 address (more than one colon: all of it is the host)
-        const raw = e.target.value.trim().replace(/^tcp:\/\//, '');
-        const m = raw.match(/^\[(.+)\](?::(\d+))?$/) || (raw.split(':').length > 2 ? [raw, raw] : raw.match(/^(.*?)(?::(\d+))?$/));
-        const args = m && m[1] ? `host=${m[1]},port=${m[2] || 1234}` : '';
-        if (netEntry) netEntry.args = args;
-        patchConfig({ device: { device_args: args } });
-      },
-    }) : null;
+    const netArgsOf = (args) => Object.fromEntries((args || '').split(',').filter((kv) => kv.includes('=')).map((kv) => kv.split(/=(.*)/s).slice(0, 2)));
+    const showAddr = (args) => {
+      const a = netArgsOf(args);
+      return a.host ? `${a.host.includes(':') ? `[${a.host}]` : a.host}${a.port && a.port !== '1234' ? ':' + a.port : ''}` : '';
+    };
+    // host, host:port, [ipv6]:port or a bare IPv6 address (more than one colon: all of it is the host) -> "host=...,port=..."
+    const parseAddr = (text) => {
+      const raw = text.trim().replace(/^tcp:\/\//, '');
+      const m = raw.match(/^\[(.+)\](?::(\d+))?$/) || (raw.split(':').length > 2 ? [raw, raw] : raw.match(/^(.*?)(?::(\d+))?$/));
+      return m && m[1] ? `host=${m[1]},port=${m[2] || 1234}` : '';
+    };
+    const addrInput = (args, onset) => h('input', { type: 'text', placeholder: '192.168.1.20:1234', spellcheck: false, autocapitalize: 'off', value: showAddr(args),
+      onchange: (e) => onset(parseAddr(e.target.value)) });
+    const addr = c.device.driver === 'rtl_tcp' ? addrInput(c.device.device_args, (args) => { if (netEntry) netEntry.args = args; patchConfig({ device: { device_args: args } }); }) : null;
     const bw = h('input', { type: 'number', min: 0.25, max: 61.44, step: 0.01, value: (c.device.sample_rate_hz / 1e6).toFixed(2), onchange: (e) => patchConfig({ device: { sample_rate_hz: +e.target.value * 1e6 } }) });
     // Experimental: more dongles scanning together - each takes its share of the capture windows.
     const extra = c.device.extra_devices || [];
     // An extra dongle must be a specific one - and never a simulation next to real hardware (fake
     // transmissions in the library, part of the band no longer really listened to).
     const sim = c.device.driver === 'simulated';
-    const choices = devices.filter((d) => d.driver !== 'auto' && d.driver !== 'rtl_tcp' && (d.driver === 'simulated') === sim);  // a network receiver has its own address: not here
+    const usable = (d) => d.driver !== 'auto' && (d.driver === 'simulated') === sim;
+    const extraGroups = groups.filter((g) => g.entries.some(usable));
+    const groupOfDevice = (x) => extraGroups.find((g) => g.entries.some((d) => d.driver === x.driver && (d.driver === 'rtl_tcp' || d.args === x.device_args)));
     const setExtra = (list) => { patchConfig({ device: { extra_devices: list } }); renderDevice(); };
     const extraInputs = [];
+    // One physical receiver can scan once: the first one and the other extras hold theirs. Network receivers (rtl_tcp) may repeat - each has its own address.
+    const heldBy = (except) => new Set([myGroup.group, ...extra.filter((_, j) => j !== except).map((x) => (groupOfDevice(x) || {}).group)].filter((g) => g && g !== 'rtl_tcp'));
     const extraRows = extra.map((x, i) => {
-      const at = choices.findIndex((d) => d.driver === x.driver && d.args === x.device_args);
-      const s = select([...(at < 0 ? [[-1, t('(not connected)')]] : []), ...choices.map((d, j) => [j, `${stripMethod(d.label)} - ${methodLabel(d.method)}`])], at, (v) => {
-        const d = choices[+v];
-        setExtra(extra.map((e, j) => (j === i ? { driver: d.driver, device_args: d.args } : e)));
-      });
+      const mine = groupOfDevice(x);
+      const taken = heldBy(i);
+      const options = extraGroups.filter((g) => g === mine || !taken.has(g.group));
+      const setMine = (patch) => setExtra(extra.map((e, j) => (j === i ? { ...e, ...patch } : e)));
+      const pickGroup = (g) => {
+        const d = g.entries.find(usable);
+        setMine({ driver: d.driver, device_args: d.driver === 'rtl_tcp' ? '' : d.args, bias_tee: false });
+      };
+      const s = select([...(mine ? [] : [[-1, t('(not connected)')]]), ...options.map((g) => [extraGroups.indexOf(g), stripMethod(g.entries[0].label)])],
+        mine ? extraGroups.indexOf(mine) : -1, (v) => pickGroup(extraGroups[+v]));
+      const entries = mine ? mine.entries.filter(usable) : [];
+      const xMethod = entries.length > 1
+        ? select(entries.map((d, k) => [k, methodLabel(d.method)]), Math.max(0, entries.findIndex((d) => d.driver === x.driver)), (v) => setMine({ driver: entries[+v].driver, device_args: entries[+v].args }))
+        : null;
+      const xAddr = x.driver === 'rtl_tcp' ? addrInput(x.device_args, (args) => setMine({ device_args: args })) : null;
       const del = h('button.icon.ghost', { title: t('Remove'), onclick: () => setExtra(extra.filter((_, j) => j !== i)) }, icon('x'));
-      const xBias = biasTeeToggle(!!x.bias_tee, (v) => setExtra(extra.map((e, j) => (j === i ? { ...e, bias_tee: v } : e))));
-      extraInputs.push(s, del, xBias.querySelector('input'));
-      const xRange = rangeFields(x.range_start_hz || 0, x.range_stop_hz || 0, (p) => setExtra(extra.map((e, j) => (j === i ? { ...e, ...p } : e))));
+      const xBias = biasTeeToggle(!!x.bias_tee, (v) => setMine({ bias_tee: v }));
+      extraInputs.push(s, ...(xMethod ? [xMethod] : []), ...(xAddr ? [xAddr] : []), del, xBias.querySelector('input'));
+      const xRange = rangeFields(x.range_start_hz || 0, x.range_stop_hz || 0, (p) => setMine(p));
       // Receivers differ: a HackRF can capture 10 MHz where an RTL-SDR takes 2.4. Empty = the same as the first one.
       const xWidth = h('input', {
         type: 'number', min: 0.25, max: 61.44, step: 0.01, placeholder: t('same as the first'), value: x.sample_rate_hz ? (x.sample_rate_hz / 1e6).toFixed(2) : '',
-        onchange: (e) => setExtra(extra.map((o, j) => (j === i ? { ...o, sample_rate_hz: e.target.value ? Math.round(+e.target.value * 1e6) : 0 } : o))),
+        onchange: (e) => setMine({ sample_rate_hz: e.target.value ? Math.round(+e.target.value * 1e6) : 0 }),
       });
       extraInputs.push(xWidth);
+      const twice = extra.some((o, j) => j !== i && o.driver === x.driver && o.device_args === x.device_args) || (x.driver === c.device.driver && x.device_args === c.device.device_args);
       return h('div.col', { style: { gap: '6px' } }, h('label.field', t('Dongle {n}', { n: i + 2 }), h('div.row', s, del)),
+        xMethod ? h('label.field', t('Access method'), xMethod) : null,
+        xAddr ? h('label.field', t('rtl_tcp address'), xAddr) : null,
+        twice ? h('span.small', { style: { color: '#ff9f0a' } }, t('This receiver is already used above - it can only be opened once.')) : null,
         h('label.field', t('Capture width (MHz)'), xWidth), xBias, xRange);
     });
-    const used = new Set([`${c.device.driver}|${c.device.device_args}`, ...extra.map((x) => `${x.driver}|${x.device_args}`)]);
     const add = h('button.ghost.small', {
       onclick: () => {
-        const d = choices.find((x) => !used.has(`${x.driver}|${x.args}`));
-        if (!d) { toast(t('No other SDR device found - plug it in, then reload this page.'), 'bad'); return; }
-        setExtra([...extra, { driver: d.driver, device_args: d.args }]);
+        const taken = heldBy(-1);
+        const g = extraGroups.find((x) => x.group !== 'rtl_tcp' && !taken.has(x.group))
+          || (extraGroups.find((x) => x.group === 'rtl_tcp') && ![c.device, ...extra.map((x) => ({ driver: x.driver, device_args: x.device_args }))].some((x) => x.driver === 'rtl_tcp' && !x.device_args) ? extraGroups.find((x) => x.group === 'rtl_tcp') : null);
+        if (!g) { toast(t('No other SDR device found - plug it in, then reload this page.'), 'bad'); return; }
+        const d = g.entries.find(usable);
+        setExtra([...extra, { driver: d.driver, device_args: d.driver === 'rtl_tcp' ? '' : d.args }]);
       },
     }, icon('plus'), t('Scan with another dongle (experimental)'));
     deviceInputs = [sel, ...(methods ? [methods] : []), ...(addr ? [addr] : []), bw, bias.querySelector('input'), add, ...extraInputs];
