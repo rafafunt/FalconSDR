@@ -785,6 +785,17 @@ catalog loads; wrap them in a function called at point of use
     fail again forever. Transfers are ~13.6 ms of IQ whatever the sample rate
     (`_async_buffer_bytes`), and `close()` leaves the device open if the stream thread will not
     stop (freeing it under a running `rtlsdr_read_async` can crash). Not tried on Windows.
+    **A crash inside librtlsdr is a `StreamFault`, not a disconnect** (issue #14: "access violation writing 0x24" on a Windows
+    V3/plain dongle when scanning 70 cm; ctypes turns the Windows access violation into an `OSError` - on Linux a segfault
+    is not catchable): an `OSError` from the stream start, the cancel in `_stop_stream`, the stream thread, or from
+    `set_frequency`/`set_gain` while streaming becomes `StreamFault`. The engine (`run()`'s except) then sets
+    `config.device.async_read = False`, emits `signals.async_read_disabled` (the Controller saves the config), logs one
+    calm line and reconnects at once - no RECONNECTING state; the user sees one 1-3 s gap, once. `close()` skips the stream
+    stop after a fault (it would crash again) but still releases the device, or the reopen finds it busy. Hard crashes: a
+    marker file `CONFIG_DIR/rtlsdr_stream.active` (pid) is written when a stream first starts and removed by a clean
+    `close()`; one left by another process = the last run died while streaming, so the stream stays off for this run only
+    (not saved: a kill or power cut leaves the same marker). Not verified on a real affected dongle - the cause is inferred
+    (probably `rtlsdr_cancel_async`); ask for the traceback in `falconsdr.log`.
 
 55. **HackRF/Airspy natively (`sdr_native.py`, drivers `hackrf_native`/`airspy_native`) is experimental** - the author owns an RTL-SDR
     only. **Only a HackRF One has run so far** (a user, Linux 6.12 `+deb13` kernel, 10 MS/s, issue #9, 2026-11-01, `--probe-sdr`: both ways

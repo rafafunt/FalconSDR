@@ -221,6 +221,7 @@ class Controller:
         s.spectrum_ready.connect(lambda *a: self._on_spectrum(k, *a))
         s.live_audio_ready.connect(lambda mono: self._on_live_audio(k, mono))
         s.blacklisted.connect(self._on_blacklisted)
+        s.async_read_disabled.connect(self.config.save)
         s.log.connect(self.log if count == 1 else (lambda msg: self.log(f"SDR {k + 1}: {msg}")))
         s.finished.connect(lambda: self._on_finished(k, engine))
 

@@ -741,6 +741,110 @@ class AsyncStreamTest(unittest.TestCase):
             self.assertEqual(len(backend._stream_chunks), 0)
             self.assertEqual(int(backend.read_raw(1000)[0]), 5)         # hopping again: blocking reads
 
+    def _crashing(self, **where):
+        """A librtlsdr whose calls raise what ctypes raises for an access violation (issue #14)."""
+        lib = self._lib()
+        for name in where:
+            def boom(*a, _n=name):
+                raise OSError("exception: access violation writing 0x0000000000000024")
+            setattr(lib, name, boom)
+        return lib
+
+    def test_a_crash_while_stopping_the_stream_is_a_stream_fault_and_close_skips_the_stream(self) -> None:
+        import sys
+        from types import SimpleNamespace
+        from unittest import mock
+        from falconsdr.sdr_backend import StreamFault
+        lib = self._crashing(rtlsdr_cancel_async=1)
+        backend, modules = self._backend(lib)
+        closed = []
+        backend.device.close = lambda: closed.append(1)
+        with mock.patch.dict(sys.modules, modules):
+            for _ in range(9):
+                backend.read_raw(1000)               # the stream is running
+            with self.assertRaises(StreamFault):
+                backend.set_frequency(131_900_000)
+            backend.close()                          # must not ask the broken library to stop the stream again
+        self.assertEqual(closed, [1])                # but the device is released, so the reopen finds it free
+
+    def test_a_crash_inside_the_stream_thread_reaches_the_reader(self) -> None:
+        import sys
+        from unittest import mock
+        from falconsdr.sdr_backend import StreamFault
+        lib = self._crashing(rtlsdr_read_async=1)
+        backend, modules = self._backend(lib)
+        with mock.patch.dict(sys.modules, modules):
+            for _ in range(8):
+                backend.read_raw(1000)
+            with self.assertRaises(StreamFault):
+                backend.read_raw(1000)
+
+    def test_a_crash_while_starting_the_stream_is_a_stream_fault(self) -> None:
+        import sys
+        from unittest import mock
+        from falconsdr.sdr_backend import StreamFault
+        backend, modules = self._backend(self._crashing(rtlsdr_reset_buffer=1))
+        with mock.patch.dict(sys.modules, modules):
+            for _ in range(8):
+                backend.read_raw(1000)
+            with self.assertRaises(StreamFault):
+                backend.read_raw(1000)
+
+    def test_without_the_stream_a_native_error_stays_what_it_was(self) -> None:
+        """Only a receiver that was streaming gets the switch-off-and-reopen treatment."""
+        from falconsdr.sdr_backend import StreamFault
+        backend, _ = self._backend(self._lib(), async_read=False)
+
+        def boom(_hz):
+            raise OSError("usb error")
+        backend._stop_stream = lambda: boom(0)
+        with self.assertRaises(OSError) as ctx:
+            backend.set_frequency(131_900_000)
+        self.assertNotIsInstance(ctx.exception, StreamFault)
+
+    def test_a_marker_left_by_an_earlier_run_is_stale_and_ours_is_not(self) -> None:
+        from unittest import mock
+        from falconsdr import sdr_backend as sb
+        marker = Path(tempfile.mkdtemp(dir=_HOME)) / "rtlsdr_stream.active"
+        with mock.patch.object(sb, "_STREAM_MARKER", marker):
+            self.assertFalse(sb._stream_marker_stale())      # nothing there
+            sb._stream_marker_set()
+            self.assertFalse(sb._stream_marker_stale())      # written by this process
+            marker.write_text("1", encoding="utf-8")         # another (dead) run's
+            self.assertTrue(sb._stream_marker_stale())
+            sb._stream_marker_clear()
+            self.assertFalse(marker.exists())
+
+    def test_the_engine_switches_the_stream_off_and_reconnects_without_reconnecting_state(self) -> None:
+        from falconsdr.models import ScannerState
+        from falconsdr.scanner_engine import ScannerEngine
+        from falconsdr.sdr_backend import StreamFault
+        cfg = AppConfig()
+        cfg.debug_mode, cfg.device.driver = True, "simulated"
+        engine = ScannerEngine(cfg, [], [])
+        states, logs, saved = [], [], []
+        engine.signals.state_changed.connect(states.append)
+        engine.signals.log.connect(logs.append)
+        engine.signals.async_read_disabled.connect(lambda: saved.append(cfg.device.async_read))
+        calls = []
+        real_loop = engine._main_loop
+
+        def loop():
+            calls.append(1)
+            if len(calls) == 1:
+                raise StreamFault("exception: access violation writing 0x0000000000000024")
+            engine._stop_evt.set()
+            return real_loop()
+        engine._main_loop = loop
+        engine.start()
+        engine.join(30)
+        self.assertFalse(engine.is_alive())
+        self.assertEqual(len(calls), 2)                              # reconnected and carried on
+        self.assertFalse(cfg.device.async_read)
+        self.assertEqual(saved, [False])                             # the Controller was told to save it
+        self.assertTrue(any("0x0000000000000024" in m for m in logs), logs)   # the language of the catalog varies between tests
+        self.assertNotIn(ScannerState.RECONNECTING.value, [str(x) for x in states])
+
     def test_stream_off_when_disabled(self) -> None:
         import sys
         from unittest import mock

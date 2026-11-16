@@ -41,7 +41,7 @@ from . import schedule
 from .iq_recorder import IQRecorder
 from .models import BlacklistEntry, Channel, Modulation, ScannerState, resolve_ssb_sideband
 from .recorder import Recorder
-from .sdr_backend import AcquisitionThread, create_backend, open_real_backend
+from .sdr_backend import AcquisitionThread, StreamFault, create_backend, open_real_backend
 from .wav_metadata import append_metadata_chunk
 
 AUDIO_RATE = 12500
@@ -401,6 +401,9 @@ class ScannerSignals:
         self.cycle_time_changed = Signal()
         self.gain_range_changed = Signal()  # (lo_db, hi_db)
         self.log = Signal()                # str
+        # The continuous RTL-SDR stream crashed or ended the last run: DeviceConfig.async_read was switched
+        # off for good - the Controller saves it.
+        self.async_read_disabled = Signal()
         self.finished = Signal()
 
 
@@ -811,7 +814,14 @@ class ScannerEngine(threading.Thread):
                 # A bug in the loop lands here too, not only a lost device - keep its traceback.
                 traceback.print_exc()
                 error = str(exc) if isinstance(exc, (RuntimeError, OSError)) else f"{type(exc).__name__}: {exc}"
-                self.signals.log.emit(tr("SDR connection lost: {error}").format(error=error))
+                if isinstance(exc, StreamFault) and self.config.device.async_read:
+                    # Issue #14: librtlsdr's stream crashed (an access violation on some Windows dongles). Switch it
+                    # off and reopen right away - the reconnect below starts at once, without a RECONNECTING state.
+                    self.config.device.async_read = False
+                    self.signals.async_read_disabled.emit()
+                    self.signals.log.emit(tr("Continuous RTL-SDR reading failed on this receiver ({error}) - switched it off and reconnected.").format(error=error))
+                else:
+                    self.signals.log.emit(tr("SDR connection lost: {error}").format(error=error))
                 # Nothing in here may raise: this handler is what keeps the engine alive.
                 for freq_hz in list(self._slots.keys()):
                     try:
@@ -887,6 +897,8 @@ class ScannerEngine(threading.Thread):
             self.signals.log.emit(tr("This receiver captures {actual:.2f} MHz, not {wanted:.2f} MHz - scanning with {actual:.2f} MHz.").format(
                 actual=actual / 1e6, wanted=wanted_rate / 1e6))
         plan_changed = self._shared.set_rate(self._share[0], actual) if self._shared is not None else abs(actual - wanted_rate) > 1.0
+        if getattr(raw_backend, "async_disabled_reason", ""):
+            self.signals.log.emit(tr("The previous run ended while continuous RTL-SDR reading was on - it stays off for this run."))
         # Hardware reads happen on their own thread (gotcha 11), so nothing in
         # this loop can delay them; it proxies the backend's interface. A queue of 64 chunks is ~2 s at 2.4 MHz but
         # 300 MB at 20 MHz: bounded by memory as well.
