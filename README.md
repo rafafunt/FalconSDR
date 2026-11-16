@@ -44,14 +44,14 @@ receiver at [falconsdr.com](https://falconsdr.com).
   What no range reaches is listed on the Listen page.
 - Optional, experimental digital voice: DMR and Yaesu System Fusion (C4FM)
   through [dsd-fme](https://github.com/lwvmobile/dsd-fme), installed from
-  Settings → Digital voice. Encrypted calls stay muted.
+  Add-ons → Digital voice. Encrypted calls stay muted.
 
 **Add-ons** (Add-ons page; all optional)
 - Decoders that listen to what the scanner already receives: **ACARS** and
   **APRS** (built in), plus **VDL2** (dumpvdl2) and **rtl_433** (sensors:
   weather stations, thermometers, tyre pressure, power, door and alarm
-  sensors, tank levels...) as separate programs that take a receiver for as
-  long as they run. Everything decoded appears on the **Messages** page, with
+  sensors, tank levels...) as separate programs (RTL-SDR only) that take a
+  receiver for as long as they run. Everything decoded appears on the **Messages** page, with
   search, filters, a map link and per-add-on statistics.
 - **Notifications** with rules ("a sensor below 0 °C", "a word in an ACARS
   message", "activity on a frequency", "a receiver lost") to ntfy, Telegram,
@@ -155,7 +155,7 @@ Any antenna works; one cut or tuned for the band you scan works much better.
 Scanning and recording are light - a small mini PC runs them fine. The
 figures below are only for the optional speech-to-text (it can also run on
 another computer, see [Headless receiver](#headless-receiver)). Pick the
-model in Settings → Whisper models.
+model on the Add-ons page (Transcription).
 
 | Model | RAM (GPU: VRAM) | Word errors, clean / noisy radio |
 |---|---|---|
@@ -463,6 +463,7 @@ falconsdr --probe-sdr   measure the receiver with the scanner stopped (see Hardw
 | Settings, channels, blacklist | `~/.config/FalconSDR/` |
 | Recordings (default, changeable) | `~/FalconSDR/recordings/`, one folder per day |
 | Quality scores, transcripts, favorites | `~/.local/share/FalconSDR/` |
+| Add-ons: decoded messages, statistics, installed programs | `~/.config/FalconSDR/addons/` |
 
 (`~` is your home folder, also on Windows.)
 
@@ -524,4 +525,6 @@ Neither is the digital voice decoder: on request, the app downloads
 [dsd-fme](https://github.com/lwvmobile/dsd-fme) and
 [mbelib](https://github.com/lwvmobile/mbelib) from their authors (the
 authors' Windows build; source compiled on the user's machine elsewhere) and
-runs dsd-fme as a separate program.
+runs dsd-fme as a separate program. The same goes for the add-on programs
+(rtl_433, GPL-2.0; dumpvdl2, GPL-3.0, with libacars, MIT): installed on request
+from their authors, run as separate programs, never bundled.
