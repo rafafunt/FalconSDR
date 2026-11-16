@@ -167,6 +167,16 @@ class LibraryTest(_LibCase):
         self.assertEqual(sorted(self.lib._recs), ["2026-10-02/2026-10-02_12-00-00_124625.wav",
                                                   "2026-10-02/2026-10-02_13-00-00_124625.wav"])
 
+    def test_item_reports_the_voice_level_in_dbfs(self) -> None:
+        from falconsdr.playback.models import QualityMetrics
+        _wav(self.root, "2026-10-01/2026-10-01_12-00-00_130875.wav")
+        self.lib.rescan()
+        rel, rec = next(iter(self.lib._recs.items()))
+        rec.quality = QualityMetrics(100.0, 3276.8, 30.0, 0.0, 80.0, 5.0)    # signal 0.1 of the 16-bit scale
+        self.assertEqual(self.lib.item(rel, rec, {})["level"], -20.0)
+        rec.quality = QualityMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, readable=False)
+        self.assertIsNone(self.lib.item(rel, rec, {})["level"])
+
     def test_folders_at_any_depth_are_listed_and_follow_changes(self) -> None:
         import os
         nested = _wav(self.root, "archive/2026-10/2026-10-03_12-00-00_130875.wav")
@@ -730,6 +740,110 @@ class AsyncStreamTest(unittest.TestCase):
             self.assertIsNone(backend._stream_thread)
             self.assertEqual(len(backend._stream_chunks), 0)
             self.assertEqual(int(backend.read_raw(1000)[0]), 5)         # hopping again: blocking reads
+
+    def _crashing(self, **where):
+        """A librtlsdr whose calls raise what ctypes raises for an access violation (issue #14)."""
+        lib = self._lib()
+        for name in where:
+            def boom(*a, _n=name):
+                raise OSError("exception: access violation writing 0x0000000000000024")
+            setattr(lib, name, boom)
+        return lib
+
+    def test_a_crash_while_stopping_the_stream_is_a_stream_fault_and_close_skips_the_stream(self) -> None:
+        import sys
+        from types import SimpleNamespace
+        from unittest import mock
+        from falconsdr.sdr_backend import StreamFault
+        lib = self._crashing(rtlsdr_cancel_async=1)
+        backend, modules = self._backend(lib)
+        closed = []
+        backend.device.close = lambda: closed.append(1)
+        with mock.patch.dict(sys.modules, modules):
+            for _ in range(9):
+                backend.read_raw(1000)               # the stream is running
+            with self.assertRaises(StreamFault):
+                backend.set_frequency(131_900_000)
+            backend.close()                          # must not ask the broken library to stop the stream again
+        self.assertEqual(closed, [1])                # but the device is released, so the reopen finds it free
+
+    def test_a_crash_inside_the_stream_thread_reaches_the_reader(self) -> None:
+        import sys
+        from unittest import mock
+        from falconsdr.sdr_backend import StreamFault
+        lib = self._crashing(rtlsdr_read_async=1)
+        backend, modules = self._backend(lib)
+        with mock.patch.dict(sys.modules, modules):
+            for _ in range(8):
+                backend.read_raw(1000)
+            with self.assertRaises(StreamFault):
+                backend.read_raw(1000)
+
+    def test_a_crash_while_starting_the_stream_is_a_stream_fault(self) -> None:
+        import sys
+        from unittest import mock
+        from falconsdr.sdr_backend import StreamFault
+        backend, modules = self._backend(self._crashing(rtlsdr_reset_buffer=1))
+        with mock.patch.dict(sys.modules, modules):
+            for _ in range(8):
+                backend.read_raw(1000)
+            with self.assertRaises(StreamFault):
+                backend.read_raw(1000)
+
+    def test_without_the_stream_a_native_error_stays_what_it_was(self) -> None:
+        """Only a receiver that was streaming gets the switch-off-and-reopen treatment."""
+        from falconsdr.sdr_backend import StreamFault
+        backend, _ = self._backend(self._lib(), async_read=False)
+
+        def boom(_hz):
+            raise OSError("usb error")
+        backend._stop_stream = lambda: boom(0)
+        with self.assertRaises(OSError) as ctx:
+            backend.set_frequency(131_900_000)
+        self.assertNotIsInstance(ctx.exception, StreamFault)
+
+    def test_a_marker_left_by_an_earlier_run_is_stale_and_ours_is_not(self) -> None:
+        from unittest import mock
+        from falconsdr import sdr_backend as sb
+        marker = Path(tempfile.mkdtemp(dir=_HOME)) / "rtlsdr_stream.active"
+        with mock.patch.object(sb, "_STREAM_MARKER", marker):
+            self.assertFalse(sb._stream_marker_stale())      # nothing there
+            sb._stream_marker_set()
+            self.assertFalse(sb._stream_marker_stale())      # written by this process
+            marker.write_text("1", encoding="utf-8")         # another (dead) run's
+            self.assertTrue(sb._stream_marker_stale())
+            sb._stream_marker_clear()
+            self.assertFalse(marker.exists())
+
+    def test_the_engine_switches_the_stream_off_and_reconnects_without_reconnecting_state(self) -> None:
+        from falconsdr.models import ScannerState
+        from falconsdr.scanner_engine import ScannerEngine
+        from falconsdr.sdr_backend import StreamFault
+        cfg = AppConfig()
+        cfg.debug_mode, cfg.device.driver = True, "simulated"
+        engine = ScannerEngine(cfg, [], [])
+        states, logs, saved = [], [], []
+        engine.signals.state_changed.connect(states.append)
+        engine.signals.log.connect(logs.append)
+        engine.signals.async_read_disabled.connect(lambda: saved.append(cfg.device.async_read))
+        calls = []
+        real_loop = engine._main_loop
+
+        def loop():
+            calls.append(1)
+            if len(calls) == 1:
+                raise StreamFault("exception: access violation writing 0x0000000000000024")
+            engine._stop_evt.set()
+            return real_loop()
+        engine._main_loop = loop
+        engine.start()
+        engine.join(30)
+        self.assertFalse(engine.is_alive())
+        self.assertEqual(len(calls), 2)                              # reconnected and carried on
+        self.assertFalse(cfg.device.async_read)
+        self.assertEqual(saved, [False])                             # the Controller was told to save it
+        self.assertTrue(any("0x0000000000000024" in m for m in logs), logs)   # the language of the catalog varies between tests
+        self.assertNotIn(ScannerState.RECONNECTING.value, [str(x) for x in states])
 
     def test_stream_off_when_disabled(self) -> None:
         import sys
@@ -2710,6 +2824,90 @@ class RecorderTest(unittest.TestCase):
                 raise OSError(28, "No space left on device")
         rec._wav = Broken()
         rec.end_transmission()  # a full disk is not an exception for the caller
+
+
+class LevelingTest(unittest.TestCase):
+    """Demodulator output level: the same loudness whatever the signal strength or modulation (gotchas 25, 57)."""
+    FS, BLK = 2_400_000, 72_000   # 30 ms blocks
+
+    def _out(self, mod, carrier_db, depth=0.6, dev=3000.0, secs=8, noise_db=-75.0, floor_db=-66.0):
+        import numpy as np
+        from falconsdr.dsp import Demodulator
+        rng = np.random.default_rng(1)
+        n = int(self.FS * secs) // self.BLK * self.BLK
+        t = np.arange(n) / self.FS
+        env = np.clip(np.sin(2 * np.pi * 3.3 * t) + 0.2, 0, None) ** 1.5    # syllables
+        v = (np.sin(2 * np.pi * 500 * t) + 0.6 * np.sin(2 * np.pi * 1200 * t + 1)) * env
+        v /= np.abs(v).max()
+        amp = 10 ** (carrier_db / 20)
+        shift = 2 * np.pi * 5000 * t
+        iq = amp * (1 + depth * v) * np.exp(1j * shift) if mod.value == "AM" else amp * np.exp(1j * (shift + 2 * np.pi * np.cumsum(dev * v) / self.FS))
+        iq = iq + 10 ** (noise_db / 20) / np.sqrt(2) * (rng.standard_normal(n) + 1j * rng.standard_normal(n))
+        iq = iq.astype(np.complex64)
+        d = Demodulator(self.FS, 12500)
+        d.carrier_floor = 10 ** (floor_db / 20)
+        return d, np.concatenate([d.demod(iq[i:i + self.BLK], mod, 5000.0) for i in range(0, n, self.BLK)])
+
+    @staticmethod
+    def _speech_db(out, a, b):
+        import numpy as np
+        seg = out[int(a * 12500):int(b * 12500)]
+        rms = np.sqrt((seg[:seg.size // 375 * 375].reshape(-1, 375) ** 2).mean(axis=1))
+        db = 20 * np.log10(rms + 1e-9)
+        return float(np.percentile(db[db > -55], 90))
+
+    def test_am_level_does_not_depend_on_the_carrier(self) -> None:
+        from falconsdr.models import Modulation
+        # The recordings from the receiver differed by 27 dB inside the airband alone (distance).
+        levels = [self._speech_db(self._out(Modulation.AM, db)[1], 1, 8) for db in (-60, -45, -30, -15)]
+        self.assertLess(max(levels) - min(levels), 1.0, levels)
+
+    def test_weak_and_strong_voices_end_up_equally_loud(self) -> None:
+        from falconsdr.models import Modulation
+        cases = [(Modulation.AM, dict(carrier_db=-50, depth=0.15)), (Modulation.AM, dict(carrier_db=-30, depth=0.9)),
+                 (Modulation.NFM, dict(carrier_db=-40, dev=600.0)), (Modulation.NFM, dict(carrier_db=-20, dev=5000.0))]
+        levels = [self._speech_db(self._out(mod, **kw)[1], 4, 8) for mod, kw in cases]
+        self.assertLess(max(levels) - min(levels), 4.0, levels)    # was ~24 dB between AM and NFM
+
+    def test_a_loud_burst_never_clips(self) -> None:
+        import numpy as np
+        from falconsdr.models import Modulation
+        _, out = self._out(Modulation.NFM, -20, dev=9000.0, secs=3)
+        self.assertLessEqual(float(np.abs(out).max()), 1.0)
+
+    def test_pauses_are_not_pumped_up(self) -> None:
+        """Speech, then a bare carrier (the noise between words): the gain must not climb and the noise stays quiet."""
+        import numpy as np
+        from falconsdr.dsp import Demodulator
+        from falconsdr.models import Modulation
+        d, speech = self._out(Modulation.AM, -40, secs=3)
+        gain = d._agc_gain
+        n = int(self.FS * 3) // self.BLK * self.BLK
+        rng = np.random.default_rng(2)
+        iq = (10 ** (-40 / 20) * np.exp(2j * np.pi * 5000 * np.arange(n) / self.FS)
+              + 10 ** (-75 / 20) / np.sqrt(2) * (rng.standard_normal(n) + 1j * rng.standard_normal(n))).astype(np.complex64)
+        pause = np.concatenate([d.demod(iq[i:i + self.BLK], Modulation.AM, 5000.0) for i in range(0, n, self.BLK)])
+        self.assertLess(d._agc_gain, gain * 1.5)
+        self.assertLess(self._rms_db(pause[-12500:]), self._speech_db(speech, 1, 3) - 30)    # measured: 50 dB below the speech
+
+    @staticmethod
+    def _rms_db(x):
+        import numpy as np
+        return float(20 * np.log10(np.sqrt(np.mean(x * x)) + 1e-9))
+
+    def test_a_rf_gain_step_keeps_the_am_level(self) -> None:
+        """SoftwareAgc steps the dongle's gain: the audio must not jump (notify_rf_gain_change)."""
+        import numpy as np
+        from falconsdr.models import Modulation
+        d, _ = self._out(Modulation.AM, -40, secs=3)
+        n = int(self.FS * 3) // self.BLK * self.BLK
+        t = np.arange(n) / self.FS
+        env = np.clip(np.sin(2 * np.pi * 3.3 * t) + 0.2, 0, None) ** 1.5
+        v = (np.sin(2 * np.pi * 500 * t) + 0.6 * np.sin(2 * np.pi * 1200 * t + 1)) * env
+        iq = (2.0 * 10 ** (-40 / 20) * (1 + 0.6 * v / np.abs(v).max()) * np.exp(2j * np.pi * 5000 * t)).astype(np.complex64)
+        d.notify_rf_gain_change(2.0)
+        out = np.concatenate([d.demod(iq[i:i + self.BLK], Modulation.AM, 5000.0) for i in range(0, n, self.BLK)])
+        self.assertLess(abs(self._speech_db(out, 0, 1) - self._speech_db(out, 2, 3)), 2.0)
 
 
 if __name__ == "__main__":

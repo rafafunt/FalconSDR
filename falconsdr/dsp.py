@@ -19,18 +19,31 @@ WFM_DISCRIMINATOR_RATE = 200_000
 # De-emphasis: 50 us is the European standard (the Americas use 75 us).
 WFM_DEEMPHASIS_TAU_S = 50e-6
 
-# Output AGC (_apply_agc): an envelope follower carried across calls, never a
-# per-chunk peak normalization - that pulled noise-only chunks up to voice
-# loudness and destroyed the real SNR (gotcha 25).
-_AGC_TARGET_PEAK = 0.8
-# Envelope floor: a weak signal isn't amplified into loud noise.
-_AGC_MIN_ENVELOPE = 0.35
-# Fast attack (~10 ms) catches transients before they clip; slow release
-# (~400 ms) keeps pauses between words from being pumped up.
-_AGC_ATTACK_TAU_S = 0.01
-_AGC_RELEASE_TAU_S = 0.4
-# Gain cap, so a long weak stretch doesn't turn into loud hiss.
-_AGC_MAX_GAIN = 6.0
+# Output leveler (_apply_agc): tracks the RMS of the voice and scales it to one
+# target level, so a distant aircraft (AM, ~-42 dBFS) and a strong NFM channel
+# (~-18 dBFS) come out equally loud. A persistent envelope follower across
+# calls, never a per-chunk normalization - that pulled noise-only chunks up to
+# voice loudness and destroyed the real SNR (gotcha 25).
+_AGC_TARGET_RMS = 0.12              # about -18 dBFS: where strong NFM speech already sat
+# Fast attack so a loud burst is caught within a block or two; slow release so
+# the gap between two words isn't pumped up.
+_AGC_ATTACK_TAU_S = 0.03
+_AGC_RELEASE_TAU_S = 0.8
+# A block this far below the tracked level is a pause (or noise), not quieter
+# speech: the level is held and only drifts down very slowly, so the noise
+# between words is not amplified - the job the old fixed envelope floor did.
+_AGC_PAUSE_RATIO = 0.2
+_AGC_PAUSE_TAU_S = 8.0
+# Gain limits: +21 dB for the weakest voice, -20 dB for a strong one. Beyond
+# that a signal is noise or a test tone and isn't "levelled".
+_AGC_MAX_GAIN = 12.0
+_AGC_MIN_GAIN = 0.1
+# Soft limiter above this: a burst that beats the attack never hard-clips.
+_LIMITER_KNEE = 0.8
+# AM carrier tracking (see demod()): the audio is divided by it, so its level
+# is the modulation depth and no longer depends on how far away the aircraft is.
+_CARRIER_RISE_TAU_S = 0.1
+_CARRIER_FALL_TAU_S = 0.6
 
 # SSB: Re{} of the baseband recovers the audio for either sideband; USB/LSB
 # only decides which side gets centered on 0 Hz and kept by a tight lowpass,
@@ -135,8 +148,13 @@ class Demodulator:
         self._mix_key: tuple | None = None   # (block size, shift) of _mix_base
         self._mix_base: np.ndarray | None = None
         self._deemph_zi = np.zeros(1)
-        self._agc_envelope = _AGC_MIN_ENVELOPE
+        self._agc_level = _AGC_TARGET_RMS    # tracked voice RMS (input scale); starts "on target" = gain 1
         self._agc_gain: float | None = None  # gain at the end of the previous block
+        self._carrier: float | None = None   # AM: smoothed carrier amplitude
+        # Lowest carrier amplitude AM is divided by. The engine sets it just under the trigger level so that
+        # noise (no carrier) is not scaled up to speech loudness; 0 = no floor.
+        self.carrier_floor = 0.0
+        self._last_mod: Modulation | None = None
         # Filters built on first use.
         self._ssb_ba = None
         self._ssb_zi = None
@@ -158,8 +176,9 @@ class Demodulator:
         self._mix_index = 0
         self._dc_zi = np.zeros(1)
         self._deemph_zi = np.zeros(1)
-        self._agc_envelope = _AGC_MIN_ENVELOPE
+        self._agc_level = _AGC_TARGET_RMS
         self._agc_gain = None
+        self._carrier = None
         self._ssb_zi = None
         self._ssb_mix_index = 0
         self._voice_lpf_zi = None
@@ -293,6 +312,7 @@ class Demodulator:
         """Returns mono audio as a 1-D float32 array."""
         if iq.size == 0:
             return np.zeros(0, dtype=np.float32)
+        self._last_mod = modulation
 
         # USB/LSB add half the SSB bandwidth to the mix, centering the wanted
         # sideband on 0 Hz - even when offset_hz is 0.
@@ -317,7 +337,9 @@ class Demodulator:
                 env = np.abs(baseband)
                 alpha = 0.05
                 dc, self._dc_zi = lfilter([alpha], [1.0, -(1.0 - alpha)], env, zi=self._dc_zi)
-                audio = env - dc
+                # Divided by the carrier, like a real AM receiver's AGC: the audio is then the
+                # modulation depth, the same for an aircraft 5 km or 80 km away.
+                audio = (env - dc) / self._track_carrier(env)
                 audio = self._apply_voice_lowpass(audio)
             else:
                 phase = np.angle(baseband)
@@ -330,29 +352,53 @@ class Demodulator:
         audio = self._apply_agc(audio)
         return np.clip(audio, -1.0, 1.0).astype(np.float32)
 
+    def _track_carrier(self, env: np.ndarray) -> float:
+        """Smoothed AM carrier amplitude: follows a stronger carrier quickly and a weaker one slowly, and
+        never goes below ``carrier_floor``."""
+        mean = float(np.mean(env))
+        if self._carrier is None:
+            self._carrier = mean
+        else:
+            tau = _CARRIER_RISE_TAU_S if mean > self._carrier else _CARRIER_FALL_TAU_S
+            self._carrier += (mean - self._carrier) * (1.0 - np.exp(-env.shape[0] / self.audio_rate / tau))
+        return max(self._carrier, self.carrier_floor, 1e-6)
+
     def _apply_agc(self, audio: np.ndarray) -> np.ndarray:
-        """Scales ``audio`` so the tracked envelope reaches _AGC_TARGET_PEAK."""
+        """Scales ``audio`` so the tracked voice level reaches _AGC_TARGET_RMS, then soft-limits it."""
         if audio.size == 0:
             return audio
-        peak = float(np.max(np.abs(audio)))
+        rms = float(np.sqrt(np.mean(audio * audio)))
         dt = audio.shape[0] / self.audio_rate
-        tau = _AGC_ATTACK_TAU_S if peak > self._agc_envelope else _AGC_RELEASE_TAU_S
-        coef = 1.0 - np.exp(-dt / tau)
-        self._agc_envelope += (peak - self._agc_envelope) * coef
-        self._agc_envelope = max(self._agc_envelope, _AGC_MIN_ENVELOPE)
-        gain = min(_AGC_TARGET_PEAK / self._agc_envelope, _AGC_MAX_GAIN)
+        if rms > self._agc_level:
+            tau = _AGC_ATTACK_TAU_S
+        elif rms > self._agc_level * _AGC_PAUSE_RATIO:
+            tau = _AGC_RELEASE_TAU_S
+        else:
+            tau = _AGC_PAUSE_TAU_S
+        self._agc_level += (rms - self._agc_level) * (1.0 - np.exp(-dt / tau))
+        self._agc_level = max(self._agc_level, 1e-9)
+        gain = min(max(_AGC_TARGET_RMS / self._agc_level, _AGC_MIN_GAIN), _AGC_MAX_GAIN)
         # Ramp from the previous block's gain: one step per 30 ms block is a
         # 33 Hz click train while someone speaks (gotcha 48). Smoothstep was
         # tried and measured worse.
         start = gain if self._agc_gain is None else self._agc_gain
         self._agc_gain = gain
-        return audio * np.linspace(start, gain, audio.size + 1, dtype=np.float32)[1:]
+        out = audio * np.linspace(start, gain, audio.size + 1, dtype=np.float32)[1:]
+        over = np.abs(out) > _LIMITER_KNEE
+        if over.any():
+            room = 1.0 - _LIMITER_KNEE
+            out[over] = np.sign(out[over]) * (_LIMITER_KNEE + room * np.tanh((np.abs(out[over]) - _LIMITER_KNEE) / room))
+        return out
 
     def notify_rf_gain_change(self, linear_factor: float) -> None:
-        """Pre-scales the envelope by a known RF gain step (SoftwareAgc)
-        before audio at the new level arrives - otherwise the step was heard
-        as a jump, like a different transmission starting."""
-        self._agc_envelope = max(self._agc_envelope * linear_factor, _AGC_MIN_ENVELOPE)
+        """Pre-scales what depends on the RF level by a known RF gain step (SoftwareAgc) before audio at
+        the new level arrives - otherwise the step was heard as a jump, like a different transmission
+        starting. AM is divided by its carrier (carrier follows the step); SSB's audio follows the RF
+        level directly; FM does not depend on it."""
+        if self._carrier is not None:
+            self._carrier *= linear_factor
+        if self._last_mod in (Modulation.USB, Modulation.LSB):
+            self._agc_level = max(self._agc_level * linear_factor, 1e-9)
 
 
 class NoiseReducer:

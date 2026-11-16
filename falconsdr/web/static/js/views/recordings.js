@@ -5,6 +5,7 @@ import {
   LANGUAGE_NAMES, api, carrierHz, fmtChannel, confirmDialog, debounce, errorToast, fmtBytes, fmtDate, fmtDateShort, fmtDuration, fmtKhz, fmtTime,
   formDialog, h, icon, modal, mount, prefs, qs, qualityBadge, select, seg, slider, t, toast, toggle,
 } from '../core.js';
+import { liveAudio, makeLoudnessChain } from '../live-audio.js';
 import { S, cfg, on, patchConfig, saveChannels } from '../state.js';
 
 const PAGE = 120;
@@ -280,6 +281,32 @@ export function recordingsView(root) {
   }
 
   // ---------------------------------------------------------- player
+  // Playback goes through the same boost + compressor as live audio, with one more gain per recording:
+  // the library knows how loud each file is (it.level, dBFS), so quiet old files and loud ones sound alike.
+  const LEVEL_TARGET_DB = -18;
+  let chain = null;
+  const evenOut = () => localStorage.getItem('evenOut') !== '0';
+  function ensureChain() {
+    if (chain) return chain;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    try {
+      const ctx = new Ctx();
+      const c = makeLoudnessChain(ctx, 0);
+      ctx.createMediaElementSource(audio).connect(c.input);
+      c.output.connect(ctx.destination);
+      chain = { ...c, ctx };
+    } catch (e) { console.warn('playback leveling unavailable:', e); }
+    return chain;
+  }
+  function applyGain(it) {
+    if (!chain) return;
+    let db = liveAudio.boostDb;
+    if (evenOut() && it && it.level != null) db += Math.max(-12, Math.min(30, LEVEL_TARGET_DB - it.level));
+    chain.boost.gain.value = 10 ** (db / 20);
+  }
+  audio.addEventListener('play', () => { if (chain) chain.ctx.resume().catch(() => {}); });
+
   let peaks = [];
   const wave = h('canvas');
   const waveBox = h('div.wave', { onclick: (e) => { const r = waveBox.getBoundingClientRect(); if (audio.duration) audio.currentTime = ((e.clientX - r.left) / r.width) * audio.duration; } }, wave);
@@ -292,6 +319,8 @@ export function recordingsView(root) {
     const el = list.querySelector(`.rec[data-id="${CSS.escape(it.id)}"]`);
     if (el) { el.classList.add('active'); el.scrollIntoView({ block: 'nearest' }); }
     audio.src = '/api/recording?id=' + encodeURIComponent(it.id);
+    ensureChain();
+    applyGain(it);
     if (autoplay) audio.play().catch(() => {});
     if ('mediaSession' in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: [freqLabel(it), it.name].filter(Boolean).join(' · '), artist: `${fmtDateShort(it.time)} ${fmtTime(it.time)}`, album: 'FalconSDR' });
     peaks = [];
@@ -367,6 +396,7 @@ export function recordingsView(root) {
         h('button.icon', { title: t('Next'), 'aria-label': t('Next'), onclick: () => step(1) }, icon('next')),
         timeText,
         h('span.spacer'),
+        toggle(t('Even out volume'), evenOut(), (v) => { localStorage.setItem('evenOut', v ? '1' : '0'); applyGain(current); }),
         it.manual ? null : act(icon('plus'), t('Save frequency'), () => saveFrequency(it), t('Add this frequency to the Memory List')),
         // Plain names, no logos: both are trademarks (Flightradar24 terms 10.3; ADS-B Exchange forbids using
         // its icon without the wordmark). The name stays visible on phones too - two same icons would be indistinguishable.
@@ -518,6 +548,7 @@ export function recordingsView(root) {
       // removeAttribute + load(): `audio.src = ''` would load the page itself
       audio.pause(); audio.removeAttribute('src'); audio.load();
       io.disconnect(); clearInterval(freshTimer); setMediaActions(false);
+      if (chain) chain.ctx.close().catch(() => {});
       document.removeEventListener('keydown', onKey); offs.forEach((f) => f());
     },
   };

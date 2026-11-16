@@ -305,6 +305,40 @@ class _StreamNotStarted(RuntimeError):
     """The async stream ended before it delivered anything."""
 
 
+class StreamFault(RuntimeError):
+    """librtlsdr's continuous stream crashed inside the native code (on Windows ctypes turns an
+    access violation into an OSError). The engine switches the stream off and reopens the dongle."""
+
+
+# "The continuous stream is (or was) running in process <pid>": written when a stream first starts, removed
+# when the backend closes cleanly. One still there when the next run opens the dongle means that run died
+# while streaming (a segfault no exception shows) - the stream then stays off for the new run, which breaks a
+# crash loop. A kill or power cut looks the same: that costs one run without the stream, never more.
+_STREAM_MARKER = CONFIG_DIR / "rtlsdr_stream.active"
+
+
+def _stream_marker_stale() -> bool:
+    try:
+        return _STREAM_MARKER.read_text(encoding="utf-8").strip() != str(os.getpid())
+    except OSError:
+        return False
+
+
+def _stream_marker_set() -> None:
+    try:
+        _STREAM_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _STREAM_MARKER.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _stream_marker_clear() -> None:
+    try:
+        _STREAM_MARKER.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 class _StreamStats:
     """How much of a stream's wall time its samples cover. A late callback is not a loss (the data
     waits in the USB queue), so the lag - wall time since the first callback minus the time the
@@ -349,12 +383,19 @@ class RtlSdrBackend(SdrBackend):
     between windows the plain reads are kept, so scan speed is unchanged.
     """
     label = RTLSDR_NATIVE_DRIVER
+    _stream_fault: BaseException | None = None   # an exception that ended the stream thread
+    _faulted = False                             # the native stream code crashed: close() must not trust it
+    async_disabled_reason = ""                   # set when the stream was switched off at open (engine tells the user)
 
     def __init__(self, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
                  bias_tee: bool = False, async_read: bool = True):
         if not HAVE_RTLSDR_NATIVE:
             raise RuntimeError("The pyrtlsdr/pyrtlsdrlib modules are not installed")
         self._async = bool(async_read)
+        if self._async and _stream_marker_stale():
+            self._async = False
+            self.async_disabled_reason = "previous run ended while streaming"
+            _stream_marker_clear()
         self._sync_reads = 0             # blocking reads since the last retune/gain step
         self._stream_thread: threading.Thread | None = None
         self._stream_cb = None           # the ctypes callback must outlive the stream
@@ -391,17 +432,29 @@ class RtlSdrBackend(SdrBackend):
             self.device.set_bias_tee(True)
 
     def set_frequency(self, freq_hz: float) -> None:
-        self._stop_stream()
-        self.device.center_freq = int(freq_hz)
-        # See SoapyBackend.set_frequency() - re-asserted on every retune.
-        self.device.set_bias_tee(self.bias_tee)
+        try:
+            self._stop_stream()
+            self.device.center_freq = int(freq_hz)
+            # See SoapyBackend.set_frequency() - re-asserted on every retune.
+            self.device.set_bias_tee(self.bias_tee)
+        except OSError as exc:  # a native crash right after a stream ran (issue #14: access violation, Windows)
+            if not self._async:
+                raise
+            self._faulted = True
+            raise StreamFault(str(exc)) from exc
         # Leftover bytes belong to the previous frequency.
         self._carry = np.empty(0, dtype=np.uint8)
 
     def set_gain(self, gain_mode: str, gain_db: float) -> None:
-        self._stop_stream()  # a gain step stalls the dongle anyway
-        # pyrtlsdr's set_gain() already picks the nearest supported step.
-        self.device.set_gain("auto" if gain_mode == "auto" else gain_db)
+        try:
+            self._stop_stream()  # a gain step stalls the dongle anyway
+            # pyrtlsdr's set_gain() already picks the nearest supported step.
+            self.device.set_gain("auto" if gain_mode == "auto" else gain_db)
+        except OSError as exc:
+            if not self._async:
+                raise
+            self._faulted = True
+            raise StreamFault(str(exc)) from exc
 
     def read(self, num_samples: int) -> np.ndarray:
         return self.to_iq(self.read_raw(num_samples))
@@ -419,6 +472,9 @@ class RtlSdrBackend(SdrBackend):
         if self._async and self._stream_thread is None and self._sync_reads >= _ASYNC_AFTER_READS:
             try:
                 self._start_stream()
+            except OSError as exc:  # a crash inside the library, not a refusal: the handle can't be trusted
+                self._faulted = True
+                raise StreamFault(str(exc)) from exc
             except Exception as exc:  # e.g. the library can't do it: keep scanning with blocking reads
                 self._give_up_streaming(exc)
         need = 2 * num_samples - self._carry.size
@@ -468,6 +524,7 @@ class RtlSdrBackend(SdrBackend):
         with self._stream_cond:
             self._stream_chunks.clear()
             self._stream_error, self._stream_stopping = None, False
+            self._stream_fault = None
         self._stream_stats = _StreamStats(self.sample_rate)
         stats = self._stream_stats
         buffer_bytes = self._async_buffer_bytes(self.sample_rate)
@@ -483,13 +540,20 @@ class RtlSdrBackend(SdrBackend):
         callback = self._stream_cb
 
         def run() -> None:
-            result = librtlsdr.rtlsdr_read_async(dev_p, callback, self, _ASYNC_BUFFERS, buffer_bytes)
+            try:
+                result = librtlsdr.rtlsdr_read_async(dev_p, callback, self, _ASYNC_BUFFERS, buffer_bytes)
+            except Exception as exc:  # noqa: BLE001 - an access violation in the library: tell the reader
+                with self._stream_cond:
+                    self._stream_fault = exc
+                    self._stream_cond.notify_all()
+                return
             with self._stream_cond:
                 if not self._stream_stopping:
                     self._stream_error = result if result < 0 else -1  # ended by itself = the device is gone
                 self._stream_cond.notify_all()
 
         librtlsdr.rtlsdr_reset_buffer(dev_p)
+        _stream_marker_set()
         self._stream_thread = threading.Thread(target=run, name="rtlsdr-stream", daemon=True)
         self._stream_thread.start()
 
@@ -503,7 +567,12 @@ class RtlSdrBackend(SdrBackend):
             self._stream_stopping = True
         deadline = time.monotonic() + _STREAM_STOP_TIMEOUT_S
         while thread.is_alive() and time.monotonic() < deadline:
-            librtlsdr.rtlsdr_cancel_async(self.device.dev_p)  # fails until the stream is really running: retry
+            try:
+                librtlsdr.rtlsdr_cancel_async(self.device.dev_p)  # fails until the stream is really running: retry
+            except OSError as exc:
+                self._faulted = True
+                self._stream_thread = None
+                raise StreamFault(str(exc)) from exc
             thread.join(0.05)
         self._stream_thread = None
         with self._stream_cond:
@@ -517,6 +586,9 @@ class RtlSdrBackend(SdrBackend):
         deadline = time.monotonic() + 1.0
         with self._stream_cond:
             while got < need:
+                if self._stream_fault is not None:
+                    self._faulted = True
+                    raise StreamFault(str(self._stream_fault)) from self._stream_fault
                 if self._stream_chunks:
                     chunk = self._stream_chunks.popleft()
                     parts.append(chunk)
@@ -542,7 +614,8 @@ class RtlSdrBackend(SdrBackend):
 
     def close(self) -> None:
         try:
-            self._stop_stream()
+            if not self._faulted:  # after a crash in the library, asking it to stop the stream would crash again
+                self._stop_stream()
             stream_stuck = False
         except Exception:
             stream_stuck = True
@@ -555,6 +628,7 @@ class RtlSdrBackend(SdrBackend):
                 self.device.close()
             except Exception:
                 pass
+            _stream_marker_clear()
         SoapyBackend._record_close_time()
 
     @staticmethod

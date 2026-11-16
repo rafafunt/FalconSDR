@@ -1369,6 +1369,18 @@ msgstr "Ponowne łączenie"
 msgid "Volume"
 msgstr "Głośność"
 
+msgid "Even out volume"
+msgstr "Wyrównaj głośność"
+
+msgid "Boost"
+msgstr "Podbicie"
+
+msgid "No boost"
+msgstr "Bez podbicia"
+
+msgid "Louder quiet voices on a phone or a weak speaker - loud peaks are still held back"
+msgstr "Głośniej na telefonie lub słabym głośniku - głośne szczyty nadal są tłumione"
+
 msgid "Leave this frequency for now"
 msgstr "Zostaw tę częstotliwość na razie"
 
@@ -2758,11 +2770,17 @@ msgstr "Ten odbiornik przechwytuje {actual:.2f} MHz, a nie {wanted:.2f} MHz - sk
 msgid "Optional - a name typed here is used instead of the folder above."
 msgstr "Opcjonalnie - wpisana tu nazwa zastąpi folder wybrany powyżej."
 
+msgid "Continuous RTL-SDR reading failed on this receiver ({error}) - switched it off and reconnected."
+msgstr "Ciągły odczyt RTL-SDR zawiódł na tym odbiorniku ({error}) - wyłączono go i połączono ponownie."
+
+msgid "The previous run ended while continuous RTL-SDR reading was on - it stays off for this run."
+msgstr "Poprzednie uruchomienie zakończyło się podczas ciągłego odczytu RTL-SDR - w tym uruchomieniu zostaje wyłączony."
+
 msgid "Continuous RTL-SDR reading"
 msgstr "Ciągły odczyt RTL-SDR"
 
-msgid "While the scanner stays on a frequency, an RTL-SDR read through librtlsdr (Windows, macOS and the receiver) is read as a continuous stream, which removes the buzz caused by lost samples. Turn it off if scanning freezes or the receiver keeps disconnecting; the buzz may come back. Takes effect the next time scanning starts."
-msgstr "Gdy skaner zostaje na jednej częstotliwości, RTL-SDR obsługiwany przez librtlsdr (Windows, macOS i odbiornik) jest czytany ciągłym strumieniem, co usuwa brzęczenie od gubionych próbek. Wyłącz, jeśli skanowanie się zawiesza albo odbiornik ciągle się rozłącza; brzęczenie może wrócić. Działa od następnego uruchomienia skanowania."
+msgid "While the scanner stays on a frequency, an RTL-SDR read through librtlsdr (Windows, macOS and the receiver) is read as a continuous stream, which removes the buzz caused by lost samples. If it crashes the driver on your receiver, FalconSDR switches it off by itself and says so in the Activity list; the buzz may come back. Takes effect the next time scanning starts."
+msgstr "Gdy skaner zostaje na jednej częstotliwości, RTL-SDR obsługiwany przez librtlsdr (Windows, macOS i odbiornik) jest czytany ciągłym strumieniem, co usuwa brzęczenie od gubionych próbek. Jeśli zawiesza to sterownik Twojego odbiornika, FalconSDR sam go wyłączy i napisze o tym w Aktywności; brzęczenie może wrócić. Działa od następnego uruchomienia skanowania."
 
 msgid "Sort by {col}"
 msgstr "Sortuj według: {col}"
