@@ -1697,6 +1697,8 @@ class ScannerEngine(threading.Thread):
             # Edge-corrected, so a slot near the window edge doesn't linger out early.
             level = raw_powers.get(freq_hz, -120.0) + self._correction_db(slot.offset_hz)
             slot.level_history.append(level)
+            # AM is divided by its carrier; below the trigger there is no carrier, only noise, which must stay quiet.
+            slot.demod.carrier_floor = 10.0 ** ((trigger_dbfs - 6.0) / 20.0)
             # Squelch only mutes audio; LINGER below depends on the trigger alone.
             squelched = squelch_dbfs is not None and level < squelch_dbfs
             if freq_hz == self._primary_freq:

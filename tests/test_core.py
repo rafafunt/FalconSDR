@@ -2712,5 +2712,89 @@ class RecorderTest(unittest.TestCase):
         rec.end_transmission()  # a full disk is not an exception for the caller
 
 
+class LevelingTest(unittest.TestCase):
+    """Demodulator output level: the same loudness whatever the signal strength or modulation (gotchas 25, 57)."""
+    FS, BLK = 2_400_000, 72_000   # 30 ms blocks
+
+    def _out(self, mod, carrier_db, depth=0.6, dev=3000.0, secs=8, noise_db=-75.0, floor_db=-66.0):
+        import numpy as np
+        from falconsdr.dsp import Demodulator
+        rng = np.random.default_rng(1)
+        n = int(self.FS * secs) // self.BLK * self.BLK
+        t = np.arange(n) / self.FS
+        env = np.clip(np.sin(2 * np.pi * 3.3 * t) + 0.2, 0, None) ** 1.5    # syllables
+        v = (np.sin(2 * np.pi * 500 * t) + 0.6 * np.sin(2 * np.pi * 1200 * t + 1)) * env
+        v /= np.abs(v).max()
+        amp = 10 ** (carrier_db / 20)
+        shift = 2 * np.pi * 5000 * t
+        iq = amp * (1 + depth * v) * np.exp(1j * shift) if mod.value == "AM" else amp * np.exp(1j * (shift + 2 * np.pi * np.cumsum(dev * v) / self.FS))
+        iq = iq + 10 ** (noise_db / 20) / np.sqrt(2) * (rng.standard_normal(n) + 1j * rng.standard_normal(n))
+        iq = iq.astype(np.complex64)
+        d = Demodulator(self.FS, 12500)
+        d.carrier_floor = 10 ** (floor_db / 20)
+        return d, np.concatenate([d.demod(iq[i:i + self.BLK], mod, 5000.0) for i in range(0, n, self.BLK)])
+
+    @staticmethod
+    def _speech_db(out, a, b):
+        import numpy as np
+        seg = out[int(a * 12500):int(b * 12500)]
+        rms = np.sqrt((seg[:seg.size // 375 * 375].reshape(-1, 375) ** 2).mean(axis=1))
+        db = 20 * np.log10(rms + 1e-9)
+        return float(np.percentile(db[db > -55], 90))
+
+    def test_am_level_does_not_depend_on_the_carrier(self) -> None:
+        from falconsdr.models import Modulation
+        # The recordings from the receiver differed by 27 dB inside the airband alone (distance).
+        levels = [self._speech_db(self._out(Modulation.AM, db)[1], 1, 8) for db in (-60, -45, -30, -15)]
+        self.assertLess(max(levels) - min(levels), 1.0, levels)
+
+    def test_weak_and_strong_voices_end_up_equally_loud(self) -> None:
+        from falconsdr.models import Modulation
+        cases = [(Modulation.AM, dict(carrier_db=-50, depth=0.15)), (Modulation.AM, dict(carrier_db=-30, depth=0.9)),
+                 (Modulation.NFM, dict(carrier_db=-40, dev=600.0)), (Modulation.NFM, dict(carrier_db=-20, dev=5000.0))]
+        levels = [self._speech_db(self._out(mod, **kw)[1], 4, 8) for mod, kw in cases]
+        self.assertLess(max(levels) - min(levels), 4.0, levels)    # was ~24 dB between AM and NFM
+
+    def test_a_loud_burst_never_clips(self) -> None:
+        import numpy as np
+        from falconsdr.models import Modulation
+        _, out = self._out(Modulation.NFM, -20, dev=9000.0, secs=3)
+        self.assertLessEqual(float(np.abs(out).max()), 1.0)
+
+    def test_pauses_are_not_pumped_up(self) -> None:
+        """Speech, then a bare carrier (the noise between words): the gain must not climb and the noise stays quiet."""
+        import numpy as np
+        from falconsdr.dsp import Demodulator
+        from falconsdr.models import Modulation
+        d, speech = self._out(Modulation.AM, -40, secs=3)
+        gain = d._agc_gain
+        n = int(self.FS * 3) // self.BLK * self.BLK
+        rng = np.random.default_rng(2)
+        iq = (10 ** (-40 / 20) * np.exp(2j * np.pi * 5000 * np.arange(n) / self.FS)
+              + 10 ** (-75 / 20) / np.sqrt(2) * (rng.standard_normal(n) + 1j * rng.standard_normal(n))).astype(np.complex64)
+        pause = np.concatenate([d.demod(iq[i:i + self.BLK], Modulation.AM, 5000.0) for i in range(0, n, self.BLK)])
+        self.assertLess(d._agc_gain, gain * 1.5)
+        self.assertLess(self._rms_db(pause[-12500:]), self._speech_db(speech, 1, 3) - 30)    # measured: 50 dB below the speech
+
+    @staticmethod
+    def _rms_db(x):
+        import numpy as np
+        return float(20 * np.log10(np.sqrt(np.mean(x * x)) + 1e-9))
+
+    def test_a_rf_gain_step_keeps_the_am_level(self) -> None:
+        """SoftwareAgc steps the dongle's gain: the audio must not jump (notify_rf_gain_change)."""
+        import numpy as np
+        from falconsdr.models import Modulation
+        d, _ = self._out(Modulation.AM, -40, secs=3)
+        n = int(self.FS * 3) // self.BLK * self.BLK
+        t = np.arange(n) / self.FS
+        env = np.clip(np.sin(2 * np.pi * 3.3 * t) + 0.2, 0, None) ** 1.5
+        v = (np.sin(2 * np.pi * 500 * t) + 0.6 * np.sin(2 * np.pi * 1200 * t + 1)) * env
+        iq = (2.0 * 10 ** (-40 / 20) * (1 + 0.6 * v / np.abs(v).max()) * np.exp(2j * np.pi * 5000 * t)).astype(np.complex64)
+        d.notify_rf_gain_change(2.0)
+        out = np.concatenate([d.demod(iq[i:i + self.BLK], Modulation.AM, 5000.0) for i in range(0, n, self.BLK)])
+        self.assertLess(abs(self._speech_db(out, 0, 1) - self._speech_db(out, 2, 3)), 2.0)
+
+
 if __name__ == "__main__":
     unittest.main()
