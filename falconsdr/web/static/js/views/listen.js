@@ -93,8 +93,8 @@ export function listenView(root) {
     h('div.col', { style: { gap: '4px' } },
       h('div.meter', meterFill, meterMark),
       h('div.meter-legend', h('span', '-100'), levelText, h('span', '0 dBFS'))),
-    h('div.controls', startBtn, h('div.row', listenBtn, h('div.volume', icon('volume'), volume, boost)), skipBtn, blBtn, holdBtn, recBtn),
-    h('div.row.wrap', autoRec, h('span.spacer'), iqBtn));
+    h('div.controls', startBtn, h('div.row', listenBtn, h('div.volume', icon('volume'), volume)), skipBtn, blBtn, holdBtn, recBtn),
+    h('div.row.wrap', autoRec, h('span.spacer'), h('span.faint.small', t('Boost')), boost, iqBtn));
 
   // ---------------------------------------------------------- spectrum
   const canvas = h('canvas', { height: 260, role: 'img', 'aria-label': t('Live spectrum and waterfall of the scanned band. The frequency and state are shown in text above.') });

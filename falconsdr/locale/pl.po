@@ -1372,6 +1372,9 @@ msgstr "Głośność"
 msgid "Even out volume"
 msgstr "Wyrównaj głośność"
 
+msgid "Boost"
+msgstr "Podbicie"
+
 msgid "No boost"
 msgstr "Bez podbicia"
 
