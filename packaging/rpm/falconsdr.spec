@@ -1,5 +1,5 @@
 Name:           falconsdr
-Version:        1.5.0
+Version:        1.6.0
 Release:        1%{?dist}
 Summary:        Wideband SDR ATC/radio scanner (self-contained build)
 License:        GPL-3.0-or-later
@@ -117,6 +117,9 @@ fi
 %{_modprobedir}/blacklist-rtl-dvb.conf
 
 %changelog
+* Mon Nov 16 2026 rafafunt - 1.6.0-1
+- 1.6.0: add-ons (ACARS, APRS, VDL2, rtl_433 sensors) with a Messages page and statistics, notifications with rules (ntfy, Telegram, Discord and other webhooks, MQTT), a schedule per receiver, evened-out loudness, extra dongles with the same choices as the first, automatic recovery from a crashing RTL-SDR stream.
+
 * Wed Nov 11 2026 rafafunt - 1.5.0-1
 - 1.5.0: an RTL-SDR on another computer as a source (rtl_tcp), sortable columns in Channels, a phone-friendly recordings player, picking an existing folder when saving a frequency, a switch for the RTL-SDR stream (Settings > Advanced), digital voice (DMR/C4FM) input fixes, macOS signature re-sealed.
 

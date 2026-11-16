@@ -46,9 +46,25 @@ receiver at [falconsdr.com](https://falconsdr.com).
   through [dsd-fme](https://github.com/lwvmobile/dsd-fme), installed from
   Settings → Digital voice. Encrypted calls stay muted.
 
+**Add-ons** (Add-ons page; all optional)
+- Decoders that listen to what the scanner already receives: **ACARS** and
+  **APRS** (built in), plus **VDL2** (dumpvdl2) and **rtl_433** (sensors:
+  weather stations, thermometers, tyre pressure, power, door and alarm
+  sensors, tank levels...) as separate programs that take a receiver for as
+  long as they run. Everything decoded appears on the **Messages** page, with
+  search, filters, a map link and per-add-on statistics.
+- **Notifications** with rules ("a sensor below 0 °C", "a word in an ACARS
+  message", "activity on a frequency", "a receiver lost") to ntfy, Telegram,
+  Discord/Slack and other webhooks or MQTT. Nothing is sent until you add a
+  channel. See `docs/addons.md`.
+- A **schedule** per receiver: scan some bands in some hours, run an add-on in
+  others.
+
 **Listening**
 - Live audio in the browser, with a frequency display, signal level and a
-  live spectrum.
+  live spectrum. Voice is levelled (AM by its carrier, then to a steady
+  loudness) so a weak airband station and a strong fire channel sound alike;
+  Listen has a boost setting, and the Recordings player evens out files too.
 - Skip, skip + blacklist, solo a single band, listen to a single frequency.
 - Works on phones, with play/pause/next controls on the lock screen and
   headset.
