@@ -131,7 +131,8 @@ export function notifyCard(box) {
   }
 
   function addRule(index) {
-    const [name, base] = TEMPLATES()[index];
+    const [label, base] = TEMPLATES()[index];
+    const name = label.replace(/\s*\([^)]*\)\s*$/, '');        // the hint in brackets is for the list, not for the title of every notification
     state.rules.push({ id: '', name, enabled: true, source: 'message', channels: state.channels.filter((c) => c.enabled && c.id).map((c) => c.id), cooldown_s: 300,
       addons: [], text_any: '', who: '', label: '', freq_mhz: 0, metric: '', op: '<', value: 0, within_km: 0, event: 'receiver_lost', ...base });
     save(true);
