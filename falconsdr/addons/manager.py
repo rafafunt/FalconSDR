@@ -2,9 +2,11 @@
 external program that may hold the dongle. Owned by the Controller (see AGENTS.md gotcha 58)."""
 from __future__ import annotations
 
+import re
 import shlex
 import sys
 import threading
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
@@ -15,8 +17,10 @@ from ..models import Modulation
 from .acars import AcarsDecoder
 from .aprs import AprsDecoder
 from .events import EventHub
+from ..sdr_backend import SoapyBackend
 from .external import BIN_DIR, ExternalRunner, find_program, parse_rtl_433, parse_vdl2
 
+_BUSY_RETRY_S = 3.0               # pause before starting a program again after "receiver busy"
 CLAIM_TOLERANCE_HZ = 4200          # half the 8.333 kHz airband grid: one grid point per claimed channel
 
 
@@ -91,6 +95,7 @@ class AddonManager:
         self._runner: ExternalRunner | None = None
         self.running_external = ""
         self.last_error = ""
+        self._cancelled = False
 
     # -- state ----------------------------------------------------------------------------------
     def enabled(self, addon_id: str) -> bool:
@@ -185,37 +190,66 @@ class AddonManager:
             argv = [program, "--output", "decoded:json:file:path=-", *self._device_args(addon_id, device), *extra,
                     *[str(int(f)) for f in cfg.vdl2_frequencies_hz]]
             parse = parse_vdl2
-        else:
-            argv = [program, "-F", "json", *self._device_args(addon_id, device), *extra]
+        else:   # "-F log" as well: without it rtl_433 says nothing about why it failed
+            argv = [program, "-F", "json", "-F", "log", *self._device_args(addon_id, device), *extra]
             parse = parse_rtl_433
         with self._lock:
-            if self._runner is not None and self._runner.alive:
+            if self.running_external:
                 raise RuntimeError(tr("Another add-on is running - stop it first."))
-            self.last_error = ""
-
-            def on_line(line: str) -> None:
-                parsed = parse(line)
-                if parsed is not None:
-                    event, summary = parsed
-                    self.hub.publish(addon_id, event, summary)
-                    self._stats[addon_id]["events"] += 1
-
-            def on_exit(code: int) -> None:
-                with self._lock:
-                    runner = self._runner
-                    self._runner, self.running_external = None, ""
-                    if code:
-                        tail = " ".join(list(runner.stderr_tail)[-3:]) if runner else ""
-                        self.last_error = f"{addon_id}: exit {code} {tail}".strip()
-                        self._log(tr("{name} stopped by itself (exit {code}) {tail}").format(name=spec.name, code=code, tail=tail))
-
-            runner = ExternalRunner(argv, on_line, on_exit)
-            runner.start()
-            self._runner, self.running_external = runner, addon_id
+            self.last_error, self._cancelled = "", False
+            self.running_external = addon_id
+        # The dongle that the scanner just closed is not free for a moment (usb_claim_interface -6): the same
+        # cooldown the backends keep between a close and the next open.
+        SoapyBackend._wait_for_reopen_cooldown()
+        try:
+            self._launch(addon_id, argv, parse, tries=3)
+        except OSError as exc:      # the program could not even be started
+            with self._lock:
+                self._runner, self.running_external = None, ""
+            raise RuntimeError(f"{spec.name}: {exc}") from exc
         self._log(tr("{name} started - the scanner is paused while it runs.").format(name=spec.name))
 
+    def _launch(self, addon_id: str, argv: list[str], parse, tries: int) -> None:
+        spec = SPECS[addon_id]
+        started = time.monotonic()
+
+        def on_line(line: str) -> None:
+            parsed = parse(line)
+            if parsed is not None:
+                event, summary = parsed
+                self.hub.publish(addon_id, event, summary)
+                self._stats[addon_id]["events"] += 1
+
+        def on_exit(code: int) -> None:
+            SoapyBackend._record_close_time()       # the next open (the scanner's) keeps the cooldown too
+            with self._lock:
+                runner = self._runner
+            tail = list(runner.stderr_tail) if runner else []
+            busy = (bool(code) and tries > 0 and not self._cancelled and time.monotonic() - started < 10
+                    and any(re.search(r"claim|busy|-6\b", line, re.I) for line in tail))
+            if busy:    # the receiver was not yet free: wait and try again, quietly
+                self._log(tr("The receiver was still busy - trying again."))
+                threading.Timer(_BUSY_RETRY_S, lambda: None if self._cancelled else self._launch(addon_id, argv, parse, tries - 1)).start()
+                return
+            with self._lock:
+                self._runner, self.running_external = None, ""
+                if code:
+                    shown = " ".join(tail[-3:])
+                    self.last_error = f"{addon_id}: exit {code} {shown}".strip()
+                    self._log(tr("{name} stopped by itself (exit {code}) {tail}").format(name=spec.name, code=code, tail=shown))
+
+        runner = ExternalRunner(argv, on_line, on_exit)
+        with self._lock:
+            self._runner = runner
+        runner.start()
+
     def stop_external(self) -> None:
+        self._cancelled = True
         with self._lock:
             runner = self._runner
         if runner is not None:
             runner.stop()
+        with self._lock:
+            if not (self._runner is not None and self._runner.alive):
+                self._runner, self.running_external = None, ""
+        SoapyBackend._record_close_time()

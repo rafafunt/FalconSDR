@@ -370,7 +370,7 @@ def make_handler(app: App):
                 if action == "configure":
                     ctl.addons.configure(str(body.get("id", "")), body)
                 elif action == "run":
-                    ctl.run_addon(str(body.get("id", "")))
+                    ctl.run_addon(str(body.get("id", "")), int(body.get("dongle", 0) or 0))
                 elif action == "stop":
                     ctl.stop_addon()
                 elif action == "clear":

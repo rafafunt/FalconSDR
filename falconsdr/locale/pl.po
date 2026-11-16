@@ -2988,3 +2988,9 @@ msgstr "ACARS (Europa, 131,525-131,825 MHz)"
 
 msgid "Aircraft text messages (ACARS). Turn the ACARS add-on on to decode them instead of recording their buzz."
 msgstr "Tekstowe wiadomości samolotów (ACARS). Włącz dodatek ACARS, żeby je dekodować zamiast nagrywać ich brzęczenie."
+
+msgid "The receiver was still busy - trying again."
+msgstr "Odbiornik był jeszcze zajęty - próbuję ponownie."
+
+msgid "No such receiver"
+msgstr "Nie ma takiego odbiornika"
