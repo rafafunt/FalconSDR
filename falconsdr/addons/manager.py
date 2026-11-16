@@ -21,7 +21,7 @@ from .events import EventHub
 from .stats import StatsStore
 from ..sdr_backend import SoapyBackend
 from . import install as installer
-from .external import BIN_DIR, ExternalRunner, find_program, parse_rtl_433, parse_vdl2
+from .external import BIN_DIR, ExternalRunner, find_program, list_rtl433_protocols, parse_rtl_433, parse_vdl2
 
 _BUSY_RETRY_S = 3.0               # pause before starting a program again after "receiver busy"
 CLAIM_TOLERANCE_HZ = 4200          # half the 8.333 kHz airband grid: one grid point per claimed channel
@@ -61,9 +61,11 @@ SPECS = {s.id: s for s in CATALOG}
 
 # What can be set for an external program. Everything is checked and turned into flags here (never passed through
 # as text), so a typo cannot become a command line. rtl_433: -f/-H/-g/-p/-C; dumpvdl2: --gain/--correction.
-RTL433_BANDS = {"433": [433.92], "868": [868.3], "315": [315.0], "915": [915.0], "433+868": [433.92, 868.3]}
+RTL433_BANDS = {"433": [433.92], "868": [868.3], "315": [315.0], "345": [345.0], "915": [915.0], "wmbus": [868.95], "433+868": [433.92, 868.3]}
+RTL433_SAMPLE_RATES = ("", "250k", "1000k", "1200k", "2048k")     # "" = rtl_433's own 250k; wM-Bus and some TPMS need more
 OPTION_DEFAULTS: dict[str, dict] = {
-    "rtl_433": {"band": "433", "custom_mhz": "", "hop_s": 30, "gain": "", "ppm": 0, "units": "native"},
+    "rtl_433": {"band": "433", "custom_mhz": "", "hop_s": 30, "gain": "", "ppm": 0, "units": "native", "sample_rate": "",
+                "remotes": False, "extra_decoders": []},
     "vdl2": {"gain": "", "ppm": 0},
 }
 
@@ -101,6 +103,13 @@ def clean_options(addon_id: str, current: dict, patch: dict) -> dict:
         elif key == "units":
             if value not in ("native", "si", "customary"):
                 raise ValueError("units: unknown")
+        elif key == "sample_rate":
+            if value not in RTL433_SAMPLE_RATES:
+                raise ValueError("sample rate: unknown")
+        elif key == "remotes":
+            value = bool(value)
+        elif key == "extra_decoders":
+            value = sorted({int(_number(v, 1, 999, "decoder")) for v in (value or [])})[:80]
         out[key] = value
     return out
 
@@ -141,6 +150,7 @@ class AddonManager:
                  on_stopped: Callable[[str], None] = lambda _id: None):
         self._config = config
         self._log = log
+        self.on_failed: Callable[[str, str], None] = lambda _id, _why: None      # an external program died by itself (the Notifier)
         self._on_stopped = on_stopped     # an external program ended (by itself or stopped): the Controller gives its receiver back
         home = lambda: (float(config.location.home_lat or 0), float(config.location.home_lon or 0))   # noqa: E731
         self.stats = StatsStore(CONFIG_DIR / "addons" / "stats", home)
@@ -285,8 +295,18 @@ class AddonManager:
             freqs = RTL433_BANDS[opts["band"]]
         band = [x for f in freqs for x in ("-f", f"{f:g}M")] + (["-H", str(int(opts["hop_s"]))] if len(freqs) > 1 else [])
         units = [] if opts["units"] == "native" else ["-C", opts["units"]]
+        rate = opts["sample_rate"] or ("1200k" if opts["band"] == "wmbus" else "")        # wireless M-Bus needs a wide capture
+        sample = ["-s", rate] if rate else []
+        decoders: list[str] = []
+        if opts["extra_decoders"]:       # -R means "only these", so the default set is named too (from the program itself)
+            known = list_rtl433_protocols(program)
+            if known:
+                ids = sorted({p["id"] for p in known if p["default"]} | set(opts["extra_decoders"]))
+                decoders = [x for n in ids for x in ("-R", str(n))]
+        allow = bool(opts["remotes"])
         # "-F log" as well: without it rtl_433 says nothing about why it failed
-        return [program, "-F", "json", "-F", "log", *self._device_args(addon_id, device), *band, *gain, *ppm, *units, *extra], parse_rtl_433
+        return ([program, "-F", "json", "-F", "log", *self._device_args(addon_id, device), *band, *sample, *gain, *ppm, *units, *decoders, *extra],
+                lambda line: parse_rtl_433(line, allow))
 
     def start_external(self, addon_id: str, device: dict) -> None:
         spec = SPECS.get(addon_id)
@@ -342,6 +362,8 @@ class AddonManager:
                     shown = " ".join(tail[-3:])
                     self.last_error = f"{addon_id}: exit {code} {shown}".strip()
                     self._log(tr("{name} stopped by itself (exit {code}) {tail}").format(name=spec.name, code=code, tail=shown))
+            if code and not cancelled:
+                self.on_failed(addon_id, f"{spec.name} stopped by itself (exit {code})")
             self._on_stopped(addon_id)
 
         runner = ExternalRunner(argv, on_line, on_exit)

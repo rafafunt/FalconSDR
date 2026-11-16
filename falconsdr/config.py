@@ -327,6 +327,14 @@ class AddonsConfig:
 
 
 @dataclass
+class NotifyConfig:
+    """Notifications with rules (notifier.py). Edited only through /api/notify - it holds secrets."""
+    enabled: bool = False
+    channels: list = field(default_factory=list)    # {id, type, name, enabled, settings}
+    rules: list = field(default_factory=list)       # {id, name, enabled, source, channels, cooldown_s, ...}
+
+
+@dataclass
 class AppConfig:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     # Bands scanned together with the Memory List: presets, custom ranges and
@@ -348,6 +356,7 @@ class AppConfig:
     remote_receiver: RemoteReceiverConfig = field(default_factory=RemoteReceiverConfig)
     location: LocationConfig = field(default_factory=LocationConfig)
     addons: AddonsConfig = field(default_factory=AddonsConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
     trigger_level_dbfs: float = -30.0
     # Squelch: an offset (<= 0) from trigger_level_dbfs, never an absolute
     # level (gotcha 6). Acts only during LINGER, cutting the noise burst after
@@ -407,6 +416,7 @@ class AppConfig:
             remote_receiver=_from_dict(RemoteReceiverConfig, raw.get("remote_receiver", {})),
             location=_from_dict(LocationConfig, raw.get("location", {})),
             addons=_from_dict(AddonsConfig, raw.get("addons", {})),
+            notify=_from_dict(NotifyConfig, raw.get("notify", {})),
             trigger_level_dbfs=raw.get("trigger_level_dbfs", -30.0),
             squelch_enabled=raw.get("squelch_enabled", False),
             squelch_offset_db=raw.get("squelch_offset_db", -6.0),

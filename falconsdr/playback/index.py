@@ -66,6 +66,7 @@ class Library:
         freq_names: Callable[[], dict[int, str]],
     ) -> None:
         self.config = config
+        self.on_transcript = None     # (freq_hz, text, relative path): the Notifier
         self._open_paths = open_paths
         self._freq_names = freq_names
         self._lock = threading.RLock()
@@ -612,7 +613,13 @@ class Library:
             self.transcripts.put(rec.key, rec.transcript)
             self._blobs.pop(rel, None)
             self._dirty = True
-            return True
+            done = (rec.freq_khz, rec.transcript.text, rec.transcript.status) if self.on_transcript else None
+        if done and done[2] in ("ok", "low_confidence") and done[1]:
+            try:
+                self.on_transcript(done[0] * 1000, done[1], rel)
+            except Exception:  # noqa: BLE001 - a listener must never break the worker protocol
+                pass
+        return True
 
     def release_job(self, rel: str) -> None:
         with self._lock:

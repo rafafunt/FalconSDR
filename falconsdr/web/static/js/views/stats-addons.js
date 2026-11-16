@@ -105,12 +105,14 @@ export function addonStats({ body, sub, utc }) {
       kpis.push(h('div.kpi', h('span', t('Stations')), h('b', num(a.distinct))), h('div.kpi', h('span', t('Positions')), h('b', num(a.pos))),
         h('div.kpi', h('span', t('Farthest')), h('b', a.farthest ? `${a.farthest.km} km` : '–'), a.farthest ? h('small', a.farthest.who) : h('small', t('set your location in Settings'))));
     } else {
-      const withT = a.sensors.filter((s) => s.tmax !== null);
-      const hot = withT.length ? withT.reduce((x, y) => (y.tmax > x.tmax ? y : x)) : null;
-      const cold = withT.length ? withT.reduce((x, y) => (y.tmin < x.tmin ? y : x)) : null;
+      const withT = a.sensors.filter((s) => s.unit === '°C' && s.vmax !== null);
+      const hot = withT.length ? withT.reduce((x, y) => (y.vmax > x.vmax ? y : x)) : null;
+      const cold = withT.length ? withT.reduce((x, y) => (y.vmin < x.vmin ? y : x)) : null;
+      const kinds = new Set(a.sensors.map((s) => s.category));
       kpis.push(h('div.kpi', h('span', t('Devices')), h('b', num(a.sensors.length))),
-        h('div.kpi', h('span', t('Warmest')), h('b', hot ? `${hot.tmax} °C` : '–'), hot ? h('small', hot.device) : null),
-        h('div.kpi', h('span', t('Coldest')), h('b', cold ? `${cold.tmin} °C` : '–'), cold ? h('small', cold.device) : null));
+        h('div.kpi', h('span', t('Kinds of device')), h('b', num(kinds.size))));
+      if (hot) kpis.push(h('div.kpi', h('span', t('Warmest')), h('b', `${hot.vmax} °C`), h('small', hot.device)),
+        h('div.kpi', h('span', t('Coldest')), h('b', `${cold.vmin} °C`), h('small', cold.device)));
     }
     out.push(h('div.kpis', ...kpis));
     if (slots.length > 1) out.push(bars(slots.map((s) => s.values[id] || 0), slots.map((s) => s.label), days && days <= 2 ? t('Per hour') : t('Per day'), COLORS[id]));
@@ -136,10 +138,12 @@ export function addonStats({ body, sub, utc }) {
         h('section.card', h('div.card-head', h('h2', t('Packet types'))),
           table([[t('Type')], [t('Packets'), 'num']], a.types.map(([ty, n]) => ({ cells: [h('td', ty), h('td.num', num(n))] }))))));
     } else {
+      const cat = { thermometer: t('Thermometer'), weather: t('Weather station'), tpms: t('Tyre pressure'), energy: t('Power and energy'), meter: t('Utility meter'),
+        security: t('Door, motion or alarm'), remote: t('Remote control'), tank: t('Tank level'), soil: t('Soil'), air: t('Air quality'), lightning: t('Lightning'), other: t('Device') };
       out.push(h('section.card', h('div.card-head', h('h2', t('Devices')), h('span.faint.small', t('Click a row to see its readings'))),
-        table([[t('Device')], [t('Readings'), 'num'], [t('Temperature min / avg / max')], [t('Humidity')], [t('Battery')], [t('Last heard')]],
-          a.sensors.map((s) => ({ name: s.device, cells: [h('td.mono', s.device), h('td.num', num(s.n)),
-            h('td.mono', s.tmin === null ? '–' : `${s.tmin} / ${s.tavg} / ${s.tmax} °C`), h('td.mono', s.hmin === null ? '–' : `${s.hmin}–${s.hmax} %`),
+        table([[t('Device')], [t('Kind')], [t('Readings'), 'num'], [t('Main reading: min / average / max')], [t('Battery')], [t('Last heard')]],
+          a.sensors.map((s) => ({ name: s.device, cells: [h('td.mono', s.device), h('td.small.muted', cat[s.category] || ''), h('td.num', num(s.n)),
+            h('td.mono', s.vmin === null ? '–' : `${s.label ? t(s.label) + ': ' : ''}${s.vmin} / ${s.vavg} / ${s.vmax}${s.unit ? ' ' + s.unit : ''}`),
             h('td', s.batt === null || s.batt === undefined ? '–' : h('span.chip', { class: s.batt ? 'good' : 'warn' }, s.batt ? t('battery OK') : t('battery low'))),
             h('td.small.muted', fmtAgo(iso(s.last)))] })), (r) => toMessages(r.name)())));
     }

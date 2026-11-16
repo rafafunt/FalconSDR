@@ -31,6 +31,7 @@ from .playback.index import Library
 from .playback.transcription_availability import is_transcription_installed
 from . import sdr_native
 from .addons.manager import AddonManager
+from .notifier import Notifier, clean_channel, clean_rule, mask
 from .scanner_engine import AUDIO_RATE, ScannerEngine, SharedFrequencies
 from .sdr_backend import HAVE_SOAPY, RTLTCP_DRIVER, device_family, device_method, enumerate_devices
 
@@ -128,6 +129,10 @@ class Controller:
         self.worker_commands: dict[str, list[str]] = {}
         self.library = Library(self.config, self.open_recording_paths, self.freq_names)
         self.addons = AddonManager(self.config, self.log, self._addon_ended)
+        self.notifier = Notifier(self.config, lambda: (float(self.config.location.home_lat or 0), float(self.config.location.home_lon or 0)))
+        self.addons.hub.on_event = self.notifier.on_message
+        self.addons.on_failed = lambda _id, why: self.notifier.on_system("addon_failed", why)
+        self.library.on_transcript = self.notifier.on_transcript
         self._held: set[int] = set()            # receivers an external add-on holds (antenna_range.device_ranges reads it)
         self.config._held_dongles = self._held
         self._addon_dongles: dict[str, int] = {}     # running external add-on -> the receiver it holds
@@ -245,6 +250,7 @@ class Controller:
         s.cycle_time_changed.connect(lambda v: self._set_live(k, cycle_time=round(float(v), 2)))
         s.gain_range_changed.connect(lambda lo, hi: self._set_live(k, gain_range=[float(lo), float(hi)]))
         s.recording_finished.connect(lambda path: self.library.add_file(Path(path)))
+        s.recording_finished.connect(self._notify_recording)
         s.spectrum_ready.connect(lambda *a: self._on_spectrum(k, *a))
         s.live_audio_ready.connect(lambda mono: self._on_live_audio(k, mono))
         s.blacklisted.connect(self._on_blacklisted)
@@ -480,9 +486,21 @@ class Controller:
 
     # -- engine signal handlers (engine threads) ------------------------------
     def _set_live(self, k: int, **values: Any) -> None:
+        lost = False
         with self._lock:
             if k < len(self._lives):
+                lost = values.get("state") == "RECONNECTING" and self._lives[k].get("state") != "RECONNECTING"
                 self._lives[k].update(values)
+        if lost:
+            self.notifier.on_system("receiver_lost", i18n.tr("Receiver {n} lost its connection - reconnecting.").format(n=k + 1))
+
+    def _notify_recording(self, path: str) -> None:
+        from .playback.organizer import parse_filename
+        parsed = parse_filename(Path(path).name)
+        if parsed is None or not parsed.freq_khz:
+            return
+        names = self.freq_names()
+        self.notifier.on_recording(parsed.freq_khz * 1000, names.get(parsed.freq_khz, ""), str(path))
 
     def _on_spectrum(self, k: int, freqs: Any, db: Any, trigger_dbfs: float, custom: bool) -> None:
         if k != self._audible:
@@ -579,6 +597,7 @@ class Controller:
                 "audio_rate": AUDIO_RATE,
                 "addon": self.addons.running_external,
                 "addons": [{"id": a, "receiver": d} for a, d in self._addon_dongles.items()],
+                "notify_seq": self.notifier.seq,
                 "addon_since": self.addons.started_at,
                 "schedule_now": self.schedule_now() if self.config.schedule.enabled else [],
             }
@@ -589,6 +608,28 @@ class Controller:
             return []
         bands, memory_on = schedule.union_selection(self._plans())
         return antenna_range.uncovered(self.config, self.channels, bands, memory_on)
+
+    # -- notifications (notifier.py) ---------------------------------------------------------------------------
+    def notify_state(self) -> dict:
+        n = self.config.notify
+        return {"enabled": n.enabled, "channels": mask(n.channels), "rules": n.rules, "recent": self.notifier.since(0)[-30:]}
+
+    def notify_save(self, body: dict) -> dict:
+        n = self.config.notify
+        old = {c["id"]: c for c in n.channels}
+        channels = [clean_channel(c, old.get(c.get("id"))) for c in body.get("channels", []) if isinstance(c, dict)][:20]
+        ids = {c["id"] for c in channels}
+        rules = [clean_rule(r, ids) for r in body.get("rules", []) if isinstance(r, dict)][:50]
+        n.enabled, n.channels, n.rules = bool(body.get("enabled", n.enabled)), channels, rules
+        self.config.save()
+        return self.notify_state()
+
+    def notify_test(self, channel_id: str, draft: Optional[dict] = None) -> str:
+        old = {c["id"]: c for c in self.config.notify.channels}
+        channel = clean_channel(draft, old.get(channel_id)) if draft else old.get(channel_id)
+        if channel is None:
+            raise ValueError("No such channel")
+        return self.notifier.test(channel)
 
     def settings(self) -> dict:
         return {
@@ -671,7 +712,7 @@ class Controller:
     def patch_config(self, patch: dict) -> None:
         old_language = self.config.language
         old_root = self.config.recording.output_dir
-        for locked in ("access_token", "workers"):
+        for locked in ("access_token", "workers", "notify"):     # these have their own endpoints
             patch.pop(locked, None)
         merge_patch(copy.deepcopy(self.config), patch)  # rejects a bad value before anything is applied
         merge_patch(self.config, patch)

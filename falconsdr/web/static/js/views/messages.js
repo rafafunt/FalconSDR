@@ -22,24 +22,26 @@ const pref = (k, d) => { try { const v = localStorage.getItem(k); return v === n
 const setPref = (k, v) => { try { localStorage.setItem(k, v ? '1' : '0'); } catch { /* private window */ } };
 
 // -- readings of a sensor, with units ------------------------------------------------------------------
-const UNITS = {
-  temperature_C: (v) => `${(+v).toFixed(1)} °C`, temperature_F: (v) => `${(+v).toFixed(1)} °F`, humidity: (v) => `${v} %`,
-  moisture: (v) => `${v} %`, pressure_hPa: (v) => `${v} hPa`, pressure_kPa: (v) => `${v} kPa`,
-  wind_avg_km_h: (v) => `${v} km/h`, wind_max_km_h: (v) => `${t('gusts')} ${v} km/h`, wind_dir_deg: (v) => `${v}°`,
-  rain_mm: (v) => `${v} mm`, light_lux: (v) => `${v} lx`, uv: (v) => `UV ${v}`, battery_V: (v) => `${v} V`,
-};
-const SKIP = new Set(['id', 'channel', 'battery_ok', 'mic', 'time', 'model', 'rssi', 'snr', 'noise', 'freq', 'freq1', 'freq2', 'subtype', 'protocol']);
+// The server names and classifies what a device measures (addons/sensors.py): e.readings = [{key, label, unit, value}],
+// e.status = [{key, value}] (door open, alarm...), e.category, e.primary. Older stored events only have e.fields.
+const LEGACY_UNITS = { temperature_C: ['Temperature', '°C'], temperature_F: ['Temperature', '°F'], humidity: ['Humidity', '%'], pressure_kPa: ['Pressure', 'kPa'],
+  pressure_hPa: ['Pressure', 'hPa'], wind_avg_km_h: ['Wind', 'km/h'], wind_dir_deg: ['Wind direction', '°'], rain_mm: ['Rain', 'mm'] };
+const CATEGORY = () => ({ thermometer: t('Thermometer'), weather: t('Weather station'), tpms: t('Tyre pressure'), energy: t('Power and energy'),
+  meter: t('Utility meter'), security: t('Door, motion or alarm'), remote: t('Remote control'), tank: t('Tank level'), soil: t('Soil'),
+  air: t('Air quality'), lightning: t('Lightning'), other: t('Device') });
+const readingText = (r) => `${r.value}${r.unit ? ' ' + r.unit : ''}`;
+const isPlain = (r) => ['Temperature', 'Humidity'].includes(r.label.split(' ')[0]);
 
-export function sensorReadings(fields) {
-  const out = [];
-  for (const [k, fmt] of Object.entries(UNITS)) if (fields[k] !== undefined) out.push([k, fmt(fields[k])]);
-  for (const [k, v] of Object.entries(fields)) {
-    if (!(k in UNITS) && !SKIP.has(k) && typeof v === 'number' && out.length < 5) out.push([k, `${k.replace(/_/g, ' ')} ${v}`]);
-  }
-  return out;
+export function readingsOf(e) {
+  if (Array.isArray(e.readings)) return e.readings;
+  return Object.entries(LEGACY_UNITS).filter(([k]) => (e.fields || {})[k] !== undefined)
+    .map(([k, [label, unit]]) => ({ key: k, label, unit, value: e.fields[k] }));
 }
-const batteryChip = (f) => (f.battery_ok === undefined ? null
-  : h('span.chip', { class: f.battery_ok ? 'good' : 'warn' }, f.battery_ok ? t('battery OK') : t('battery low')));
+const statusChip = (x) => h('span.chip', { class: ['alarm', 'tamper', 'leaking', 'water'].includes(x.key) && +x.value ? 'warn' : '' }, `${x.key} ${x.value}`);
+const batteryChip = (e) => {
+  const v = (e.fields || {}).battery_ok;
+  return v === undefined ? null : h('span.chip', { class: v ? 'good' : 'warn' }, v ? t('battery OK') : t('battery low'));
+};
 const deviceName = (e) => `${e.model}${e.device_id !== undefined && e.device_id !== null ? ` #${e.device_id}` : ''}${e.channel !== undefined && e.channel !== null ? ` · ${t('ch')} ${e.channel}` : ''}`;
 
 // -- one line --------------------------------------------------------------------------------------------
@@ -48,7 +50,8 @@ const mapLink = (e) => (e.lat !== undefined && e.lon !== undefined
 
 function body(e) {
   if (e.kind === 'sensor') {
-    return [h('b', deviceName(e)), ...sensorReadings(e.fields || {}).map(([, text]) => h('span', text)), batteryChip(e.fields || {})];
+    return [h('b', deviceName(e)), ...readingsOf(e).slice(0, 4).map((r) => h('span', isPlain(r) ? readingText(r) : `${t(r.label)} ${readingText(r)}`)),
+      ...(e.status || []).slice(0, 3).map(statusChip), batteryChip(e)];
   }
   if ((e.kind === 'acars' || e.kind === 'vdl2') && (e.registration || e.text)) {
     return [h('b', e.registration || ''), e.flight ? h('span.muted', e.flight) : null, e.label ? h('span.chip', e.label) : null,
@@ -203,16 +206,19 @@ export function messagesView(root) {
     }
     const order = { new: (a, b) => b.last.ts - a.last.ts, old: (a, b) => a.history[0].ts - b.history[0].ts, count: (a, b) => b.count - a.count };
     const cards = [...devices.values()].sort(order[sort]).map((d) => {
-      const f = d.last.fields || {};
-      const readings = sensorReadings(f);
-      const [main, ...rest] = readings;
-      const id = `s${d.last.model}${d.last.device_id}${d.last.channel}`;
+      const e = d.last;
+      const readings = readingsOf(e);
+      const main = readings.find((r) => r.key === e.primary) || readings[0];
+      const rest = readings.filter((r) => r !== main).slice(0, 4);
+      const id = `s${e.model}${e.device_id}${e.channel}`;
       return h('div.sensor', { tabindex: 0, role: 'button', onclick: () => { if (open.has(id)) open.delete(id); else open.add(id); draw(); } },
-        h('div.row', h('b', deviceName(d.last)), h('span.spacer'), batteryChip(f)),
-        h('div.big', main ? main[1] : '—'),
-        h('div.small.muted', rest.map((r) => r[1]).join(' · ')),
-        h('div.faint.small', t('last {time} · {n} readings', { time: fmtTime(new Date(d.last.ts * 1000).toISOString()), n: d.count })),
-        open.has(id) ? h('div.sensor-history', ...d.history.slice(-10).reverse().map((e) => h('div.small.mono', `${fmtTime(new Date(e.ts * 1000).toISOString())}  ${sensorReadings(e.fields || {}).map((r) => r[1]).join(' · ')}`))) : null);
+        h('div.row', h('b', deviceName(e)), h('span.spacer'), batteryChip(e)),
+        h('div.faint.small', CATEGORY()[e.category || 'other'] || ''),
+        main ? h('div.big', `${isPlain(main) ? '' : t(main.label) + ' '}${readingText(main)}`) : h('div.row.wrap', { style: { gap: '4px', minHeight: '34px' } }, ...(e.status || []).map(statusChip)),
+        h('div.small.muted', rest.map((r) => `${isPlain(r) ? '' : t(r.label) + ' '}${readingText(r)}`).join(' · ')),
+        main && (e.status || []).length ? h('div.row.wrap', { style: { gap: '4px' } }, ...e.status.map(statusChip)) : null,
+        h('div.faint.small', t('last {time} · {n} readings', { time: fmtTime(new Date(e.ts * 1000).toISOString()), n: d.count })),
+        open.has(id) ? h('div.sensor-history', ...d.history.slice(-10).reverse().map((x) => h('div.small.mono', `${fmtTime(new Date(x.ts * 1000).toISOString())}  ${readingsOf(x).map(readingText).join(' · ')} ${(x.status || []).map((y) => `${y.key} ${y.value}`).join(' ')}`))) : null);
     });
     return h('div.sensor-grid', ...cards);
   }

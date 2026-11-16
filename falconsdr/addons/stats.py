@@ -52,6 +52,13 @@ class StatsStore:
                     path.unlink()
                     continue
                 for hour, buckets in json.loads(path.read_text(encoding="utf-8")).items():
+                    for bucket in buckets.values():
+                        for sensor in bucket.get("sensors", {}).values():
+                            if "vn" not in sensor:      # written before sensors were classified: it only knew temperature
+                                sensor["vn"], sensor["vsum"] = sensor.get("tn", 0), sensor.get("tsum", 0.0)
+                                if "tmin" in sensor:
+                                    sensor["vmin"], sensor["vmax"], sensor["pl"], sensor["pu"] = sensor["tmin"], sensor["tmax"], "Temperature", "°C"
+                                sensor.setdefault("cat", "thermometer")
                     self._hours[int(hour)] = buckets
             except (ValueError, OSError):
                 continue
@@ -141,19 +148,20 @@ class StatsStore:
                     if km > b.get("dist", 0.0):
                         b["dist"], b["dist_who"] = round(km, 1), str(event.get("source", ""))
         if event.get("kind") == "sensor":
-            f = event.get("fields") or {}
-            s = b["sensors"].setdefault(who, {"n": 0, "tn": 0, "tsum": 0.0, "last": 0.0})
+            s = b["sensors"].setdefault(who, {"n": 0, "last": 0.0, "vn": 0, "vsum": 0.0})
             s["n"] += 1
             s["last"] = max(s["last"], ts)
-            for key, lo, hi in (("temperature_C", "tmin", "tmax"), ("humidity", "hmin", "hmax")):
-                v = f.get(key)
-                if isinstance(v, (int, float)):
-                    s[lo], s[hi] = min(s.get(lo, v), v), max(s.get(hi, v), v)
-                    if key == "temperature_C":
-                        s["tn"] += 1
-                        s["tsum"] += v
-            if "battery_ok" in f:
-                s["batt"] = 1 if f["battery_ok"] else 0
+            s["cat"] = event.get("category", "other")
+            main = next((r for r in event.get("readings", []) if r["key"] == event.get("primary")), None)
+            if main is not None:
+                s["pl"], s["pu"] = main["label"], main["unit"]
+                v = main["value"]
+                s["vmin"], s["vmax"] = min(s.get("vmin", v), v), max(s.get("vmax", v), v)
+                s["vn"] += 1
+                s["vsum"] += v
+            batt = (event.get("fields") or {}).get("battery_ok")
+            if batt is not None:
+                s["batt"] = 1 if batt else 0
 
     # -- reading --------------------------------------------------------------------------------------------
     def snapshot(self, days: int, now: float | None = None) -> dict:
@@ -186,11 +194,15 @@ class StatsStore:
                 if b.get("dist") and (a["farthest"] is None or b["dist"] > a["farthest"]["km"]):
                     a["farthest"] = {"km": b["dist"], "who": b.get("dist_who", "")}
                 for name, s in b["sensors"].items():
-                    t = a["sensors"].setdefault(name, {"n": 0, "tn": 0, "tsum": 0.0, "last": 0.0})
-                    t["n"] += s["n"]; t["tn"] += s["tn"]; t["tsum"] += s["tsum"]; t["last"] = max(t["last"], s["last"])
-                    for lo, hi in (("tmin", "tmax"), ("hmin", "hmax")):
-                        if lo in s:
-                            t[lo], t[hi] = min(t.get(lo, s[lo]), s[lo]), max(t.get(hi, s[hi]), s[hi])
+                    t = a["sensors"].setdefault(name, {"n": 0, "vn": 0, "vsum": 0.0, "last": 0.0})
+                    t["n"] += s["n"]; t["vn"] += s["vn"]; t["vsum"] += s["vsum"]; t["last"] = max(t["last"], s["last"])
+                    if s["last"] >= t.get("seen_at", 0):
+                        t["seen_at"] = s["last"]
+                        for k in ("cat", "pl", "pu"):
+                            if k in s:
+                                t[k] = s[k]
+                    if "vmin" in s:
+                        t["vmin"], t["vmax"] = min(t.get("vmin", s["vmin"]), s["vmin"]), max(t.get("vmax", s["vmax"]), s["vmax"])
                     if "batt" in s and s["last"] >= t.get("batt_at", 0):
                         t["batt"], t["batt_at"] = s["batt"], s["last"]
         for a in out.values():
@@ -201,7 +213,7 @@ class StatsStore:
             del a["lvl"]
             a["labels"] = sorted(a["labels"].items(), key=lambda kv: -kv[1])[:20]
             a["types"] = sorted(a["types"].items(), key=lambda kv: -kv[1])
-            a["sensors"] = [{"device": name, "n": s["n"], "last": s["last"], "tmin": s.get("tmin"), "tmax": s.get("tmax"),
-                             "tavg": round(s["tsum"] / s["tn"], 1) if s["tn"] else None, "hmin": s.get("hmin"), "hmax": s.get("hmax"),
+            a["sensors"] = [{"device": name, "n": s["n"], "last": s["last"], "category": s.get("cat", "other"), "label": s.get("pl", ""), "unit": s.get("pu", ""),
+                             "vmin": s.get("vmin"), "vmax": s.get("vmax"), "vavg": round(s["vsum"] / s["vn"], 2) if s["vn"] else None,
                              "batt": s.get("batt")} for name, s in sorted(a["sensors"].items(), key=lambda kv: -kv[1]["n"])]
         return {"days": days, "days_available": available, "addons": out}

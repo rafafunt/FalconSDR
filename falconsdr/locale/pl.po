@@ -3498,3 +3498,141 @@ msgstr "Odbiornik {n} jest już używany przez {name} - najpierw go zatrzymaj."
 
 msgid "{name} are using receivers"
 msgstr "{name} używają odbiorników"
+
+msgid "315 MHz - US sensors and tyre pressure"
+msgstr "315 MHz - amerykańskie czujniki i ciśnienie w oponach"
+
+msgid "345 MHz - security sensors"
+msgstr "345 MHz - czujniki alarmowe"
+
+msgid "915 MHz - US meters and sensors"
+msgstr "915 MHz - amerykańskie liczniki i czujniki"
+
+msgid "868.95 MHz - wireless M-Bus meters (water, heat)"
+msgstr "868,95 MHz - liczniki wireless M-Bus (woda, ciepło)"
+
+msgid "Capture width"
+msgstr "Szerokość przechwytu"
+
+msgid "Wider is needed by some meters and tyre sensors; automatic is right for most."
+msgstr "Szerszy przechwyt potrzebny jest niektórym licznikom i czujnikom opon; automatyczny pasuje do większości."
+
+msgid "Show remote controls and key fobs"
+msgstr "Pokazuj piloty i breloki"
+
+msgid "Off by default: they belong to somebody's car, garage or door. Their codes are never stored, even when this is on."
+msgstr "Domyślnie wyłączone: należą do czyjegoś samochodu, garażu lub drzwi. Ich kody nigdy nie są zapisywane, nawet gdy to włączysz."
+
+msgid "Extra decoders ({n} switched on)"
+msgstr "Dodatkowe dekodery (włączone: {n})"
+
+msgid "These decoders are off by default because they report false alarms more often."
+msgstr "Te dekodery są domyślnie wyłączone, bo częściej zgłaszają fałszywe alarmy."
+
+msgid "The program did not list its decoders."
+msgstr "Program nie podał listy dekoderów."
+
+msgid "Thermometer"
+msgstr "Termometr"
+
+msgid "Weather station"
+msgstr "Stacja pogodowa"
+
+msgid "Tyre pressure"
+msgstr "Ciśnienie w oponach"
+
+msgid "Power and energy"
+msgstr "Moc i energia"
+
+msgid "Utility meter"
+msgstr "Licznik (woda, gaz, prąd)"
+
+msgid "Door, motion or alarm"
+msgstr "Drzwi, ruch lub alarm"
+
+msgid "Remote control"
+msgstr "Pilot"
+
+msgid "Tank level"
+msgstr "Poziom w zbiorniku"
+
+msgid "Soil"
+msgstr "Gleba"
+
+msgid "Air quality"
+msgstr "Jakość powietrza"
+
+msgid "Lightning"
+msgstr "Błyskawice"
+
+msgid "Temperature"
+msgstr "Temperatura"
+
+msgid "Soil moisture"
+msgstr "Wilgotność gleby"
+
+msgid "Pressure"
+msgstr "Ciśnienie"
+
+msgid "Wind"
+msgstr "Wiatr"
+
+msgid "Gusts"
+msgstr "Porywy"
+
+msgid "Wind direction"
+msgstr "Kierunek wiatru"
+
+msgid "Rain"
+msgstr "Deszcz"
+
+msgid "Rain rate"
+msgstr "Natężenie deszczu"
+
+msgid "UV index"
+msgstr "Indeks UV"
+
+msgid "Lightning strikes"
+msgstr "Wyładowania"
+
+msgid "Strike distance"
+msgstr "Odległość wyładowania"
+
+msgid "PM2.5"
+msgstr "PM2,5"
+
+msgid "PM10"
+msgstr "PM10"
+
+msgid "CO₂"
+msgstr "CO₂"
+
+msgid "Power"
+msgstr "Moc"
+
+msgid "Energy"
+msgstr "Energia"
+
+msgid "Voltage"
+msgstr "Napięcie"
+
+msgid "Current"
+msgstr "Prąd"
+
+msgid "Meter reading"
+msgstr "Odczyt licznika"
+
+msgid "Set point"
+msgstr "Temperatura zadana"
+
+msgid "Battery OK"
+msgstr "Bateria OK"
+
+msgid "Kinds of device"
+msgstr "Rodzaje urządzeń"
+
+msgid "Kind"
+msgstr "Rodzaj"
+
+msgid "Main reading: min / average / max"
+msgstr "Główny odczyt: min / średnia / max"

@@ -30,6 +30,8 @@ from urllib.request import Request, urlopen
 
 from .. import autostart, digital_voice, i18n, military_presets
 from ..addons import install as installer
+from ..addons.external import list_rtl433_protocols
+from ..addons.sensors import metrics as sensor_metrics
 from ..config import AppConfig
 from ..controller import Controller, channel_dict, channel_from_dict
 from ..military_presets import BandPreset
@@ -287,6 +289,7 @@ def make_handler(app: App):
             }
             data["mode"] = app.mode
             data["config"].pop("access_token", None)
+            data["config"].pop("notify", None)       # secrets: /api/notify serves it masked
             data["password_set"] = bool(app.token)
             self._json(data)
 
@@ -362,6 +365,13 @@ def make_handler(app: App):
             """Add-ons (falconsdr/addons): the catalog and its settings, running an external program that takes
             the receiver, and the decoded messages."""
             action = self.path.split("?")[0].rsplit("/", 1)[-1]
+            if action == "protocols":
+                program = ctl.addons.program("rtl_433")
+                self._json({"protocols": list_rtl433_protocols(program) if program else []})
+                return
+            if action == "metrics":
+                self._json({"metrics": sensor_metrics()})
+                return
             if action == "stats":
                 self._json(ctl.addons.stats.snapshot(int((query.get("days") or ["7"])[0])))
                 return
@@ -386,6 +396,22 @@ def make_handler(app: App):
                 elif action == "clear":
                     ctl.addons.hub.clear()
             self._json({"addons": ctl.addons.status(), "running": ctl.addons.running_external})
+
+        def notify(self, query: dict) -> None:
+            """Notification rules and channels (notifier.py): their own endpoints, because channels hold secrets."""
+            action = self.path.split("?")[0].rsplit("/", 1)[-1]
+            if action == "recent":
+                self._json({"items": ctl.notifier.since(int((query.get("since") or ["0"])[0]))})
+                return
+            if self.command == "POST":
+                body = self._body()
+                if action == "save":
+                    self._json(ctl.notify_save(body))
+                    return
+                if action == "test":
+                    self._json({"error": ctl.notify_test(str(body.get("id", "")), body.get("channel"))})
+                    return
+            self._json(ctl.notify_state())
 
         def reset(self, _query: dict) -> None:
             ctl.reset_to_defaults()
@@ -678,9 +704,15 @@ def make_handler(app: App):
         ("POST", "/api/access"): Handler.access,
         ("POST", "/api/quit"): Handler.quit,
         ("POST", "/api/autostart"): Handler.autostart,
+        ("GET", "/api/notify"): Handler.notify,
+        ("GET", "/api/notify/recent"): Handler.notify,
+        ("POST", "/api/notify/save"): Handler.notify,
+        ("POST", "/api/notify/test"): Handler.notify,
         ("GET", "/api/addons"): Handler.addons,
         ("GET", "/api/addons/events"): Handler.addons,
         ("GET", "/api/addons/stats"): Handler.addons,
+        ("GET", "/api/addons/protocols"): Handler.addons,
+        ("GET", "/api/addons/metrics"): Handler.addons,
         ("POST", "/api/addons/configure"): Handler.addons,
         ("POST", "/api/addons/run"): Handler.addons,
         ("POST", "/api/addons/stop"): Handler.addons,

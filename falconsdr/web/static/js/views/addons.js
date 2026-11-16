@@ -80,12 +80,34 @@ export function decodersCard(box) {
 
   // -- settings of an external program: friendly controls that the server turns into the program's flags ------
   const BANDS = () => [
-    ['433', t('433.92 MHz - most sensors')], ['868', t('868.3 MHz - European 868 MHz sensors')], ['315', t('315 MHz')],
-    ['915', t('915 MHz')], ['433+868', t('433.92 and 868.3 MHz (switches between them)')], ['custom', t('Own frequencies…')],
+    ['433', t('433.92 MHz - most sensors')], ['868', t('868.3 MHz - European 868 MHz sensors')], ['315', t('315 MHz - US sensors and tyre pressure')],
+    ['345', t('345 MHz - security sensors')], ['915', t('915 MHz - US meters and sensors')], ['wmbus', t('868.95 MHz - wireless M-Bus meters (water, heat)')],
+    ['433+868', t('433.92 and 868.3 MHz (switches between them)')], ['custom', t('Own frequencies…')],
   ];
   const setOption = (a, key, value) => act('/api/addons/configure', { id: a.id, options: { [key]: value } });
   const numberOption = (a, key, attrs) => h('input', { type: 'number', value: a.options[key], style: { width: '110px' }, ...attrs,
     onchange: (e) => setOption(a, key, e.target.value) });
+
+  // The decoders rtl_433 keeps off by default (too many false alarms): listed by the program itself, tick the ones you have.
+  function decoderPicker(a) {
+    const box = h('div.col', { style: { gap: '4px', maxHeight: '260px', overflow: 'auto' } });
+    let loaded = false;
+    const details = h('details.addon-advanced', h('summary', t('Extra decoders ({n} switched on)', { n: a.options.extra_decoders.length })), box);
+    details.addEventListener('toggle', async () => {
+      if (!details.open || loaded) return;
+      loaded = true;
+      box.replaceChildren(h('span.faint.small', t('Loading…')));
+      let list = [];
+      try { list = (await api.get('/api/addons/protocols')).protocols.filter((p) => !p.default); } catch { /* shown as empty below */ }
+      const chosen = new Set(a.options.extra_decoders);
+      box.replaceChildren(list.length ? h('p.faint.small', { style: { margin: 0 } }, t('These decoders are off by default because they report false alarms more often.')) : h('span.faint.small', t('The program did not list its decoders.')),
+        ...list.map((p) => h('label.switch', h('input', { type: 'checkbox', checked: chosen.has(p.id), onchange: (e) => {
+          if (e.target.checked) chosen.add(p.id); else chosen.delete(p.id);
+          setOption(a, 'extra_decoders', [...chosen]);
+        } }), h('span.label', p.name))));
+    });
+    return details;
+  }
 
   function optionRows(a) {
     const o = a.options;
@@ -103,9 +125,16 @@ export function decodersCard(box) {
         rowsOut.push(setting(t('Switch every (seconds)'), t('With several frequencies the receiver listens to each in turn.'), numberOption(a, 'hop_s', { min: 1, max: 3600 })));
       }
     }
+    if (a.id === 'rtl_433') {
+      rowsOut.push(setting(t('Capture width'), t('Wider is needed by some meters and tyre sensors; automatic is right for most.'),
+        select([['', t('Automatic')], ['1000k', '1000 kHz'], ['1200k', '1200 kHz'], ['2048k', '2048 kHz']], o.sample_rate, (v) => setOption(a, 'sample_rate', v), { style: { width: 'auto' } })));
+    }
     rowsOut.push(setting(t('Gain (dB)'), t('Leave empty for automatic gain.'), numberOption(a, 'gain', { min: 0, max: 80, step: 'any', placeholder: t('auto') })));
     rowsOut.push(setting(t('Frequency correction (ppm)'), t('For a receiver whose frequency is off. 0 for most.'), numberOption(a, 'ppm', { min: -500, max: 500 })));
     if (a.id === 'rtl_433') {
+      rowsOut.push(setting(t('Show remote controls and key fobs'), t('Off by default: they belong to somebody\'s car, garage or door. Their codes are never stored, even when this is on.'),
+        toggle('', !!o.remotes, (v) => setOption(a, 'remotes', v))));
+      rowsOut.push(decoderPicker(a));
       rowsOut.push(setting(t('Units'), '', select([['native', t('As the sensor reports')], ['si', t('Metric (°C, km/h)')], ['customary', t('Imperial (°F, mph)')]],
         o.units, (v) => setOption(a, 'units', v), { style: { width: 'auto' } })));
     }

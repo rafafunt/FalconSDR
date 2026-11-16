@@ -283,7 +283,7 @@ class ExternalTest(unittest.TestCase):
         from falconsdr.addons.external import parse_rtl_433, parse_vdl2
         event, summary = parse_rtl_433('{"time":"2026-11-16 10:00:00","model":"Acurite-Tower","id":7,"channel":"A","temperature_C":21.5,"humidity":55,"battery_ok":1}')
         self.assertEqual((event["kind"], event["device_id"]), ("sensor", 7))
-        self.assertIn("temperature_C 21.5", summary)
+        self.assertIn("21.5 °C", summary)
         self.assertIsNone(parse_rtl_433("not json"))
         line = ('{"vdl2":{"freq":136975000,"sig_level":-30.1,"avlc":{"src":{"addr":"48AF12","type":"Aircraft"},"dst":{"addr":"2B1234","type":"Ground station"},'
                 '"frame_type":"I","acars":{"reg":".SP-LWA","label":"H1","flight":"LO123","msg_text":"POS N5000.1E02100.2"}}}}')
@@ -701,11 +701,17 @@ class StatsTest(unittest.TestCase):
         self.assertEqual((a["n"], a["pos"]), (2, 2))                       # the 40-day-old packet is outside 1 day
         self.assertEqual(a["farthest"]["who"], "SP9FAR")
         self.assertAlmostEqual(a["farthest"]["km"], 111.2, delta=0.5)
+        from falconsdr.addons.external import parse_rtl_433
+        import json
         for temp, batt in ((20.0, 1), (24.0, 0)):
-            st.record({"addon": "rtl_433", "kind": "sensor", "model": "Nexus-T", "device_id": 7,
-                       "fields": {"temperature_C": temp, "humidity": 50 + temp, "battery_ok": batt}, "ts": now})
-        s = st.snapshot(1, now=now)["addons"]["rtl_433"]["sensors"][0]
-        self.assertEqual((s["device"], s["n"], s["tmin"], s["tmax"], s["tavg"], s["batt"]), ("Nexus-T #7", 2, 20.0, 24.0, 22.0, 0))
+            ev, _ = parse_rtl_433(json.dumps({"model": "Nexus-T", "id": 7, "temperature_C": temp, "humidity": 50, "battery_ok": batt}))
+            st.record({"addon": "rtl_433", "kind": "sensor", **ev, "ts": now})
+        ev, _ = parse_rtl_433(json.dumps({"model": "Honeywell-Security", "id": 9, "state": "open", "tamper": 0, "battery_ok": 1}))
+        st.record({"addon": "rtl_433", "kind": "sensor", **ev, "ts": now})
+        sensors = {x["device"]: x for x in st.snapshot(1, now=now)["addons"]["rtl_433"]["sensors"]}
+        s = sensors["Nexus-T #7"]
+        self.assertEqual((s["n"], s["vmin"], s["vmax"], s["vavg"], s["batt"], s["category"], s["unit"]), (2, 20.0, 24.0, 22.0, 0, "thermometer", "°C"))
+        self.assertEqual((sensors["Honeywell-Security #9"]["category"], sensors["Honeywell-Security #9"]["vmin"]), ("security", None))   # no number to chart
 
     def test_it_survives_a_restart_and_a_hub_keeps_link_frames_off_the_disk(self) -> None:
         from falconsdr.addons.events import EventHub
@@ -734,6 +740,17 @@ class StatsTest(unittest.TestCase):
         self.assertEqual(st.backfill(folder), 2)
         self.assertEqual(st.snapshot(0)["addons"]["aprs"]["n"], 2)
         self.assertFalse(StatsStore(folder / "stats").empty)             # and it is kept on disk
+
+    def test_statistics_written_before_sensors_were_classified_still_load(self) -> None:
+        import json
+        from pathlib import Path
+        from falconsdr.addons.stats import StatsStore
+        folder = Path(tempfile.mkdtemp(dir=_HOME))
+        old = {"1800000000": {"rtl_433": {"n": 2, "link": 0, "last": 1800000001.0, "freq": {}, "lvl": {}, "who": {}, "labels": {}, "types": {}, "pos": 0,
+               "sensors": {"Nexus-T #7": {"n": 2, "tn": 2, "tsum": 40.0, "last": 1800000001.0, "tmin": 19.0, "tmax": 21.0, "batt": 1}}}}}
+        (folder / "stats-2027-01-15.json").write_text(json.dumps(old), encoding="utf-8")
+        s = StatsStore(folder).snapshot(0)["addons"]["rtl_433"]["sensors"][0]
+        self.assertEqual((s["device"], s["vmin"], s["vmax"], s["vavg"], s["unit"]), ("Nexus-T #7", 19.0, 21.0, 20.0, "°C"))
 
     def test_a_flood_of_link_frames_does_not_push_messages_out_of_the_list(self) -> None:
         from falconsdr.addons.events import EventHub
@@ -885,6 +902,248 @@ class ScheduleTest(unittest.TestCase):
         finally:
             ctl.addons.stop_external()
             ctl.shutdown()
+
+
+class NotifyTest(unittest.TestCase):
+    def _rule(self, **kw):
+        from falconsdr.notifier import clean_rule
+        base = {"name": "r", "source": "message", "channels": ["c1"], "cooldown_s": 0}
+        return clean_rule({**base, **kw}, {"c1"})
+
+    def test_matching(self) -> None:
+        from falconsdr.notifier import matches
+        sensor = {"addon": "rtl_433", "kind": "sensor", "model": "Nexus-T", "device_id": 7, "fields": {"temperature_C": -2.5, "battery_ok": 0}, "summary": "Nexus-T #7"}
+        self.assertTrue(matches(self._rule(metric="temperature_C", op="<", value=0), "message", sensor))
+        self.assertFalse(matches(self._rule(metric="temperature_C", op=">", value=0), "message", sensor))
+        self.assertTrue(matches(self._rule(metric="battery_ok", op="<", value=1), "message", sensor))
+        self.assertFalse(matches(self._rule(metric="humidity", op="<", value=99), "message", sensor))      # no such reading
+        acars = {"addon": "acars", "kind": "acars", "registration": "SP-LWA", "flight": "LO123", "label": "H1", "text": "FUEL LOW", "freq_hz": 131_725_000,
+                 "summary": "SP-LWA LO123 [H1] FUEL LOW"}
+        self.assertTrue(matches(self._rule(addons=["acars"], text_any="mayday, fuel low"), "message", acars))
+        self.assertFalse(matches(self._rule(addons=["vdl2"]), "message", acars))
+        self.assertTrue(matches(self._rule(who="sp-lwa", label="H1", freq_mhz=131.725), "message", acars))
+        self.assertFalse(matches(self._rule(freq_mhz=131.825), "message", acars))
+        self.assertFalse(matches(self._rule(source="recording"), "message", acars))                        # another source
+        aprs = {"addon": "aprs", "kind": "aprs", "source": "SP9ABC", "lat": 50.0, "lon": 21.5, "summary": "x"}
+        self.assertTrue(matches(self._rule(within_km=100), "message", aprs, home=(50.0, 21.0)))           # about 36 km
+        self.assertFalse(matches(self._rule(within_km=10), "message", aprs, home=(50.0, 21.0)))
+        self.assertFalse(matches(self._rule(within_km=100), "message", aprs, home=(0.0, 0.0)))            # no home set: cannot know
+        self.assertTrue(matches(self._rule(source="system", event="addon_failed"), "system", {"event": "addon_failed"}))
+        self.assertTrue(matches(self._rule(source="transcript", text_any="mayday"), "transcript", {"text": "Mayday mayday", "freq_hz": 121_500_000}))
+
+    def _notifier(self, cooldown=0):
+        from falconsdr.config import AppConfig
+        from falconsdr.notifier import Notifier, clean_channel
+        cfg = AppConfig()
+        cfg.notify.enabled = True
+        cfg.notify.channels = [clean_channel({"id": "c1", "type": "webhook", "name": "hook", "settings": {"url": "http://127.0.0.1:9/x"}})]
+        cfg.notify.rules = [self._rule(id="r1", name="Frost", metric="temperature_C", op="<", value=0, cooldown_s=cooldown)]
+        sent = []
+        import threading
+        done = threading.Event()
+        def sender(channel, title, message, payload):
+            sent.append((channel["name"], title, message))
+            done.set()
+        return cfg, Notifier(cfg, sender=sender), sent, done
+
+    def test_a_match_is_sent_once_per_cooldown_and_per_device(self) -> None:
+        import time
+        cfg, n, sent, done = self._notifier(cooldown=3600)
+        ev = {"addon": "rtl_433", "kind": "sensor", "model": "Nexus-T", "device_id": 7, "fields": {"temperature_C": -3}, "summary": "Nexus-T #7: -3 °C"}
+        n.on_message(ev)
+        n.on_message(ev)                                                    # same device inside the cooldown: dropped
+        n.on_message({**ev, "device_id": 8, "summary": "Nexus-T #8: -3 °C"})   # another device: its own
+        self.assertTrue(done.wait(5))
+        time.sleep(0.2)
+        self.assertEqual(len(n.since(0)), 2)
+        self.assertEqual([m for _, _, m in sent][0], "Nexus-T #7: -3 °C")
+        self.assertEqual(n.since(0)[0]["results"], {"hook": "ok"})
+
+    def test_nothing_is_sent_when_off_or_when_nothing_matches(self) -> None:
+        cfg, n, sent, done = self._notifier()
+        ev = {"addon": "rtl_433", "kind": "sensor", "model": "N", "device_id": 1, "fields": {"temperature_C": 5}, "summary": "warm"}
+        n.on_message(ev)
+        cfg.notify.enabled = False
+        n.on_message({**ev, "fields": {"temperature_C": -9}})
+        self.assertEqual(n.since(0), [])
+
+    def test_a_rule_cannot_flood(self) -> None:
+        cfg, n, sent, done = self._notifier()
+        for i in range(60):
+            n.on_message({"addon": "rtl_433", "kind": "sensor", "model": "N", "device_id": i, "fields": {"temperature_C": -1}, "summary": f"d{i}"})
+        self.assertLessEqual(len(n.since(0)), 20)                          # at most 20 a minute per rule
+
+    def test_channels_are_checked_and_secrets_stay_masked(self) -> None:
+        from falconsdr.notifier import MASK, clean_channel, mask
+        for bad in ({"type": "ntfy", "settings": {"topic": "bad topic!"}}, {"type": "webhook", "settings": {"url": "ftp://x"}},
+                    {"type": "telegram", "settings": {"token": "", "chat_id": "1"}}, {"type": "mqtt", "settings": {"host": ""}}, {"type": "carrier-pigeon", "settings": {}}):
+            with self.assertRaises(ValueError, msg=bad):
+                clean_channel(bad)
+        saved = clean_channel({"type": "telegram", "settings": {"token": "123:ABC", "chat_id": "42"}})
+        shown = mask([saved])[0]
+        self.assertEqual(shown["settings"]["token"], MASK)
+        again = clean_channel({**shown}, saved)                            # the browser sends the mask back unchanged
+        self.assertEqual(again["settings"]["token"], "123:ABC")
+        self.assertEqual(clean_channel({**shown, "settings": {**shown["settings"], "token": "999:NEW"}}, saved)["settings"]["token"], "999:NEW")
+
+    def test_the_http_channels_post_what_the_service_expects(self) -> None:
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from falconsdr.notifier import clean_channel, send
+        got = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                got.append((self.path, dict(self.headers), json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+                self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+            def log_message(self, *a): pass
+        srv = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        try:
+            send(clean_channel({"type": "ntfy", "settings": {"server": base, "topic": "falcon", "token": "tk"}}), "T", "Zażółć gęślą", {})
+            send(clean_channel({"type": "telegram", "settings": {"token": "1:AB", "chat_id": "42", "api_base": base}}), "T", "M", {})
+            send(clean_channel({"type": "webhook", "settings": {"url": base + "/hook", "header_name": "X-Key", "header_value": "s3"}}), "T", "M", {"rule": "r"})
+        finally:
+            srv.shutdown()
+        (p1, h1, b1), (p2, h2, b2), (p3, h3, b3) = got
+        self.assertEqual((p1, b1["topic"], b1["message"], h1["Authorization"]), ("/", "falcon", "Zażółć gęślą", "Bearer tk"))
+        self.assertEqual((p2, b2["chat_id"], b2["text"]), ("/bot1:AB/sendMessage", "42", "T\nM"))
+        self.assertEqual((p3, b3["rule"], h3["X-Key"]), ("/hook", "r", "s3"))
+
+    def test_mqtt_publish_speaks_enough_of_the_protocol(self) -> None:
+        import socket
+        import threading
+        from falconsdr.notifier import mqtt_publish
+        got = {}
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0)); srv.listen(1)
+
+        def broker():
+            conn, _ = srv.accept()
+            data = conn.recv(256)                                           # CONNECT
+            got["connect"] = data
+            conn.sendall(bytes([0x20, 0x02, 0x00, 0x00]))                    # CONNACK accepted
+            got["publish"] = conn.recv(512)
+            conn.close()
+        t = threading.Thread(target=broker, daemon=True)
+        t.start()
+        mqtt_publish("127.0.0.1", srv.getsockname()[1], False, "user", "pw", "falconsdr/notify", b'{"a":1}')
+        t.join(5)
+        srv.close()
+        self.assertEqual(got["connect"][0], 0x10)
+        self.assertIn(b"MQTT", got["connect"])
+        self.assertIn(b"user", got["connect"])
+        pub = got["publish"]
+        self.assertEqual(pub[0], 0x30)
+        self.assertIn(b"falconsdr/notify", pub)
+        self.assertTrue(pub.rstrip(b"\xe0\x00").endswith(b'{"a":1}'))
+
+    def test_the_controller_fires_rules_from_decoded_messages_and_new_transcripts(self) -> None:
+        import time
+        from pathlib import Path
+        from falconsdr.config import AppConfig
+        from falconsdr.controller import Controller
+        cfg = AppConfig()
+        cfg.notify.enabled = True
+        cfg.notify.rules = [self._rule(id="m", name="Fuel", text_any="fuel", channels=[]), self._rule(id="t", name="Mayday", source="transcript", text_any="mayday", channels=[])]
+        ctl = Controller(cfg)
+        ctl.addons.hub.publish("acars", {"kind": "acars", "registration": "SP-LWA", "text": "FUEL LOW", "freq_hz": 131_725_000}, "SP-LWA FUEL LOW")
+        ctl.addons.hub.publish("vdl2", {"kind": "vdl2", "layer": "link", "text": "fuel"}, "link frame")         # link frames never notify
+        self.assertEqual([n["rule"] for n in ctl.notifier.since(0)], ["Fuel"])
+        root = Path(_HOME) / "rec-notify"
+        root.mkdir(exist_ok=True)
+        (root / "2026-01-01_10-00-00_121500.wav").write_bytes(b"\0" * 100)
+        cfg.recording.output_dir = str(root)
+        ctl.library.rescan()
+        rel, rec = next(iter(ctl.library._recs.items()))
+        ctl.library.submit_result(rel, rec.key, {"text": "Mayday mayday", "language": "en", "language_probability": 1.0, "status": "ok", "engine": "x", "transcribed_at": ""})
+        self.assertIn("Mayday", [n["rule"] for n in ctl.notifier.since(0)])
+        ctl.notify_save({"enabled": True, "channels": [{"type": "telegram", "name": "tg", "settings": {"token": "1:AB", "chat_id": "9"}}], "rules": []})
+        self.assertEqual(ctl.notify_state()["channels"][0]["settings"]["token"], "••••••••")
+        ctl.shutdown()
+
+
+
+class SensorCatalogTest(unittest.TestCase):
+    def _parse(self, d, allow=False):
+        import json
+        from falconsdr.addons.external import parse_rtl_433
+        return parse_rtl_433(json.dumps(d), allow)
+
+    def test_the_kind_of_device_and_its_readings_are_recognised(self) -> None:
+        cases = {
+            "thermometer": {"model": "Nexus-T", "id": 1, "temperature_C": 7.0, "humidity": 60, "battery_ok": 0},
+            "weather": {"model": "Fineoffset-WH1080", "id": 2, "temperature_C": 8, "wind_avg_m_s": 1.2, "wind_dir_deg": 90, "rain_mm": 3.4},
+            "tpms": {"model": "Toyota", "type": "TPMS", "id": "ab", "pressure_kPa": 220.5, "temperature_C": 21, "status": 128},
+            "energy": {"model": "CurrentCost-TX", "id": 4, "power0_W": 420},
+            "tank": {"model": "Oil-SonicStd", "id": 8, "depth_cm": 42},
+            "lightning": {"model": "Fineoffset-WH57", "id": 1, "strike_count": 4, "strike_distance": 12},
+            "security": {"model": "Honeywell-Security", "id": 5, "state": "open", "tamper": 0, "alarm": 1},
+            "meter": {"model": "Neptune-R900", "id": 9, "consumption": 4567},
+            "air": {"model": "Fineoffset-WH45", "id": 3, "pm2_5_ug_m3": 11, "co2_ppm": 600},
+        }
+        for category, raw in cases.items():
+            event, summary = self._parse(raw)
+            self.assertEqual(event["category"], category, raw)
+            self.assertTrue(event["readings"] or event["status"], raw)
+        event, _ = self._parse(cases["weather"])
+        labels = {r["label"]: r["unit"] for r in event["readings"]}
+        self.assertEqual((labels["Wind"], labels["Rain"], labels["Wind direction"]), ("m/s", "mm", "°"))
+        self.assertEqual(self._parse(cases["tpms"])[0]["primary"], "pressure_kPa")
+        self.assertEqual({x["key"] for x in self._parse(cases["security"])[0]["status"]}, {"state", "tamper", "alarm"})
+
+    def test_remote_controls_and_key_fobs_are_not_published_and_never_keep_their_codes(self) -> None:
+        fob = {"model": "Ford-CarRemote", "id": "1234", "code": "AABBCC", "button": 2, "rolling": "99"}
+        self.assertIsNone(self._parse(fob))                                   # off unless asked for
+        event, _ = self._parse(fob, allow=True)
+        self.assertEqual(event["category"], "remote")
+        self.assertNotIn("code", event["fields"])
+        self.assertNotIn("rolling", event["fields"])
+        self.assertIn("button", event["fields"])
+        doorbell = {"model": "Honeywell-ActivLink", "id": 3, "event": "ring"}
+        self.assertIsNone(self._parse(doorbell))
+
+    def test_decoder_noise_is_not_kept(self) -> None:
+        event, _ = self._parse({"model": "X", "id": 1, "temperature_C": 1, "flags": 3, "unknown1": 5, "raw": "ff", "counter": 7})
+        self.assertEqual(sorted(event["fields"]), ["id", "temperature_C"])
+
+
+class Rtl433OptionsTest(unittest.TestCase):
+    def test_sample_rate_wm_bus_and_extra_decoders(self) -> None:
+        from unittest import mock
+        from falconsdr.addons import manager as mgr
+        from falconsdr.config import AppConfig
+        m = mgr.AddonManager(AppConfig())
+        dev = {"driver": "auto", "device_args": ""}
+        m.configure("rtl_433", {"options": {"band": "wmbus"}})
+        argv, _ = m._argv("rtl_433", "/x/rtl_433", dev)
+        self.assertEqual(argv[argv.index("-f"):argv.index("-f") + 4], ["-f", "868.95M", "-s", "1200k"])      # wireless M-Bus needs a wide capture
+        m.configure("rtl_433", {"options": {"band": "433", "sample_rate": "1000k"}})
+        argv, _ = m._argv("rtl_433", "/x/rtl_433", dev)
+        self.assertEqual(argv[argv.index("-s") + 1], "1000k")
+        protocols = [{"id": 1, "name": "A", "default": True}, {"id": 2, "name": "B", "default": False}, {"id": 3, "name": "C", "default": True}]
+        m.configure("rtl_433", {"options": {"extra_decoders": [2]}})
+        with mock.patch.object(mgr, "list_rtl433_protocols", lambda p: protocols):
+            argv, _ = m._argv("rtl_433", "/x/rtl_433", dev)
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "-R"], ["1", "2", "3"])             # the defaults plus the extra
+        with self.assertRaises(ValueError):
+            m.configure("rtl_433", {"options": {"sample_rate": "7k"}})
+
+    def test_the_protocol_list_is_read_from_the_program(self) -> None:
+        import stat
+        import sys
+        from falconsdr.addons import external
+        folder = tempfile.mkdtemp(dir=_HOME)
+        path = os.path.join(folder, "fake_433")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"#!{sys.executable}\nimport sys\nsys.stderr.write('Supported device protocols:\\n    [01]  Silvercrest Remote Control\\n    [02]  Rubicson Temperature Sensor\\n    [03]* ELV EM 1000\\n')\n")
+        os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+        if os.name == "nt":
+            self.skipTest("a shebang script")
+        found = external.list_rtl433_protocols(path)
+        self.assertEqual([(p["id"], p["default"]) for p in found], [(1, True), (2, True), (3, False)])
 
 
 if __name__ == "__main__":

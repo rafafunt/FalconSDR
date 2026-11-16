@@ -4,6 +4,7 @@ programs the user installs, so their licences stay theirs (AGENTS.md gotcha 58).
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -91,24 +92,55 @@ class ExternalRunner:
 
 # -- what the programs print -------------------------------------------------------------------------
 
+_PROTOCOLS: dict[str, list[dict]] = {}
+
+
+def list_rtl433_protocols(program: str) -> list[dict]:
+    """The decoders of the installed rtl_433: [{"id", "name", "default"}] (default False = off unless asked for). Asked
+    of the program itself (``rtl_433 -R help``, which does not open the receiver), so numbers always fit its version."""
+    if program in _PROTOCOLS:
+        return _PROTOCOLS[program]
+    kwargs = {"creationflags": NO_WINDOW} if sys.platform == "win32" else {}
+    try:
+        out = subprocess.run([program, "-R", "help"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=15, env=system_env(), stdin=subprocess.DEVNULL, **kwargs)
+        text = out.stderr + out.stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found = []
+    for line in text.splitlines():
+        m = re.match(r"^\s*\[(\d+)\](\*?)\s*(.+?)\s*$", line)
+        if m:
+            found.append({"id": int(m.group(1)), "name": m.group(3), "default": not m.group(2) and not m.group(3).startswith("*")})
+    if found:
+        _PROTOCOLS[program] = found
+    return found
+
+
 def _num(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def parse_rtl_433(line: str) -> tuple[dict, str] | None:
-    """One JSON line of rtl_433 -> (event, summary)."""
+def parse_rtl_433(line: str, allow_remotes: bool = False) -> tuple[dict, str] | None:
+    """One JSON line of rtl_433 -> (event, summary). The kind of device and what it measures come from sensors.py;
+    remote controls and key fobs (somebody's car or garage) are dropped unless asked for, and never keep their codes."""
+    from .sensors import interpret, redact
     try:
         data = json.loads(line)
     except ValueError:
         return None
     if not isinstance(data, dict) or "model" not in data:
         return None
-    skip = {"time", "model", "id", "channel", "mic", "protocol", "subtype", "rssi", "snr", "noise", "freq", "freq1", "freq2"}
-    readings = {k: v for k, v in data.items() if k not in skip and _num(v)}
-    shown = ", ".join(f"{k} {v}" for k, v in list(readings.items())[:4])
+    info = interpret(str(data["model"]), data)
+    if info["category"] == "remote" and not allow_remotes:
+        return None
+    fields = redact({k: v for k, v in data.items() if k not in ("time", "model")}, info["category"])
     who = f"{data['model']}" + (f" #{data['id']}" if "id" in data else "")
     event = {"kind": "sensor", "model": data["model"], "device_id": data.get("id"), "channel": data.get("channel"),
-             "fields": {k: v for k, v in data.items() if k not in ("time", "model")}}
+             "category": info["category"], "readings": info["readings"], "status": info["status"], "primary": info["primary"], "fields": fields}
+    shown = ", ".join((r["label"] + " " if r["label"].split()[0] not in ("Temperature", "Humidity") else "") + f"{r['value']} {r['unit']}".strip() for r in info["readings"][:3])
+    if not shown and info["status"]:
+        shown = ", ".join(f"{x['key']} {x['value']}" for x in info["status"][:3])
     return event, f"{who}: {shown}" if shown else who
 
 

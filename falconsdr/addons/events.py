@@ -13,6 +13,7 @@ class EventHub:
     def __init__(self, directory: Path | None, keep_days: int = 7, ring: int = 3000, stats=None):
         self._dir = directory
         self.stats = stats          # StatsStore: every event is counted there, link frames too
+        self.on_event = None        # called with every message worth reading (not link frames): the Notifier
         self._keep_days = keep_days
         self._lock = threading.Lock()
         self._ring: deque[dict] = deque(maxlen=ring)
@@ -51,6 +52,11 @@ class EventHub:
             (self._ring if persist else self._link_ring).append(event)
         if persist:
             self._append(event)
+            if self.on_event is not None:
+                try:
+                    self.on_event(event)
+                except Exception:  # noqa: BLE001 - a listener must never stop a decoder
+                    pass
         return event
 
     def since(self, after_id: int = 0, addon: str = "", limit: int = 500) -> list[dict]:
