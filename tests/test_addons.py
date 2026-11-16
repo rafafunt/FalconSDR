@@ -836,6 +836,7 @@ class ScheduleTest(unittest.TestCase):
         self.assertTrue(freqs[0] and all(117_500_000 <= f <= 118_700_000 for f in freqs[0]))   # A on the first receiver only
         self.assertTrue(freqs[1] and all(129_500_000 <= f <= 130_700_000 for f in freqs[1]))   # B on the second only
 
+    @unittest.skipIf(os.name == "nt", "the stand-in program is a shebang script")
     def test_the_controller_starts_and_stops_a_scheduled_add_on_and_respects_a_manual_stop(self) -> None:
         import time
         from unittest import mock
@@ -875,6 +876,7 @@ class ScheduleTest(unittest.TestCase):
             ctl.addons.stop_external()
             ctl.shutdown()
 
+    @unittest.skipIf(os.name == "nt", "the stand-in program is a shebang script")
     def test_two_add_ons_run_at_once_on_different_receivers(self) -> None:
         from unittest import mock
         from falconsdr.addons import manager as mgr
