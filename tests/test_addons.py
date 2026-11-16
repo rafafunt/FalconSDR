@@ -993,6 +993,17 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(len(items), 2)
         self.assertIn("+7 ", items[1]["message"])             # in whichever language is set
 
+    def test_discord_and_slack_webhooks_get_their_own_json(self) -> None:
+        from falconsdr.notifier import webhook_body
+        d = webhook_body("https://discord.com/api/webhooks/123/abc", "Alert", "SP-LWA fuel", {"rule": "x"})
+        self.assertEqual(d["content"], "**Alert**\nSP-LWA fuel")
+        self.assertEqual(d["allowed_mentions"], {"parse": []})                          # @everyone in a radio message must not ping
+        self.assertEqual(len(webhook_body("https://discord.com/api/webhooks/1/a", "t", "x" * 5000, {})["content"]), 2000)
+        self.assertIn("text", webhook_body("https://hooks.slack.com/services/T/B/x", "Alert", "m", {}))
+        own = webhook_body("http://192.168.1.5:8123/hook", "Alert", "m", {"rule": "x"})
+        self.assertEqual((own["title"], own["rule"]), ("Alert", "x"))
+        self.assertIn("title", webhook_body("https://discord.com.evil.example/api/webhooks/1/a", "t", "m", {}))   # not Discord
+
     def test_channels_are_checked_and_secrets_stay_masked(self) -> None:
         from falconsdr.notifier import MASK, clean_channel, mask
         for bad in ({"type": "ntfy", "settings": {"topic": "bad topic!"}}, {"type": "webhook", "settings": {"url": "ftp://x"}},
@@ -1124,6 +1135,13 @@ class SensorCatalogTest(unittest.TestCase):
         self.assertIn("button", event["fields"])
         doorbell = {"model": "Honeywell-ActivLink", "id": 3, "event": "ring"}
         self.assertIsNone(self._parse(doorbell))
+
+    def test_one_sensor_that_rtl_433_names_two_ways_stays_one_device(self) -> None:
+        nexus, _ = self._parse({"model": "Nexus-T", "id": 246, "channel": 1, "battery_ok": 0, "temperature_C": 7.0})
+        rubicson, summary = self._parse({"model": "Rubicson-Temperature", "id": 246, "channel": 1, "battery_ok": 0, "temperature_C": 6.6})
+        self.assertEqual((rubicson["model"], rubicson["device_id"], rubicson["channel"]), (nexus["model"], nexus["device_id"], nexus["channel"]))
+        self.assertTrue(summary.startswith("Nexus-T #246"))
+        self.assertEqual(rubicson["fields"]["model_reported"], "Rubicson-Temperature")          # what the program said is not lost
 
     def test_decoder_noise_is_not_kept(self) -> None:
         event, _ = self._parse({"model": "X", "id": 1, "temperature_C": 1, "flags": 3, "unknown1": 5, "raw": "ff", "counter": 7})

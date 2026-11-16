@@ -3881,3 +3881,6 @@ msgstr "dla tego samego samolotu, stacji, urządzenia lub częstotliwości; kole
 
 msgid "(+{n} more since the last notice)"
 msgstr "(+{n} kolejnych od ostatniego powiadomienia)"
+
+msgid "Select all"
+msgstr "Zaznacz wszystkie"

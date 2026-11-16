@@ -187,7 +187,11 @@ def _post(url: str, data: bytes, headers: dict) -> None:
                 resp.read(2048)
             return
         except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"HTTP {exc.code}") from exc
+            try:
+                why = exc.read(300).decode("utf-8", "replace").strip().replace("\n", " ")     # e.g. Discord: "Cannot send an empty message"
+            except OSError:
+                why = ""
+            raise RuntimeError(f"HTTP {exc.code}" + (f": {why[:150]}" if why else "")) from exc
         except urllib.error.URLError as exc:
             if not isinstance(exc.reason, ssl.SSLCertVerificationError):
                 raise RuntimeError(str(exc.reason)) from exc
@@ -236,6 +240,18 @@ def mqtt_publish(host: str, port: int, tls: bool, username: str, password: str, 
         sock.close()
 
 
+def webhook_body(url: str, title: str, message: str, payload: dict) -> dict:
+    """Discord and Slack accept only their own JSON (Discord answers 400 "Cannot send an empty message" to anything without
+    `content`); every other address gets ours. A decoded message is untrusted text, so Discord is told not to ping anybody."""
+    parts = urlparse(url)
+    host, text = (parts.hostname or "").lower(), f"**{title}**\n{message}"
+    if (host == "discord.com" or host.endswith(".discord.com") or host in ("discordapp.com", "www.discordapp.com")) and parts.path.startswith("/api/webhooks/"):
+        return {"content": text[:2000], "allowed_mentions": {"parse": []}}
+    if host == "hooks.slack.com":
+        return {"text": f"*{title}*\n{message}"}
+    return {"title": title, "message": message, **payload}
+
+
 def send(channel: dict, title: str, message: str, payload: dict) -> None:
     """Delivers one notification; raises RuntimeError with a short reason."""
     s = channel["settings"]
@@ -253,7 +269,7 @@ def send(channel: dict, title: str, message: str, payload: dict) -> None:
         headers = {"Content-Type": "application/json"}
         if s.get("header_name"):
             headers[s["header_name"]] = s.get("header_value", "")
-        _post(s["url"], json.dumps({"title": title, "message": message, **payload}, ensure_ascii=False).encode("utf-8"), headers)
+        _post(s["url"], json.dumps(webhook_body(s["url"], title, message, payload), ensure_ascii=False).encode("utf-8"), headers)
     elif kind == "mqtt":
         mqtt_publish(s["host"], s["port"], s["tls"], s.get("username", ""), s.get("password", ""), s["topic"],
                      json.dumps({"title": title, "message": message, **payload}, ensure_ascii=False).encode("utf-8"))

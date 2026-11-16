@@ -124,17 +124,21 @@ def _num(v) -> bool:
 def parse_rtl_433(line: str, allow_remotes: bool = False) -> tuple[dict, str] | None:
     """One JSON line of rtl_433 -> (event, summary). The kind of device and what it measures come from sensors.py;
     remote controls and key fobs (somebody's car or garage) are dropped unless asked for, and never keep their codes."""
-    from .sensors import interpret, redact
+    from .sensors import ALIASES, interpret, redact
     try:
         data = json.loads(line)
     except ValueError:
         return None
     if not isinstance(data, dict) or "model" not in data:
         return None
-    info = interpret(str(data["model"]), data)
+    reported = str(data["model"])
+    data["model"] = ALIASES.get(reported, reported)
+    info = interpret(data["model"], data)
     if info["category"] == "remote" and not allow_remotes:
         return None
     fields = redact({k: v for k, v in data.items() if k not in ("time", "model")}, info["category"])
+    if reported != data["model"]:
+        fields["model_reported"] = reported
     who = f"{data['model']}" + (f" #{data['id']}" if "id" in data else "")
     event = {"kind": "sensor", "model": data["model"], "device_id": data.get("id"), "channel": data.get("channel"),
              "category": info["category"], "readings": info["readings"], "status": info["status"], "primary": info["primary"], "fields": fields}

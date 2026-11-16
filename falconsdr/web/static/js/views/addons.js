@@ -89,23 +89,41 @@ export function decodersCard(box) {
     onchange: (e) => setOption(a, key, e.target.value) });
 
   // The decoders rtl_433 keeps off by default (too many false alarms): listed by the program itself, tick the ones you have.
+  // The element is built once and reused by every render of the card (the page refreshes every few seconds and after each
+  // change), otherwise it would close, reload and lose its scroll position under the user's hand; ticking saves quietly.
+  const pickers = new Map();
   function decoderPicker(a) {
-    const box = h('div.col', { style: { gap: '4px', maxHeight: '260px', overflow: 'auto' } });
+    const cached = pickers.get(a.id);
+    if (cached) { requestAnimationFrame(() => { cached.list.scrollTop = cached.top; }); return cached.details; }
+    const list = h('div.col', { style: { gap: '4px', maxHeight: '320px', overflow: 'auto' } });
+    const chosen = new Set(a.options.extra_decoders);
+    const summary = h('summary');
+    const details = h('details.addon-advanced', summary, list);
+    const entry = { details, list, top: 0 };
+    list.addEventListener('scroll', () => { entry.top = list.scrollTop; });
+    const label = () => { summary.textContent = t('Extra decoders ({n} switched on)', { n: chosen.size }); };
+    let timer = null;
+    const save = () => {
+      label();
+      clearTimeout(timer);
+      timer = setTimeout(() => api.post('/api/addons/configure', { id: a.id, options: { extra_decoders: [...chosen] } }).catch(errorToast), 400);
+    };
+    label();
     let loaded = false;
-    const details = h('details.addon-advanced', h('summary', t('Extra decoders ({n} switched on)', { n: a.options.extra_decoders.length })), box);
     details.addEventListener('toggle', async () => {
       if (!details.open || loaded) return;
       loaded = true;
-      box.replaceChildren(h('span.faint.small', t('Loading…')));
-      let list = [];
-      try { list = (await api.get('/api/addons/protocols')).protocols.filter((p) => !p.default); } catch { /* shown as empty below */ }
-      const chosen = new Set(a.options.extra_decoders);
-      box.replaceChildren(list.length ? h('p.faint.small', { style: { margin: 0 } }, t('These decoders are off by default because they report false alarms more often.')) : h('span.faint.small', t('The program did not list its decoders.')),
-        ...list.map((p) => h('label.switch', h('input', { type: 'checkbox', checked: chosen.has(p.id), onchange: (e) => {
-          if (e.target.checked) chosen.add(p.id); else chosen.delete(p.id);
-          setOption(a, 'extra_decoders', [...chosen]);
-        } }), h('span.label', p.name))));
+      list.replaceChildren(h('span.faint.small', t('Loading…')));
+      let known = [];
+      try { known = (await api.get('/api/addons/protocols')).protocols.filter((p) => !p.default); } catch { /* shown as empty below */ }
+      const boxes = known.map((p) => h('input', { type: 'checkbox', checked: chosen.has(p.id), onchange: (e) => { if (e.target.checked) chosen.add(p.id); else chosen.delete(p.id); save(); } }));
+      const setAll = (on) => { boxes.forEach((x, i) => { x.checked = on; if (on) chosen.add(known[i].id); else chosen.delete(known[i].id); }); save(); };
+      list.replaceChildren(
+        known.length ? h('div.row.wrap', { style: { gap: '8px' } }, h('button.small', { onclick: () => setAll(true) }, t('Select all')), h('button.small', { onclick: () => setAll(false) }, t('Clear')),
+          h('span.faint.small', t('These decoders are off by default because they report false alarms more often.'))) : h('span.faint.small', t('The program did not list its decoders.')),
+        ...known.map((p, i) => h('label.switch', boxes[i], h('span.label', p.name))));
     });
+    pickers.set(a.id, entry);
     return details;
   }
 

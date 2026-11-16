@@ -63,6 +63,12 @@ _REMOTE_MODEL = re.compile(r"remote|keyfob|key fob|car ?key|carremote|security\+
 _METER_MODEL = re.compile(r"ERT-|neptune|m-bus|wmbus|water meter|flow meter|flowis|badger|orion|gas meter|heat meter|scm", re.I)
 _SECURITY_MODEL = re.compile(r"contact|door|window|smoke|motion|pir|leak|alarm|security|honeywell|dsc|interlogix|visonic|simplisafe|yale|kerui|chuango|cavius|jasco", re.I)
 
+# One physical sensor, two names: Nexus (temperature only) and Rubicson send the same 36-bit frame and differ only in what the last
+# byte means (Nexus: humidity, 0 on a thermometer; Rubicson: a CRC). When that byte happens to be a valid Rubicson CRC - about 1
+# temperature in 256, e.g. 6.6 and 37.1 degrees for one id - rtl_433's Nexus decoder deliberately steps aside and the reading
+# arrives as "Rubicson-Temperature". Without this the sensor would turn into a second device each time it passes such a value.
+ALIASES = {"Rubicson-Temperature": "Nexus-T"}
+
 CATEGORIES = ("weather", "thermometer", "tpms", "energy", "meter", "security", "remote", "tank", "soil", "air", "lightning", "other")
 
 

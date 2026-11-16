@@ -957,13 +957,13 @@ catalog loads; wrap them in a function called at point of use
     decoder, engine or HTTP thread. **Channels hold secrets**: `token`/`password`/`header_value` are masked (`MASK`) on the
     way out and an unchanged mask keeps the stored value on the way in, so `notify` is not patchable through
     `/api/config` or `/api/settings` (own `/api/notify[/save|/test|/recent]`). The Listen/any page learns of a new notice
-    from `live["notify_seq"]`. A channel still being typed is kept in the browser and not sent (the server refuses an
+    from `live["notify_seq"]`. A webhook to Discord/Slack gets their own JSON (`webhook_body`; Discord answers 400 "empty message" to anything without `content`) and an HTTP error shows the server's reason. A channel still being typed is kept in the browser and not sent (the server refuses an
     incomplete one). rtl_433: what it reads is far wider than temperature (254 decoders, ~194 fields). `sensors.py`
     classifies a device (`category`), names and units its readings (`describe_key`) and lists status fields; the events
     carry `readings`/`status`/`category`/`primary`, so Messages, Statistics (generic min/avg/max of the primary reading,
     `StatsStore` migrates old temperature-only buckets on load) and the rule editor (`/api/addons/metrics`) need no per-type
     code. **Remote controls and key fobs are dropped unless `remotes` is on, and their codes (`SECRET`) are never stored
-    either way** - they are somebody's car or garage. Extra decoders: `-R help` of the installed program lists them
+    either way** - they are somebody's car or garage. `ALIASES`: a Nexus-T sensor is read as `Rubicson-Temperature` whenever its last byte happens to be a valid Rubicson CRC (~1 value in 256; the Nexus decoder steps aside on purpose), so the two names are one device. Extra decoders: `-R help` of the installed program lists them
     (`list_rtl433_protocols`); `-R` means "only these", so the defaults are named again. wM-Bus (868.95 MHz) needs
     `-s 1200k` (set automatically). Unrun on real utility meters/TPMS - tested with synthetic JSON lines only.
 
