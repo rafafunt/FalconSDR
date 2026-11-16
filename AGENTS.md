@@ -543,6 +543,10 @@ catalog loads; wrap them in a function called at point of use
     signature element — keep the rest quiet. **Never give `.topbar` a
     `backdrop-filter` on phones**: it becomes the containing block of the
     `position: fixed` tab bar inside it, which then renders at the top.
+    Page-level switches (Memory List / Blacklist, Voice / Add-ons) are `tabs()` in `core.js` (large, with counts), not the
+    small `seg()`: someone who does not know a switch exists must still see it. Channels lists have a checkbox column
+    (shift = range), a sticky bulk bar (scan / don't scan / move to folder / delete) and "Delete all"; click / Ctrl /
+    Shift / Ctrl+A / Delete still work.
 
 43. **Windows release = `packaging/windows/build.ps1`** (PyInstaller
     `--onedir --noconsole` → portable ZIP + Inno Setup installer,

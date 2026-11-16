@@ -1,6 +1,6 @@
 // "Channels": the Memory List (named frequencies in folders, each with its
 // own modulation, priority weight and on/off) and the blacklist.
-import { carrierHz, confirmDialog, fmtChannel, fmtMHz, formDialog, h, icon, mount, seg, t, toast, typedAs833 } from '../core.js';
+import { carrierHz, confirmDialog, fmtChannel, fmtMHz, formDialog, h, icon, mount, select, tabs, t, toast, typedAs833 } from '../core.js';
 import { S, cfg, loadSettings, on, patchConfig, saveBlacklist, saveChannels } from '../state.js';
 import { modLabel, modOptions } from './bands.js';
 let tab = 'memory';
@@ -45,11 +45,11 @@ function sorted(name, list) {
 export function channelsView(root) {
   const offs = [];
   const body = h('div.col');
-  const page = h('div.page',
-    h('div.page-head', h('h1', t('Channels')),
-      seg([['memory', t('Memory List')], ['blacklist', t('Blacklist')]], tab, (v) => { tab = v; sel.clear(); render(); })),
-    body);
+  const tabsBox = h('div');
+  const page = h('div.page', h('div.page-head', h('h1', t('Channels'))), tabsBox, body);
   mount(root, page);
+  const renderTabs = () => mount(tabsBox, tabs([['memory', t('Memory List'), S.settings.channels.length], ['blacklist', t('Blacklist'), S.settings.blacklist.length]], tab,
+    (v) => { tab = v; sel.clear(); render(); }));
   const collapsed = new Set(JSON.parse(localStorage.getItem('collapsedFolders') || '[]'));
   let query = '';
 
@@ -57,9 +57,78 @@ export function channelsView(root) {
   // removes, Esc clears, Ctrl+A selects everything shown.
   const sel = new Set();
   const rowOf = new Map();
+  const boxOf = new Map();            // item -> its checkbox
   let anchor = null;
+  let bulkBox = h('div.bulk.hidden');
+  let headBox = null;
   const shown = () => [...rowOf.keys()];
-  const syncSel = () => rowOf.forEach((tr, item) => tr.classList.toggle('selected', sel.has(item)));
+  function syncSel() {
+    rowOf.forEach((tr, item) => tr.classList.toggle('selected', sel.has(item)));
+    boxOf.forEach((cb, item) => { cb.checked = sel.has(item); });
+    const all = shown();
+    const n = all.filter((x) => sel.has(x)).length;
+    if (headBox) { headBox.checked = !!all.length && n === all.length; headBox.indeterminate = n > 0 && n < all.length; }
+    renderBulk();
+  }
+  // The checkbox column: tick one, shift+tick a range; the header box ticks everything shown.
+  function checkbox(item) {
+    const cb = h('input', { type: 'checkbox', 'aria-label': t('Select'), onclick: (e) => {
+      e.stopPropagation();
+      const all = shown();
+      if (e.shiftKey && all.includes(anchor)) {
+        const a = all.indexOf(anchor), b = all.indexOf(item);
+        all.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((x) => sel.add(x));
+      } else { cb.checked ? sel.add(item) : sel.delete(item); }
+      anchor = item;
+      syncSel();
+    } });
+    boxOf.set(item, cb);
+    return h('td.pick', cb);
+  }
+  function selectAllHead() {
+    headBox = h('input', { type: 'checkbox', 'aria-label': t('Select all shown'), onclick: () => {
+      const all = shown();
+      if (all.every((x) => sel.has(x))) all.forEach((x) => sel.delete(x)); else all.forEach((x) => sel.add(x));
+      syncSel();
+    } });
+    return h('th.pick', headBox);
+  }
+  function renderBulk() {
+    bulkBox.classList.toggle('hidden', !sel.size);
+    if (!sel.size) return;
+    const items = [...sel];
+    const all = shown();
+    const actions = tab === 'memory' ? [
+      h('button', { onclick: () => setEnabled(items, true) }, t('Scan')),
+      h('button', { onclick: () => setEnabled(items, false) }, t("Don't scan")),
+      select([['', t('Move to folder…')], ['__none__', t('(no folder)')], ...folders().map((f) => [f, f])], '', (v) => { if (v) moveTo(items, v === '__none__' ? '' : v); }, { style: { width: 'auto' }, 'aria-label': t('Move to folder…') }),
+    ] : [];
+    mount(bulkBox, h('div.row.wrap',
+      h('b', t('{n} selected', { n: items.length.toLocaleString() })),
+      items.length < all.length ? h('button.ghost', { onclick: () => { all.forEach((x) => sel.add(x)); syncSel(); } }, t('Select all {n}', { n: all.length.toLocaleString() })) : null,
+      h('span.spacer'), ...actions,
+      h('button.danger', { onclick: removeSelected }, icon('trash'), t('Delete')),
+      h('button.ghost', { onclick: () => { sel.clear(); syncSel(); } }, t('Clear'))));
+  }
+  async function setEnabled(items, on) {
+    items.forEach((c) => { c.enabled = on; });
+    await saveChannels(S.settings.channels);
+    render();
+  }
+  async function moveTo(items, folder) {
+    items.forEach((c) => { c.folder = folder; });
+    await saveChannels(S.settings.channels);
+    render();
+  }
+  async function deleteAll() {
+    const n = tab === 'memory' ? S.settings.channels.length : S.settings.blacklist.length;
+    if (!n) return;
+    const msg = tab === 'memory' ? t('Delete all {n} channels from the Memory List?', { n }) : t('Remove all {n} entries from the blacklist?', { n });
+    if (!(await confirmDialog(tab === 'memory' ? t('Delete all channels') : t('Empty the blacklist'), msg, t('Delete all'), true))) return;
+    if (tab === 'memory') await saveChannels([]); else await saveBlacklist([]);
+    sel.clear();
+    render();
+  }
   function selectable(item, tr) {
     rowOf.set(item, tr);
     tr.addEventListener('click', (e) => {
@@ -110,6 +179,10 @@ export function channelsView(root) {
 
   function render() {
     rowOf.clear();
+    boxOf.clear();
+    headBox = null;
+    bulkBox = h('div.bulk.hidden');
+    renderTabs();
     mount(body, tab === 'memory' ? memory() : blacklist());
     sel.forEach((x) => { if (!rowOf.has(x)) sel.delete(x); });  // gone, filtered out or folded away
     syncSel();
@@ -183,6 +256,7 @@ export function channelsView(root) {
   function channelRow(ch) {
     const save = () => saveChannels(S.settings.channels);
     return selectable(ch, h('tr', { ondblclick: (e) => { if (!e.target.closest('input, button, label')) editChannel(ch); } },
+      checkbox(ch),
       h('td', h('label.switch', h('input', { type: 'checkbox', checked: ch.enabled, title: t('Scan this channel'), onchange: (e) => { ch.enabled = e.target.checked; save(); } }))),
       h('td.mono', { title: `${fmtMHz(ch.freq_hz, 4)} MHz` }, fmtChannel(ch.freq_hz)),
       h('td', ch.name || h('span.faint', t('(unnamed)'))),
@@ -212,7 +286,7 @@ export function channelsView(root) {
         const isCollapsed = collapsed.has(folder) && !q;
         rows.push(h('tr.folder-row', {
           onclick: () => { isCollapsed ? collapsed.delete(folder) : collapsed.add(folder); localStorage.setItem('collapsedFolders', JSON.stringify([...collapsed])); render(); },
-        }, h('td', { colSpan: 5 }, h('div.row', icon('folder'), folder, h('span.faint.small', `${list.length}`))),
+        }, h('td', { colSpan: 6 }, h('div.row', icon('folder'), folder, h('span.faint.small', `${list.length}`))),
         h('td', h('div.actions', { onclick: (e) => e.stopPropagation() },
           h('button.icon.ghost', { title: t('Rename folder'), onclick: () => renameFolder(folder) }, icon('edit')),
           h('button.icon.ghost', { title: t('Delete folder'), onclick: () => deleteFolder(folder) }, icon('trash'))))));
@@ -225,16 +299,18 @@ export function channelsView(root) {
       h('div.row.wrap',
         h('div.grow', search),
         h('button.primary', { onclick: () => editChannel(null) }, icon('plus'), t('Add channel')),
-        h('button', { onclick: newFolder }, icon('folder'), t('New folder'))),
+        h('button', { onclick: newFolder }, icon('folder'), t('New folder')),
+        S.settings.channels.length ? h('button.ghost.danger', { onclick: deleteAll }, icon('trash'), t('Delete all')) : null),
       h('div.row.wrap.small.muted',
         t('{n} channels, {e} scanned', { n: S.settings.channels.length, e: enabled }),
         cfg().memory_list_enabled ? null : h('span.chip.warn', t('The Memory List is switched off on the Listen page')),
         h('span.spacer'),
         h('button.ghost.small', { onclick: () => loadCurated('military') }, t('Add Polish military frequencies')),
         h('button.ghost.small', { onclick: () => loadCurated('fire') }, t('Add Polish fire brigade frequencies'))),
+      bulkBox,
       S.settings.channels.length
         ? h('div.table-wrap', h('table',
-          h('thead', h('tr', sortTh('memory', 'on', '✓', t('Sort by scanned / not scanned')), sortTh('memory', 'freq', t('MHz')), sortTh('memory', 'name', t('Name')), sortTh('memory', 'mod', t('Mode')), sortTh('memory', 'weight', t('Weight')), h('th', ''))),
+          h('thead', h('tr', selectAllHead(), sortTh('memory', 'on', '✓', t('Sort by scanned / not scanned')), sortTh('memory', 'freq', t('MHz')), sortTh('memory', 'name', t('Name')), sortTh('memory', 'mod', t('Mode')), sortTh('memory', 'weight', t('Weight')), h('th', ''))),
           h('tbody', rows)))
         : h('div.empty', icon('channels'), h('div', t('No saved channels yet. Add one, or save a frequency straight from a recording.'))));
   }
@@ -257,14 +333,17 @@ export function channelsView(root) {
     const list = sorted('blacklist', S.settings.blacklist.filter((b) => !q || `${fmtChannel(b.freq_hz)} ${fmtMHz(b.freq_hz, 4)} ${b.label} ${b.date_added}`.toLowerCase().includes(q)));
     const search = h('input', { type: 'search', placeholder: t('Search blacklist…'), value: bq, oninput: (e) => { bq = e.target.value; render(); const el = body.querySelector('input[type=search]'); el.focus(); } });
     return h('section.card',
-      h('div.row.wrap', h('div.grow', search), h('button.primary', { onclick: addBlacklist }, icon('plus'), t('Add'))),
+      h('div.row.wrap', h('div.grow', search), h('button.primary', { onclick: addBlacklist }, icon('plus'), t('Add')),
+        S.settings.blacklist.length ? h('button.ghost.danger', { onclick: deleteAll }, icon('trash'), t('Delete all')) : null),
       h('p.small.muted', { style: { margin: 0 } }, t('The scanner never stops on these frequencies. “Skip + blacklist” on the Listen page adds them here.')),
       h('div.setting', h('div', h('b', t('Default blacklist margin')), h('p', t('± kHz around a frequency added with “Skip + blacklist”.'))),
         h('input', { type: 'number', value: cfg().default_blacklist_margin_hz / 1000, min: 0, step: 0.5, style: { width: '110px' }, onchange: (e) => patchConfig({ default_blacklist_margin_hz: Math.round(Math.max(0, +e.target.value) * 1000) }) })),
+      bulkBox,
       list.length
         ? h('div.table-wrap', h('table',
-          h('thead', h('tr', sortTh('blacklist', 'freq', t('MHz')), sortTh('blacklist', 'margin', t('Margin')), sortTh('blacklist', 'label', t('Description')), sortTh('blacklist', 'added', t('Added')), h('th', ''))),
+          h('thead', h('tr', selectAllHead(), sortTh('blacklist', 'freq', t('MHz')), sortTh('blacklist', 'margin', t('Margin')), sortTh('blacklist', 'label', t('Description')), sortTh('blacklist', 'added', t('Added')), h('th', ''))),
           h('tbody', list.map((b) => selectable(b, h('tr',
+            checkbox(b),
             h('td.mono', fmtChannel(b.freq_hz)),
             h('td.mono', `±${(b.margin_hz / 1000).toFixed(1)} kHz`),
             h('td', b.label === 'Auto-lockout (SKIP)' ? t('Skipped from the Listen page') : b.label),

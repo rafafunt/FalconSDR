@@ -3372,3 +3372,36 @@ msgstr "Dotąd zapisano: {n} dni."
 
 msgid "Click to see its messages"
 msgstr "Kliknij, żeby zobaczyć jego wiadomości"
+
+msgid "Voice: what was heard"
+msgstr "Głos: co było słychać"
+
+msgid "Add-ons: what was decoded"
+msgstr "Dodatki: co zdekodowano"
+
+msgid "Select all shown"
+msgstr "Zaznacz wszystkie widoczne"
+
+msgid "Scan"
+msgstr "Skanuj"
+
+msgid "Don't scan"
+msgstr "Nie skanuj"
+
+msgid "Move to folder…"
+msgstr "Przenieś do folderu…"
+
+msgid "Delete all"
+msgstr "Usuń wszystko"
+
+msgid "Delete all {n} channels from the Memory List?"
+msgstr "Usunąć wszystkie kanały ({n}) z Listy pamięci?"
+
+msgid "Remove all {n} entries from the blacklist?"
+msgstr "Usunąć wszystkie wpisy ({n}) z czarnej listy?"
+
+msgid "Delete all channels"
+msgstr "Usuń wszystkie kanały"
+
+msgid "Empty the blacklist"
+msgstr "Opróżnij czarną listę"

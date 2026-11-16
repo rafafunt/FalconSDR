@@ -179,6 +179,16 @@ export function select(options, value, onchange, attrs = {}) {
   return el;
 }
 
+// A row of large tabs for switching what a whole page shows (Memory List / Blacklist, Voice / Add-ons): big enough to
+// be seen without knowing it is there. options: [value, label, count?]
+export function tabs(options, value, onchange) {
+  return h('div.tabs', { role: 'tablist' }, options.map(([v, label, count]) => {
+    const active = String(v) === String(value);
+    return h('button.tab', { role: 'tab', class: active ? 'active' : '', 'aria-selected': String(active), onclick: () => onchange(v) },
+      label, count === undefined ? null : h('span.count', String(count)));
+  }));
+}
+
 export function seg(options, value, onchange) {
   const wrap = h('div.seg');
   for (const [v, label] of options) {
