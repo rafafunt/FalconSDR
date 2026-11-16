@@ -29,6 +29,7 @@ from .models import BlacklistEntry, Channel, Modulation, snap_airband_hz
 from .playback.index import Library
 from .playback.transcription_availability import is_transcription_installed
 from . import sdr_native
+from .addons.manager import AddonManager
 from .scanner_engine import AUDIO_RATE, ScannerEngine, SharedFrequencies
 from .sdr_backend import HAVE_SOAPY, RTLTCP_DRIVER, device_family, device_method, enumerate_devices
 
@@ -125,6 +126,8 @@ class Controller:
         self.workers: dict[str, dict] = {}   # name -> last heartbeat (in memory only)
         self.worker_commands: dict[str, list[str]] = {}
         self.library = Library(self.config, self.open_recording_paths, self.freq_names)
+        self.addons = AddonManager(self.config, self.log)
+        self._resume_scan = False   # an external add-on paused the scanner: start it again when the add-on stops
         self.log(i18n.tr("Ready."))
 
     @staticmethod
@@ -138,6 +141,7 @@ class Controller:
         self.library.start()
 
     def shutdown(self) -> None:
+        self.addons.stop_external()
         engines = self._engines
         for engine in engines:
             engine.request_stop()
@@ -179,6 +183,8 @@ class Controller:
             self._start()
 
     def _start(self) -> None:
+        if self.addons.running_external:
+            raise RuntimeError(i18n.tr("An add-on is using the receiver - stop it first."))
         with self._lock:
             existing = list(self._engines)
         if existing:
@@ -197,6 +203,7 @@ class Controller:
             for k, dev in enumerate(devices)
         ]
         for k, engine in enumerate(engines):
+            engine.addons = self.addons
             self._connect(k, engine, len(engines))
             if self._solo_band is not None and self._solo_band < len(self.config.bands):
                 engine.set_solo_band(self.config.bands[self._solo_band])
@@ -227,6 +234,34 @@ class Controller:
     def stop(self) -> None:
         for engine in self._engines:
             engine.request_stop()
+
+    # -- external add-ons (rtl_433, dumpvdl2): they hold the receiver instead of the scanner -----------
+    def run_addon(self, addon_id: str) -> None:
+        with self._start_lock:
+            if self.addons.running_external:
+                raise RuntimeError(i18n.tr("Another add-on is running - stop it first."))
+            engines = list(self._engines)
+            was_running = bool(engines)
+            for engine in engines:
+                engine.request_stop()
+            for engine in engines:
+                engine.join(timeout=8.0)
+            if any(e.is_alive() for e in engines):
+                raise RuntimeError(i18n.tr("Scanner is still stopping - try again"))
+            self._resume_scan = was_running
+            try:
+                self.addons.start_external(addon_id, asdict(self.config.device))
+            except Exception:
+                if was_running:
+                    self._start()
+                raise
+
+    def stop_addon(self) -> None:
+        self.addons.stop_external()
+        with self._start_lock:
+            resume, self._resume_scan = self._resume_scan, False
+            if resume and not self.addons.running_external:
+                self._start()
 
     def _on_finished(self, k: int, engine: ScannerEngine) -> None:
         with self._lock:
@@ -380,6 +415,7 @@ class Controller:
                 "spectrum": self._spectrum,
                 "log": [e for e in self._log if e["id"] > since_log],
                 "audio_rate": AUDIO_RATE,
+                "addon": self.addons.running_external,
             }
 
     def _uncovered(self) -> list[dict]:

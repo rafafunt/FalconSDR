@@ -1274,8 +1274,8 @@ class DigitalVoiceTest(unittest.TestCase):
                                 demod=lambda *a: np.zeros(12, np.float32))
         digital = SimpleNamespace(dsd=SimpleNamespace(feed=lambda x: None, read=lambda n: np.zeros(n, np.float32),
                                                       talkgroup="", source=""),
-                                  demod=demod, offset_hz=0.0, modulation=Modulation.DMR, freq_hz=1, announced_call=None)
-        analog = SimpleNamespace(dsd=None, demod=demod, offset_hz=0.0, modulation=Modulation.NFM, freq_hz=1)
+                                  demod=demod, offset_hz=0.0, modulation=Modulation.DMR, freq_hz=1, announced_call=None, data_decoder=None)
+        analog = SimpleNamespace(dsd=None, demod=demod, offset_hz=0.0, modulation=Modulation.NFM, freq_hz=1, data_decoder=None)
         ScannerEngine._process_one_slot(engine, digital, iq, True)
         ScannerEngine._process_one_slot(engine, analog, iq, True)
         self.assertEqual(played, [False, True])

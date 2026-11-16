@@ -351,6 +351,9 @@ class _Slot:
         # Digital voice (DMR/YSF): its dsd-fme process, None for analog - or
         # when the add-on is missing, then it plays as NFM.
         self.dsd: digital_voice.DsdDecoder | None = None
+        # Add-on data decoder (ACARS, APRS - falconsdr/addons): reads this slot's audio instead of playing/recording it.
+        self.data_decoder = None
+        self.data_addon = ""
         self.announced_call: tuple[str, str] = ("", "")
         # A write failed (or the disk is nearly full): listened to, not recorded.
         self.recording_failed = False
@@ -534,6 +537,7 @@ class ScannerEngine(threading.Thread):
         self._applied_gain_db = None
         # Only while the effective gain mode is "sw_auto" (agc.py).
         self._software_agc: SoftwareAgc | None = None
+        self.addons = None   # the Controller's AddonManager (decoders for claimed channels); None in tests
         self._had_real_hardware = False
 
         # Manual recording: used from the API thread, this loop and the slot
@@ -1779,7 +1783,24 @@ class ScannerEngine(threading.Thread):
         else:
             mod = Modulation.NFM if slot.modulation in digital_voice.DIGITAL_MODULATIONS else slot.modulation
             audio = slot.demod.demod(iq, mod, slot.offset_hz)
+        if slot.data_decoder is not None:
+            self._decode_data(slot, audio)
+            if self._is_silent_data(slot):
+                return      # decoded, not played and not recorded: nobody wants to hear (or keep) the data buzz
         self._play_and_record_slot(slot, audio, squelched=squelched)
+
+    def _is_silent_data(self, slot: _Slot) -> bool:
+        return slot.data_decoder is not None and not (self.addons is not None and self.addons.listen_to_data)
+
+    def _decode_data(self, slot: _Slot, audio: np.ndarray) -> None:
+        try:
+            events = slot.data_decoder.feed(audio)
+        except Exception:  # noqa: BLE001 - a decoder bug must never stop the scanner
+            traceback.print_exc()
+            slot.data_decoder = None
+            return
+        if events and self.addons is not None:
+            self.addons.publish_decoded(slot.data_addon, slot.freq_hz, events)
 
     def _at_recording_capacity(self) -> bool:
         """True when one more slot would exceed max_concurrent_recordings
@@ -1799,8 +1820,13 @@ class ScannerEngine(threading.Thread):
         recorder = Recorder(self.config.recording, AUDIO_RATE)
         name = self._channel_name_map.get(freq_hz) or self._channel_name_by_khz.get(round(freq_hz / 1000), "")
         modulation = self._channel_mod_map.get(freq_hz, Modulation.AM)
+        claim = self.addons.claim(freq_hz) if self.addons is not None else None
+        if claim is not None:
+            modulation = claim.modulation      # the decoder needs this demodulation whatever the band says
         offset_hz = float(freq_hz - window.center_hz)
         slot = _Slot(freq_hz, name, modulation, offset_hz, demod, noise_reducer, recorder)
+        if claim is not None:
+            slot.data_decoder, slot.data_addon = claim.make(), claim.addon_id
         slot.window = window  # remembered for _register_recency_boost on close
         if modulation in digital_voice.DIGITAL_MODULATIONS:
             try:
@@ -1816,6 +1842,8 @@ class ScannerEngine(threading.Thread):
         # already had it ("first heard" - only a strictly higher weight
         # actually takes over).
         weight = self._channel_weight_map.get(freq_hz, 0.0)
+        if self._is_silent_data(slot):
+            weight = -1.0                      # a data channel never takes the speaker from a voice channel
         if self._primary_freq is None or weight > self._primary_weight:
             self._primary_freq = freq_hz
             self._primary_weight = weight
@@ -1876,7 +1904,8 @@ class ScannerEngine(threading.Thread):
         if self.config.recording.enabled:
             finished_path = slot.recorder.end_transmission()
             slot.recorder.stop_session()
-            if finished_path is None and reason == "linger" and not slot.recording_failed and not (slot.dsd and slot.dsd.encrypted):
+            if (finished_path is None and reason == "linger" and not slot.recording_failed and not (slot.dsd and slot.dsd.encrypted)
+                    and not self._is_silent_data(slot)):
                 # Recorder dropped it - say so, a silent loss looks like a bug.
                 self.signals.log.emit(
                     (tr("{freq:.4f} MHz: no digital voice decoded - recording discarded") if slot.dsd

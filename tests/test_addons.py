@@ -191,5 +191,146 @@ class AcarsTest(unittest.TestCase):
         self.assertEqual(crc16(b"123456789"), 0x2189)          # CRC-16/KERMIT
 
 
+# -- hub, manager, external programs, engine ---------------------------------------------------------
+
+class HubTest(unittest.TestCase):
+    def test_events_get_ids_survive_a_restart_and_old_days_are_pruned(self) -> None:
+        from datetime import date, timedelta
+        from pathlib import Path
+        from falconsdr.addons.events import EventHub
+        folder = Path(tempfile.mkdtemp(dir=_HOME))
+        old = folder / f"events-{(date.today() - timedelta(days=30)).isoformat()}.jsonl"
+        old.write_text("{}\n", encoding="utf-8")
+        hub = EventHub(folder, keep_days=7)
+        a = hub.publish("aprs", {"kind": "aprs"}, "one")
+        b = hub.publish("acars", {"kind": "acars"}, "two")
+        self.assertEqual((a["id"], b["id"]), (1, 2))
+        self.assertEqual([e["summary"] for e in hub.since(1)], ["two"])
+        self.assertEqual([e["summary"] for e in hub.since(0, addon="aprs")], ["one"])
+        self.assertFalse(old.exists())
+        again = EventHub(folder, keep_days=7)                     # what is on disk comes back
+        self.assertEqual([e["summary"] for e in again.since(0)], ["one", "two"])
+
+
+class ManagerTest(unittest.TestCase):
+    def _manager(self):
+        from falconsdr.addons.manager import AddonManager
+        from falconsdr.config import AppConfig
+        return AddonManager(AppConfig())
+
+    def test_a_channel_is_claimed_only_by_an_enabled_add_on_and_only_the_nearest_grid_point(self) -> None:
+        from falconsdr.models import Modulation
+        m = self._manager()
+        self.assertIsNone(m.claim(131_725_000))                    # off by default
+        m.configure("acars", {"enabled": True})
+        claim = m.claim(131_724_000)                               # the 8.333 kHz grid is never exactly on it
+        self.assertEqual((claim.addon_id, claim.modulation), ("acars", Modulation.AM))
+        self.assertIsNone(m.claim(131_716_667))                    # the neighbouring grid point is a voice channel
+        m.configure("aprs", {"enabled": True})
+        self.assertEqual(m.claim(144_800_000).modulation, Modulation.NFM)    # whatever the band says
+        m.configure("acars", {"enabled": False, "frequencies": [131_550_000]})
+        self.assertIsNone(m.claim(131_725_000))
+        self.assertTrue(m.status()[0]["frequencies"] == [131_550_000])
+
+    def test_external_programs_are_found_or_reported_missing(self) -> None:
+        m = self._manager()
+        rows = {r["id"]: r for r in m.status()}
+        self.assertTrue(rows["acars"]["installed"])
+        self.assertEqual(rows["vdl2"]["installed"], bool(rows["vdl2"]["program"]))
+        m.configure("vdl2", {"path": "/no/such/dumpvdl2"})
+        self.assertFalse({r["id"]: r for r in m.status()}["vdl2"]["installed"])
+        with self.assertRaises(RuntimeError):
+            m.start_external("vdl2", {"driver": "auto", "device_args": ""})
+        import sys
+        m.configure("rtl_433", {"path": sys.executable})           # any existing file: only the receiver is checked now
+        with self.assertRaises(RuntimeError):
+            m.start_external("rtl_433", {"driver": "hackrf", "device_args": ""})
+
+    def test_the_command_line_names_the_dongle_and_the_channels(self) -> None:
+        m = self._manager()
+        self.assertEqual(m._device_args("vdl2", {"driver": "auto", "device_args": "serial=0001"}), ["--rtlsdr", "0001"])
+        self.assertEqual(m._device_args("rtl_433", {"driver": "rtlsdr", "device_args": "serial=0001"}), ["-d", ":0001"])
+        self.assertEqual(m._device_args("rtl_433", {"driver": "rtlsdr", "device_args": "index=1"}), ["-d", "1"])
+        self.assertEqual(m._device_args("rtl_433", {"driver": "auto", "device_args": ""}), [])
+
+
+class ExternalTest(unittest.TestCase):
+    def test_lines_are_read_and_the_exit_is_reported(self) -> None:
+        import sys
+        import threading
+        from falconsdr.addons.external import ExternalRunner
+        code = "import json;print(json.dumps({'model':'Acurite-Tower','id':7,'temperature_C':21.5,'humidity':55}),flush=True);print('noise')"
+        lines, done = [], threading.Event()
+        runner = ExternalRunner([sys.executable, "-c", code], lines.append, lambda c: (lines.append(f"exit {c}"), done.set()))
+        runner.start()
+        self.assertTrue(done.wait(10))
+        self.assertEqual(lines[-1], "exit 0")
+        self.assertEqual(len(lines), 3)
+
+    def test_stop_ends_a_running_program(self) -> None:
+        import sys
+        import threading
+        from falconsdr.addons.external import ExternalRunner
+        done = threading.Event()
+        runner = ExternalRunner([sys.executable, "-c", "import time;print('x',flush=True);time.sleep(60)"], lambda l: None, lambda c: done.set())
+        runner.start()
+        self.assertTrue(runner.alive)
+        runner.stop()
+        self.assertTrue(done.wait(10))
+        self.assertFalse(runner.alive)
+
+    def test_what_rtl_433_and_dumpvdl2_print(self) -> None:
+        from falconsdr.addons.external import parse_rtl_433, parse_vdl2
+        event, summary = parse_rtl_433('{"time":"2026-11-16 10:00:00","model":"Acurite-Tower","id":7,"channel":"A","temperature_C":21.5,"humidity":55,"battery_ok":1}')
+        self.assertEqual((event["kind"], event["device_id"]), ("sensor", 7))
+        self.assertIn("temperature_C 21.5", summary)
+        self.assertIsNone(parse_rtl_433("not json"))
+        line = ('{"vdl2":{"freq":136975000,"sig_level":-30.1,"avlc":{"src":{"addr":"48AF12","type":"Aircraft"},"dst":{"addr":"2B1234","type":"Ground station"},'
+                '"frame_type":"I","acars":{"reg":".SP-LWA","label":"H1","flight":"LO123","msg_text":"POS N5000.1E02100.2"}}}}')
+        event, summary = parse_vdl2(line)
+        self.assertEqual((event["kind"], event["registration"], event["freq_hz"]), ("vdl2", "SP-LWA", 136975000))
+        self.assertIn("LO123", summary)
+        event, summary = parse_vdl2('{"vdl2":{"freq":136725000,"avlc":{"src":{"addr":"AAAAAA"},"dst":{"addr":"BBBBBB"},"frame_type":"S"}}}')
+        self.assertEqual(summary, "AAAAAA → BBBBBB S")
+
+
+class EngineSlotTest(unittest.TestCase):
+    """A claimed channel is decoded, not played or recorded - and a voice channel keeps the speaker."""
+    def _setup(self, listen: bool):
+        from types import SimpleNamespace
+        from unittest import mock
+        from falconsdr.addons.aprs import AprsDecoder
+        from falconsdr.addons.manager import AddonManager
+        from falconsdr.config import AppConfig
+        from falconsdr.models import Modulation
+        from falconsdr.scanner_engine import ScannerEngine
+        cfg = AppConfig()
+        cfg.addons.enabled, cfg.addons.listen_to_data = ["aprs"], listen
+        mgr = AddonManager(cfg)
+        audio = _afsk(_ax25("SP9ABC-9", "APRS", ["WIDE1-1"], b"!4903.50N/07201.75W-engine"))
+        blocks = iter([audio[i:i + 375] for i in range(0, audio.size, 375)])
+        slot = SimpleNamespace(dsd=None, data_decoder=AprsDecoder(), data_addon="aprs", freq_hz=144_800_000, offset_hz=0.0,
+                               modulation=Modulation.NFM, demod=SimpleNamespace(demod=lambda iq, mod, off: next(blocks)))
+        fake = SimpleNamespace(addons=mgr, _play_and_record_slot=mock.Mock(), signals=SimpleNamespace(log=SimpleNamespace(emit=lambda m: None)))
+        fake._is_silent_data = lambda s: ScannerEngine._is_silent_data(fake, s)
+        fake._decode_data = lambda s, a: ScannerEngine._decode_data(fake, s, a)
+        return ScannerEngine, fake, slot, mgr, audio
+
+    def test_data_channel_is_decoded_and_stays_off_the_speaker(self) -> None:
+        engine, fake, slot, mgr, audio = self._setup(listen=False)
+        for _ in range(-(-audio.size // 375)):
+            engine._process_one_slot(fake, slot, None, False)
+        rows = mgr.hub.since(0)
+        self.assertEqual([r["source"] for r in rows], ["SP9ABC-9"])
+        self.assertEqual((rows[0]["addon"], rows[0]["freq_hz"]), ("aprs", 144_800_000))
+        self.assertIn("49.0583", rows[0]["summary"])
+        fake._play_and_record_slot.assert_not_called()
+
+    def test_listen_to_data_plays_it_too(self) -> None:
+        engine, fake, slot, mgr, audio = self._setup(listen=True)
+        engine._process_one_slot(fake, slot, None, False)
+        fake._play_and_record_slot.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

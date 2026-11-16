@@ -300,6 +300,20 @@ class LegalDisclaimerConfig:
 
 
 @dataclass
+class AddonsConfig:
+    """Add-ons (falconsdr/addons, AGENTS.md gotcha 58). Transcription and digital voice keep their own settings."""
+    enabled: list = field(default_factory=list)   # ids of the add-ons that are switched on
+    # Channels the built-in decoders listen on while scanning (a slot there decodes instead of playing/recording).
+    acars_frequencies_hz: list = field(default_factory=lambda: [131_525_000, 131_725_000, 131_825_000])
+    aprs_frequencies_hz: list = field(default_factory=lambda: [144_800_000])
+    vdl2_frequencies_hz: list = field(default_factory=lambda: [136_725_000, 136_775_000, 136_825_000, 136_875_000, 136_975_000])
+    listen_to_data: bool = False                  # hear (and record) the data channels like any other
+    paths: dict = field(default_factory=dict)     # id -> explicit path of an external program ("" = find it)
+    extra_args: dict = field(default_factory=dict)  # id -> extra command line of an external program
+    keep_days: int = 7                            # how long decoded messages are kept on disk
+
+
+@dataclass
 class AppConfig:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     # Bands scanned together with the Memory List: presets, custom ranges and
@@ -320,6 +334,7 @@ class AppConfig:
     transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
     remote_receiver: RemoteReceiverConfig = field(default_factory=RemoteReceiverConfig)
     location: LocationConfig = field(default_factory=LocationConfig)
+    addons: AddonsConfig = field(default_factory=AddonsConfig)
     trigger_level_dbfs: float = -30.0
     # Squelch: an offset (<= 0) from trigger_level_dbfs, never an absolute
     # level (gotcha 6). Acts only during LINGER, cutting the noise burst after
@@ -378,6 +393,7 @@ class AppConfig:
             transcription=_from_dict(TranscriptionConfig, raw.get("transcription", {})),
             remote_receiver=_from_dict(RemoteReceiverConfig, raw.get("remote_receiver", {})),
             location=_from_dict(LocationConfig, raw.get("location", {})),
+            addons=_from_dict(AddonsConfig, raw.get("addons", {})),
             trigger_level_dbfs=raw.get("trigger_level_dbfs", -30.0),
             squelch_enabled=raw.get("squelch_enabled", False),
             squelch_offset_db=raw.get("squelch_offset_db", -6.0),

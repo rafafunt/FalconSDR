@@ -357,6 +357,26 @@ def make_handler(app: App):
                 digital_voice.uninstall()
             self._json(digital_voice.install_state())
 
+        def addons(self, query: dict) -> None:
+            """Add-ons (falconsdr/addons): the catalog and its settings, running an external program that takes
+            the receiver, and the decoded messages."""
+            action = self.path.split("?")[0].rsplit("/", 1)[-1]
+            if action == "events":
+                rows = ctl.addons.hub.since(int((query.get("since") or ["0"])[0]), (query.get("addon") or [""])[0])
+                self._json({"events": rows})
+                return
+            if self.command == "POST":
+                body = self._body()
+                if action == "configure":
+                    ctl.addons.configure(str(body.get("id", "")), body)
+                elif action == "run":
+                    ctl.run_addon(str(body.get("id", "")))
+                elif action == "stop":
+                    ctl.stop_addon()
+                elif action == "clear":
+                    ctl.addons.hub.clear()
+            self._json({"addons": ctl.addons.status(), "running": ctl.addons.running_external})
+
         def reset(self, _query: dict) -> None:
             ctl.reset_to_defaults()
             self._json({"ok": True})
@@ -648,6 +668,12 @@ def make_handler(app: App):
         ("POST", "/api/access"): Handler.access,
         ("POST", "/api/quit"): Handler.quit,
         ("POST", "/api/autostart"): Handler.autostart,
+        ("GET", "/api/addons"): Handler.addons,
+        ("GET", "/api/addons/events"): Handler.addons,
+        ("POST", "/api/addons/configure"): Handler.addons,
+        ("POST", "/api/addons/run"): Handler.addons,
+        ("POST", "/api/addons/stop"): Handler.addons,
+        ("POST", "/api/addons/clear"): Handler.addons,
         ("GET", "/api/digital"): Handler.digital,
         ("POST", "/api/digital/install"): Handler.digital,
         ("POST", "/api/digital/uninstall"): Handler.digital,
