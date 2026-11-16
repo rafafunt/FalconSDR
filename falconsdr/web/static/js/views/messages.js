@@ -218,7 +218,7 @@ export function messagesView(root) {
         h('div.small.muted', rest.map((r) => `${isPlain(r) ? '' : t(r.label) + ' '}${readingText(r)}`).join(' · ')),
         main && (e.status || []).length ? h('div.row.wrap', { style: { gap: '4px' } }, ...e.status.map(statusChip)) : null,
         h('div.faint.small', t('last {time} · {n} readings', { time: fmtTime(new Date(e.ts * 1000).toISOString()), n: d.count })),
-        open.has(id) ? h('div.sensor-history', ...d.history.slice(-10).reverse().map((x) => h('div.small.mono', `${fmtTime(new Date(x.ts * 1000).toISOString())}  ${readingsOf(x).map(readingText).join(' · ')} ${(x.status || []).map((y) => `${y.key} ${y.value}`).join(' ')}`))) : null);
+        open.has(id) ? h('div.sensor-history', { onclick: (ev) => ev.stopPropagation() }, ...d.history.slice(-10).reverse().map((x) => h('div.small.mono', `${fmtTime(new Date(x.ts * 1000).toISOString())}  ${readingsOf(x).map(readingText).join(' · ')} ${(x.status || []).map((y) => `${y.key} ${y.value}`).join(' ')}`))) : null);
     });
     return h('div.sensor-grid', ...cards);
   }
@@ -242,7 +242,7 @@ export function messagesView(root) {
       h('div.row', { style: { gap: '10px', alignItems: 'baseline', flexWrap: 'wrap' } },
         h('b', g.who), last.flight ? h('span.muted', last.flight) : null, h('span.chip.accent', String(g.events.length)),
         h('span.mono.small.muted', fmtTime(new Date(last.ts * 1000).toISOString())), h('span.grow.muted.small', last.summary)),
-      open.has(id) ? h('div.col', { style: { gap: '2px', marginTop: '6px' } }, ...fold(g.events).slice(-30).reverse().map((x) => eventLine(x.last, x.count))) : null);
+      open.has(id) ? h('div.col', { style: { gap: '2px', marginTop: '6px' }, onclick: (ev) => ev.stopPropagation() }, ...fold(g.events).slice(-30).reverse().map((x) => eventLine(x.last, x.count))) : null);
     });
   }
 
@@ -267,7 +267,7 @@ export function messagesView(root) {
     mount(list, ...groups.map((g) => {
       const e = g.last;
       const toggleOpen = () => { if (open.has(e.id)) open.delete(e.id); else open.add(e.id); draw(); };
-      const detail = open.has(e.id) ? h('pre.msg-detail',
+      const detail = open.has(e.id) ? h('pre.msg-detail', { onclick: (ev) => ev.stopPropagation() },
         (g.count > 1 ? `${t('Received {n} times:', { n: g.count })} ${g.times.map((x) => fmtTime(new Date(x * 1000).toISOString())).join(', ')}\n\n` : '')
         + JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k]) => !['id', 'summary'].includes(k))), null, 2)) : null;
       return h('div.msg', { class: open.has(e.id) ? 'open' : '', tabindex: 0, role: 'button', onclick: toggleOpen,
@@ -276,14 +276,21 @@ export function messagesView(root) {
     }));
   }
 
+  let pendingDraw = false;
   async function poll() {
     if (paused) return;
+    if (pendingDraw) {            // the selection was let go: show what arrived meanwhile
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !list.contains(sel.anchorNode)) { pendingDraw = false; draw(); }
+    }
     try {
       const r = await api.get(`/api/addons/events?since=${lastId}`);
       if (r.events.length) {
         rows = rows.concat(r.events).slice(-MAX_ROWS * 3);
         lastId = r.events[r.events.length - 1].id;
-        draw();
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed && list.contains(sel.anchorNode)) pendingDraw = true;      // a redraw would drop what is being selected/copied
+        else draw();
       }
     } catch { /* the next poll tries again */ }
   }
