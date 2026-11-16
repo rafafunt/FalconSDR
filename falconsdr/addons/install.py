@@ -120,7 +120,9 @@ def _download(addon_id: str, name: str, url: str, sha256: str, dest: Path) -> No
 
 
 def _run(addon_id: str, cmd: list[str], env: dict) -> None:
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    # A build must not starve a scanner that is running: lowest priority on POSIX (Windows never builds here).
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                          preexec_fn=(lambda: os.nice(15)) if os.name == "posix" else None)
     if proc.returncode != 0:
         for line in proc.stdout.decode("utf-8", "replace").strip().splitlines()[-6:]:
             _say(addon_id, line)
@@ -148,7 +150,7 @@ def _install_vdl2() -> None:
         shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True)
         try:
-            jobs = str(max(1, os.cpu_count() or 2))
+            jobs = str(max(1, (os.cpu_count() or 2) // 2))      # half the cores: the scanner may be running
             for name, url, sha256 in _VDL2_SOURCES:
                 archive = work / f"{name}.tar.gz"
                 _download(addon_id, name, url, sha256, archive)
