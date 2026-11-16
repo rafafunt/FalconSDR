@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from pathlib import Path
 import unittest
 
 import numpy as np
@@ -204,8 +205,8 @@ class HubTest(unittest.TestCase):
         hub = EventHub(folder, keep_days=7)
         a = hub.publish("aprs", {"kind": "aprs"}, "one")
         b = hub.publish("acars", {"kind": "acars"}, "two")
-        self.assertEqual((a["id"], b["id"]), (1, 2))
-        self.assertEqual([e["summary"] for e in hub.since(1)], ["two"])
+        self.assertEqual(b["id"], a["id"] + 1)
+        self.assertEqual([e["summary"] for e in hub.since(a["id"])], ["two"])
         self.assertEqual([e["summary"] for e in hub.since(0, addon="aprs")], ["one"])
         self.assertFalse(old.exists())
         again = EventHub(folder, keep_days=7)                     # what is on disk comes back
@@ -1192,6 +1193,98 @@ class Rtl433OptionsTest(unittest.TestCase):
             self.skipTest("a shebang script")
         found = external.list_rtl433_protocols(path)
         self.assertEqual([(p["id"], p["default"]) for p in found], [(1, True), (2, True), (3, False)])
+
+
+class ReviewFixesTest(unittest.TestCase):
+    def test_program_path_and_arguments_need_this_computer_or_a_password(self) -> None:
+        from falconsdr.controller import Controller
+        from falconsdr.web.server import may_change_command_line
+        self.assertTrue(may_change_command_line("", "127.0.0.1"))
+        self.assertTrue(may_change_command_line("", "::1"))
+        self.assertTrue(may_change_command_line("secret", "192.168.1.50"))              # authenticated by the password
+        self.assertFalse(may_change_command_line("", "192.168.1.50"))                   # anybody on the network, no password
+        self.assertFalse(may_change_command_line("", "10.0.0.7"))
+        ctl = Controller()
+        try:       # the generic config endpoint never takes a command line, whoever asks
+            ctl.patch_config({"addons": {"paths": {"rtl_433": "/bin/sh"}, "extra_args": {"rtl_433": "-c x"}, "listen_to_data": True}})
+            self.assertEqual((ctl.config.addons.paths.get("rtl_433"), ctl.config.addons.extra_args.get("rtl_433")), (None, None))
+            self.assertTrue(ctl.config.addons.listen_to_data)                         # the rest of the patch still applies
+        finally:
+            ctl.shutdown()
+
+    def test_a_scheduled_add_on_that_dies_is_not_started_again_by_the_schedule(self) -> None:
+        import sys
+        import time
+        from falconsdr.addons.external import parse_rtl_433
+        from falconsdr.addons.manager import AddonManager
+        from falconsdr.config import AppConfig
+        failures = []
+        m = AddonManager(AppConfig(), lambda *_: None, lambda _id: None)
+        m.on_failed = lambda addon, why: failures.append(addon)
+        self.assertTrue(m.schedule_failed == set())
+        m._runs["rtl_433"] = {"runner": None, "since": time.time(), "cancelled": False}       # what start_external sets up
+        m._launch("rtl_433", [sys.executable, "-c", "import sys; sys.exit(3)"], parse_rtl_433, tries=0)     # starts, then dies by itself
+        for _ in range(100):
+            if failures:
+                break
+            time.sleep(0.05)
+        self.assertEqual(failures, ["rtl_433"])
+        self.assertIn("rtl_433", m.schedule_failed)                                 # the schedule's loop skips it now (can_run is False)
+        self.assertFalse(m.can_run("rtl_433"))
+
+    def test_ids_keep_counting_up_across_a_restart_and_vdl2_cooldown_is_per_aircraft(self) -> None:
+        from falconsdr.addons.events import EventHub
+        from falconsdr.config import AppConfig
+        from falconsdr.notifier import Notifier, _who
+        first = EventHub(None).publish("acars", {"kind": "acars"}, "x")["id"]
+        import time
+        time.sleep(0.01)
+        self.assertGreater(EventHub(None).publish("acars", {"kind": "acars"}, "x")["id"], first)   # a page that remembers `first` still gets news
+        self.assertNotEqual(_who({"kind": "vdl2", "src": "4840D6", "freq_hz": 136_975_000}), _who({"kind": "vdl2", "src": "4840D7", "freq_hz": 136_975_000}))
+        self.assertGreater(Notifier(AppConfig(), sender=lambda *a: None).seq, 1_000_000_000_000)
+
+    def test_telegram_api_base_must_be_http_and_results_are_copied(self) -> None:
+        from falconsdr.config import AppConfig
+        from falconsdr.notifier import Notifier, clean_channel
+        with self.assertRaises(ValueError):
+            clean_channel({"type": "telegram", "settings": {"token": "1:A", "chat_id": "2", "api_base": "file:///etc/passwd"}})
+        self.assertEqual(clean_channel({"type": "telegram", "settings": {"token": "1:A", "chat_id": "2"}})["settings"]["api_base"], "https://api.telegram.org")
+        n = Notifier(AppConfig(), sender=lambda *a: None)
+        n.recent.append({"id": 1, "results": {}})
+        copy = n.since(0)[0]
+        n.recent[0]["results"]["x"] = "ok"
+        self.assertEqual(copy["results"], {})                                       # the worker thread can no longer change what is being serialised
+
+    def test_the_decoder_list_is_asked_again_when_the_program_changes(self) -> None:
+        import os
+        import stat
+        import sys
+        from falconsdr.addons import external
+        if os.name == "nt":
+            self.skipTest("a shebang script")
+        folder = tempfile.mkdtemp(dir=_HOME)
+        path = os.path.join(folder, "fake_433")
+        def write(name: str) -> None:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"#!{sys.executable}\nimport sys\nsys.stderr.write('Supported device protocols:\\n    [01]  {name}\\n')\n")
+            os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+        write("Old decoder")
+        self.assertEqual(external.list_rtl433_protocols(path)[0]["name"], "Old decoder")
+        write("New decoder")
+        os.utime(path, ns=(2_000_000_000_000_000_000, 2_000_000_000_000_000_000))
+        self.assertEqual(external.list_rtl433_protocols(path)[0]["name"], "New decoder")
+
+
+class DongleChoiceTest(unittest.TestCase):
+    def test_the_extra_dongle_rules_of_the_listen_page(self) -> None:
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        script = Path(__file__).resolve().parent / "test_dongles.mjs"
+        out = subprocess.run([node, str(script)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr[-1500:])
 
 
 if __name__ == "__main__":

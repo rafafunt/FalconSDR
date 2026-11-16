@@ -48,7 +48,6 @@ export function notifyCard(box) {
     } catch (e) { errorToast(e); return; }
     if (rerender) render();
   }
-  const saveSoon = () => { clearTimeout(saving); saving = setTimeout(() => save(false), 500); };
 
   // -- channels ---------------------------------------------------------------------------------------------
   function channelCard(c) {

@@ -1,5 +1,6 @@
 // "Listen": the live scanner - what's on air now, controls, spectrum, quick
 // settings, the scanned bands and the activity feed.
+import { NETWORK, groupDevices, groupOf, groupOfExtra, heldGroups, isTwice, nextGroup, takenByExtra, usableFor } from './dongles.js';
 import { api, confirmDialog, errorToast, fmtChannel, fmtMHz, h, icon, modal, mount, select, seg, slider, t, toast, toggle } from '../core.js';
 import { BOOST_STEPS_DB, liveAudio } from '../live-audio.js';
 import { S, cfg, confirmRecording, on, patchConfig, setFastPolling } from '../state.js';
@@ -363,13 +364,7 @@ export function listenView(root) {
     const current = devices.findIndex((d) => d.driver === c.device.driver && d.args === c.device.device_args);
     const here = devices[current >= 0 ? current : 0];
     // One entry per physical receiver, and - when there is more than one way to open it - a second choice.
-    const groups = [];
-    const groupOf = (d) => d.group || d.driver;   // the online demo's devices have no group
-    devices.forEach((d) => {
-      let g = groups.find((x) => x.group === groupOf(d));
-      if (!g) groups.push(g = { group: groupOf(d), entries: [] });
-      g.entries.push(d);
-    });
+    const groups = groupDevices(devices);
     const myGroup = groups.find((g) => g.group === groupOf(here));
     const patchDevice = (d) => {
       // Another dongle may sit on another antenna - its Bias-T starts off again.
@@ -378,9 +373,8 @@ export function listenView(root) {
       patchConfig({ device: patch });
       renderDevice();
     };
-    const takenByExtra = (g) => g.group !== 'rtl_tcp' && (c.device.extra_devices || []).some((x) => g.entries.some((d) => d.driver === x.driver && d.args === x.device_args));
     const sel = select(groups.map((g, i) => [i, stripMethod(g.entries[0].label)]), groups.indexOf(myGroup), (v) => {
-      if (takenByExtra(groups[+v])) { toast(t('An extra dongle already uses this receiver.'), 'bad'); renderDevice(); return; }
+      if (takenByExtra(groups[+v], c.device.extra_devices || [])) { toast(t('An extra dongle already uses this receiver.'), 'bad'); renderDevice(); return; }
       patchDevice(groups[+v].entries[0]);
     });
     const methods = myGroup.entries.length > 1
@@ -410,21 +404,18 @@ export function listenView(root) {
     // An extra dongle must be a specific one - and never a simulation next to real hardware (fake
     // transmissions in the library, part of the band no longer really listened to).
     const sim = c.device.driver === 'simulated';
-    const usable = (d) => d.driver !== 'auto' && (d.driver === 'simulated') === sim;
+    const usable = usableFor(sim);
     const extraGroups = groups.filter((g) => g.entries.some(usable));
-    const groupOfDevice = (x) => extraGroups.find((g) => g.entries.some((d) => d.driver === x.driver && (d.driver === 'rtl_tcp' || d.args === x.device_args)));
     const setExtra = (list) => { patchConfig({ device: { extra_devices: list } }); renderDevice(); };
     const extraInputs = [];
-    // One physical receiver can scan once: the first one and the other extras hold theirs. Network receivers (rtl_tcp) may repeat - each has its own address.
-    const heldBy = (except) => new Set([myGroup.group, ...extra.filter((_, j) => j !== except).map((x) => (groupOfDevice(x) || {}).group)].filter((g) => g && g !== 'rtl_tcp'));
     const extraRows = extra.map((x, i) => {
-      const mine = groupOfDevice(x);
-      const taken = heldBy(i);
+      const mine = groupOfExtra(extraGroups, x);
+      const taken = heldGroups(extraGroups, myGroup.group, extra, i);
       const options = extraGroups.filter((g) => g === mine || !taken.has(g.group));
       const setMine = (patch) => setExtra(extra.map((e, j) => (j === i ? { ...e, ...patch } : e)));
       const pickGroup = (g) => {
         const d = g.entries.find(usable);
-        setMine({ driver: d.driver, device_args: d.driver === 'rtl_tcp' ? '' : d.args, bias_tee: false });
+        setMine({ driver: d.driver, device_args: d.driver === NETWORK ? '' : d.args, bias_tee: false });
       };
       const s = select([...(mine ? [] : [[-1, t('(not connected)')]]), ...options.map((g) => [extraGroups.indexOf(g), stripMethod(g.entries[0].label)])],
         mine ? extraGroups.indexOf(mine) : -1, (v) => pickGroup(extraGroups[+v]));
@@ -443,7 +434,7 @@ export function listenView(root) {
         onchange: (e) => setMine({ sample_rate_hz: e.target.value ? Math.round(+e.target.value * 1e6) : 0 }),
       });
       extraInputs.push(xWidth);
-      const twice = extra.some((o, j) => j !== i && o.driver === x.driver && o.device_args === x.device_args) || (x.driver === c.device.driver && x.device_args === c.device.device_args);
+      const twice = isTwice(c.device, extra, i);
       return h('div.col', { style: { gap: '6px' } }, h('label.field', t('Dongle {n}', { n: i + 2 }), h('div.row', s, del)),
         xMethod ? h('label.field', t('Access method'), xMethod) : null,
         xAddr ? h('label.field', t('rtl_tcp address'), xAddr) : null,
@@ -452,12 +443,10 @@ export function listenView(root) {
     });
     const add = h('button.ghost.small', {
       onclick: () => {
-        const taken = heldBy(-1);
-        const g = extraGroups.find((x) => x.group !== 'rtl_tcp' && !taken.has(x.group))
-          || (extraGroups.find((x) => x.group === 'rtl_tcp') && ![c.device, ...extra.map((x) => ({ driver: x.driver, device_args: x.device_args }))].some((x) => x.driver === 'rtl_tcp' && !x.device_args) ? extraGroups.find((x) => x.group === 'rtl_tcp') : null);
+        const g = nextGroup(extraGroups, myGroup.group, c.device, extra);
         if (!g) { toast(t('No other SDR device found - plug it in, then reload this page.'), 'bad'); return; }
         const d = g.entries.find(usable);
-        setExtra([...extra, { driver: d.driver, device_args: d.driver === 'rtl_tcp' ? '' : d.args }]);
+        setExtra([...extra, { driver: d.driver, device_args: d.driver === NETWORK ? '' : d.args }]);
       },
     }, icon('plus'), t('Scan with another dongle (experimental)'));
     deviceInputs = [sel, ...(methods ? [methods] : []), ...(addr ? [addr] : []), bw, bias.querySelector('input'), add, ...extraInputs];

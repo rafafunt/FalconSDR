@@ -925,6 +925,7 @@ catalog loads; wrap them in a function called at point of use
     program that dies with that error within 10 s is started again (3 tries). With several receivers
     `Controller.run_addon(id, dongle)` pauses only that engine (`_restart_engine` brings it back); the others scan on.
     Everything but the Linux build of dumpvdl2 is unrun on Windows/macOS - say so before claiming support.
+    **A program path and its extra arguments are a command line**: `/api/addons/configure` takes `path`/`extra_args` only from this computer or with the access password (`may_change_command_line`), and the generic `/api/config` patch drops `addons.paths`/`extra_args` - without that, anyone on the network of a password-less server could run any command. A scheduled add-on that exits with an error goes into `schedule_failed` (else `reconcile_schedule` restarts it every 5 s and the scanner is paused each time). Event and notification ids start from the clock in ms, so a page open across a restart keeps getting news.
     **Receivers**: `AddonsConfig.receivers` = per add-on receiver index (external: the one it holds, default 0; built-in:
     -1 = any, else `claim(freq, engine_index)` only on that receiver). A held receiver goes into `Controller._held` =
     `config._held_dongles`, which `antenna_range.device_ranges` turns into an empty range, so the other engines take

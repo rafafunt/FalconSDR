@@ -714,6 +714,9 @@ class Controller:
         old_root = self.config.recording.output_dir
         for locked in ("access_token", "workers", "notify"):     # these have their own endpoints
             patch.pop(locked, None)
+        if isinstance(patch.get("addons"), dict):
+            for locked in ("paths", "extra_args"):               # a command line: only /api/addons/configure, which checks who asks
+                patch["addons"].pop(locked, None)
         merge_patch(copy.deepcopy(self.config), patch)  # rejects a bad value before anything is applied
         merge_patch(self.config, patch)
         # An emptied folder field would otherwise mean "the current directory".

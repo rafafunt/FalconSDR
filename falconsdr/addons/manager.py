@@ -364,6 +364,7 @@ class AddonManager:
                     self.last_error = f"{addon_id}: exit {code} {shown}".strip()
                     self._log(tr("{name} stopped by itself (exit {code}) {tail}").format(name=spec.name, code=code, tail=shown))
             if code and not cancelled:
+                self.schedule_failed.add(addon_id)      # the schedule must not restart it every 5 s (cleared when its range is over)
                 self.on_failed(addon_id, f"{spec.name} stopped by itself (exit {code})")
             self._on_stopped(addon_id)
 

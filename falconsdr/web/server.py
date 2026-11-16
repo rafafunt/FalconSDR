@@ -43,6 +43,11 @@ _MAX_JSON = 32 * 1024 * 1024
 _KEEPALIVE_S = 5.0
 _LOGIN_FAIL_DELAY_S = 1.0  # a threaded server: this slows a password guesser, not other users
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+
+
+def may_change_command_line(token: str, client_ip: str) -> bool:
+    """A program path plus arguments is a command line: only this computer, or somebody who has the access password."""
+    return bool(token) or client_ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 _KEEPALIVE = bytes(250)  # 10 ms of silence at 12.5 kHz/16-bit: keeps idle streams alive, detects dead ones
 
 
@@ -382,6 +387,9 @@ def make_handler(app: App):
             if self.command == "POST":
                 body = self._body()
                 if action == "configure":
+                    if ("path" in body or "extra_args" in body) and not may_change_command_line(app.token, self.client_address[0]):
+                        # A program path plus arguments is a command line: with no password on the network anyone could run anything.
+                        return self._error(403, i18n.tr("Changing a program's path or options needs an access password (Settings) or this computer."))
                     ctl.addons.configure(str(body.get("id", "")), body)
                 elif action == "run":
                     ctl.run_addon(str(body.get("id", "")), int(body["dongle"]) if body.get("dongle") is not None else None)
@@ -393,8 +401,6 @@ def make_handler(app: App):
                     if ctl.addons.running_external == str(body.get("id", "")):
                         raise ValueError(i18n.tr("Another add-on is running - stop it first."))
                     installer.uninstall(str(body.get("id", "")))
-                elif action == "clear":
-                    ctl.addons.hub.clear()
             self._json({"addons": ctl.addons.status(), "running": ctl.addons.running_external})
 
         def notify(self, query: dict) -> None:
@@ -716,7 +722,6 @@ def make_handler(app: App):
         ("POST", "/api/addons/configure"): Handler.addons,
         ("POST", "/api/addons/run"): Handler.addons,
         ("POST", "/api/addons/stop"): Handler.addons,
-        ("POST", "/api/addons/clear"): Handler.addons,
         ("POST", "/api/addons/install"): Handler.addons,
         ("POST", "/api/addons/uninstall"): Handler.addons,
         ("GET", "/api/digital"): Handler.digital,

@@ -81,16 +81,17 @@ def describe_key(key: str) -> tuple[str, str, str] | None:
     return None
 
 
+# The fields a rule can compare (for the browser): one per distinct label and unit.
+_RULE_KEYS = ("temperature_C", "temperature_F", "humidity", "moisture", "pressure_hPa", "pressure_kPa", "pressure_PSI", "wind_avg_km_h", "wind_avg_m_s",
+              "wind_max_km_h", "wind_max_m_s", "wind_dir_deg", "rain_mm", "rain_rate_mm_h", "light_lux", "uvi", "strike_count", "depth_cm", "pm2_5_ug_m3",
+              "co2_ppm", "power_W", "energy_kWh", "voltage_V", "current_A", "battery_V", "battery_mV", "battery_pct", "setpoint_C")
+
+
 def metrics() -> list[dict]:
-    """The fields a rule or a chart can use (for the browser): one entry per distinct label+unit."""
-    seen, out = set(), []
-    for _, label, unit, group in _FAMILIES:
-        base = {"Temperature": "temperature_C", "Humidity": "humidity", "Pressure": "pressure_kPa"}.get(label)
-        key = next((k for k in ("temperature_C", "temperature_F", "humidity", "moisture", "pressure_hPa", "pressure_kPa", "pressure_PSI", "wind_avg_km_h", "wind_avg_m_s",
-                                "wind_max_km_h", "wind_max_m_s", "wind_dir_deg", "rain_mm", "rain_rate_mm_h", "light_lux", "uvi", "strike_count", "depth_cm", "pm2_5_ug_m3",
-                                "co2_ppm", "power_W", "energy_kWh", "voltage_V", "current_A", "battery_V", "battery_mV", "battery_pct", "setpoint_C")
-                    if (label, unit) == (describe_key(k) or ("", ""))[:2]), None)
-        if key and (label, unit) not in seen:
+    out, seen = [], set()
+    for key in _RULE_KEYS:
+        label, unit, group = describe_key(key)
+        if (label, unit) not in seen:
             seen.add((label, unit))
             out.append({"key": key, "label": label, "unit": unit, "group": group})
     out.append({"key": "battery_ok", "label": "Battery OK", "unit": "", "group": "battery"})
@@ -145,6 +146,6 @@ def interpret(model: str, fields: dict) -> dict:
     return {"category": cat, "readings": readings, "status": status, "primary": primary}
 
 
-def redact(fields: dict, cat: str) -> dict:
+def redact(fields: dict) -> dict:
     """What may be stored: never a remote's code, and no decoder noise."""
-    return {k: v for k, v in fields.items() if k not in SECRET and not (TECH.match(k) and k not in ("id", "channel"))} if cat != "other" or True else fields
+    return {k: v for k, v in fields.items() if k not in SECRET and not (TECH.match(k) and k not in ("id", "channel"))}

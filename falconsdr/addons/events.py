@@ -18,7 +18,7 @@ class EventHub:
         self._lock = threading.Lock()
         self._ring: deque[dict] = deque(maxlen=ring)
         self._link_ring: deque[dict] = deque(maxlen=600)    # link-layer frames flood the ring: they get a small one of their own
-        self._next_id = 1
+        self._next_id = int(time.time() * 1000)      # a page open across a restart must not wait for the new numbers to pass its old ones
         self._pruned_on: date | None = None
         self._load_today()
 
@@ -64,11 +64,6 @@ class EventHub:
             rows = [e for e in (*self._ring, *self._link_ring) if e["id"] > after_id and (not addon or e["addon"] == addon)]
         rows.sort(key=lambda e: e["id"])
         return rows[-limit:]
-
-    def clear(self) -> None:
-        with self._lock:
-            self._ring.clear()
-            self._link_ring.clear()
 
     def _append(self, event: dict) -> None:
         if self._dir is None:

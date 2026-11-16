@@ -105,14 +105,18 @@ class ExternalRunner:
 
 # -- what the programs print -------------------------------------------------------------------------
 
-_PROTOCOLS: dict[str, list[dict]] = {}
+_PROTOCOLS: dict[tuple, list[dict]] = {}       # keyed by the program file too: a newer rtl_433 numbers its decoders differently
 
 
 def list_rtl433_protocols(program: str) -> list[dict]:
     """The decoders of the installed rtl_433: [{"id", "name", "default"}] (default False = off unless asked for). Asked
     of the program itself (``rtl_433 -R help``, which does not open the receiver), so numbers always fit its version."""
-    if program in _PROTOCOLS:
-        return _PROTOCOLS[program]
+    try:
+        key = (program, os.stat(program).st_mtime_ns)
+    except OSError:
+        key = (program, 0)
+    if key in _PROTOCOLS:
+        return _PROTOCOLS[key]
     kwargs = {"creationflags": NO_WINDOW} if sys.platform == "win32" else {}
     try:
         out = subprocess.run([program, "-R", "help"], capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -126,7 +130,7 @@ def list_rtl433_protocols(program: str) -> list[dict]:
         if m:
             found.append({"id": int(m.group(1)), "name": m.group(3), "default": not m.group(2) and not m.group(3).startswith("*")})
     if found:
-        _PROTOCOLS[program] = found
+        _PROTOCOLS[key] = found
     return found
 
 
@@ -149,7 +153,7 @@ def parse_rtl_433(line: str, allow_remotes: bool = False) -> tuple[dict, str] | 
     info = interpret(data["model"], data)
     if info["category"] == "remote" and not allow_remotes:
         return None
-    fields = redact({k: v for k, v in data.items() if k not in ("time", "model")}, info["category"])
+    fields = redact({k: v for k, v in data.items() if k not in ("time", "model")})
     if reported != data["model"]:
         fields["model_reported"] = reported
     who = f"{data['model']}" + (f" #{data['id']}" if "id" in data else "")

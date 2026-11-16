@@ -72,12 +72,13 @@ def clean_channel(raw: dict, old: dict | None = None) -> dict:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", out["topic"]):
             raise ValueError("ntfy: the topic is letters, digits, - and _ (up to 64)")
         out["priority"] = min(5, max(1, out["priority"]))
-    if kind in ("ntfy", "webhook"):
-        url = out["server"] if kind == "ntfy" else out["url"]
+    if kind == "telegram":
+        out["api_base"] = out["api_base"] or "https://api.telegram.org"
+    if kind in ("ntfy", "webhook", "telegram"):
+        url = {"ntfy": out.get("server"), "webhook": out.get("url"), "telegram": out.get("api_base")}[kind]
         if urlparse(url).scheme not in ("http", "https") or not urlparse(url).netloc:
             raise ValueError(f"{kind}: the address must start with http:// or https://")
     if kind == "telegram":
-        out["api_base"] = out["api_base"] or "https://api.telegram.org"
         if not out["token"] or not out["chat_id"]:
             raise ValueError("telegram: a bot token and a chat id are needed")
     if kind == "mqtt":
@@ -126,7 +127,7 @@ def _haystack(e: dict) -> str:
 def _who(e: dict) -> str:
     if e.get("kind") == "sensor":
         return f"{e.get('model', '')} #{e.get('device_id')}"
-    return str(e.get("registration") or e.get("source") or e.get("name") or e.get("freq_hz") or "")
+    return str(e.get("registration") or e.get("source") or e.get("src") or e.get("name") or e.get("freq_hz") or "")
 
 
 def _km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -299,7 +300,7 @@ class Notifier:
         self._held: dict[tuple, int] = {}      # matches swallowed per (rule, who) since its last notice
         self._rate: dict[str, deque] = {}
         self.recent: deque[dict] = deque(maxlen=100)
-        self._seq = 0
+        self._seq = int(time.time() * 1000)          # same reason as EventHub ids: one number line across restarts
         self._queue: queue.Queue = queue.Queue()
         threading.Thread(target=self._worker, daemon=True, name="notifier").start()
 
@@ -394,4 +395,4 @@ class Notifier:
 
     def since(self, after: int = 0) -> list[dict]:
         with self._lock:
-            return [dict(i) for i in self.recent if i["id"] > after]
+            return [{**i, "results": dict(i["results"])} for i in self.recent if i["id"] > after]      # the worker still fills results
