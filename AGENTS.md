@@ -931,6 +931,16 @@ catalog loads; wrap them in a function called at point of use
     `Controller._join`, never `Thread.join` directly, on engines). `_addon_ended` (program exit or Stop) releases the
     receiver off the reader thread; with ONE receiver the scanner cannot start while an add-on holds it. VDL2 messages
     carry `layer` ("acars"/"data"/"link", guessed from dumpvdl2's `avlc` keys): the UI shows only "acars" by default.
+    **Schedule with receivers and add-ons**: `ScheduleEntry.receivers` (empty = all, which split it; named = those receivers'
+    own, they ignore shared entries) and `.addon` ("" = scan, else rtl_433/vdl2 on `receivers[0]` or the add-on's own
+    receiver; the first entry wins a receiver). `schedule.assignments()` gives every receiver a `Plan` (add-on, bands,
+    Memory List, `group` = who splits it) - every engine computes all plans from the same config, so they agree without
+    talking; the engine partitions by `group` (`_schedule_plan`, `eff` ranges) and `plan_signature` triggers rebuilds.
+    The Controller's `schedule-addons` thread (`reconcile_schedule`, every 5 s) starts/stops add-ons the schedule wants
+    (`addon_ok` = installed and not failed, so a receiver is never wasted on a program that cannot run); a scheduled add-on
+    stopped by hand stays stopped until its range is over (`_sched_suppressed`). Several add-ons may run at once, one per
+    receiver (`AddonManager._runs`, `Controller._addon_dongles`). The page shows a lane per receiver (`.tl`) and a
+    "now" line per receiver (`live.schedule_now`). Old schedules (no `receivers`/`addon`) behave as before.
     Tested with simulated receivers only.
     **Statistics** (`addons/stats.py`, `#/stats/addons[/id]`): hourly buckets per add-on (counts, who, channel, labels, a few
     extremes - never text) in `CONFIG_DIR/addons/stats/stats-DATE.json`, 90 days; the messages themselves only

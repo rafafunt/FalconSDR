@@ -194,6 +194,19 @@ label.field > span.hint { color: var(--secondary); font-weight: 400; }
 .seg button.active { background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,.12); font-weight: 600; }
 @media (prefers-color-scheme: dark) { .seg button.active { background: var(--fill-strong); } }
 
+/* Schedule timeline: a lane per receiver, blocks for what the entries do through the day */
+.tl { display: grid; grid-template-columns: 130px 1fr; gap: 8px 12px; align-items: start; margin: 10px 0; }
+.tl-label { font-size: 13px; font-weight: 600; padding-top: 8px; }
+.tl-lane { position: relative; background: var(--fill); border-radius: 8px; background-image: repeating-linear-gradient(90deg, transparent 0 calc(12.5% - 1px), var(--separator) calc(12.5% - 1px) 12.5%); }
+.tl-block { position: absolute; height: 28px; padding: 0 8px; border-radius: 6px; font-size: 12px; font-weight: 600; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--label); }
+.tl-block.scan { background: var(--accent-tint); border: 1px solid var(--accent); }
+.tl-block.addon { background: color-mix(in srgb, var(--purple) 22%, transparent); border: 1px solid var(--purple); }
+.tl-block:hover { filter: brightness(1.08); }
+.tl-now { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--red-fill); }
+.tl-axis { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--secondary); }
+.chip.addon { color: var(--purple); background: color-mix(in srgb, var(--purple) 15%, transparent); }
+@media (max-width: 640px) { .tl { grid-template-columns: 70px 1fr; } .tl-label { font-size: 11px; } }
+
 /* Page-level tabs (Memory List / Blacklist, Voice / Add-ons): large, so nobody has to know they are there */
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--separator); overflow-x: auto; scrollbar-width: none; }
 .tab { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 10px 18px; background: transparent; color: var(--secondary); font-size: 15px; font-weight: 600; border-radius: 10px 10px 0 0; border-bottom: 3px solid transparent; margin-bottom: -1px; white-space: nowrap; }

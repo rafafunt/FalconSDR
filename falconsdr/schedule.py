@@ -85,7 +85,7 @@ def assignments(config: AppConfig, count: int, held: Iterable[int] = (), now: dt
         e = sched.entries[i]
         if not e.addon or not addon_ok(e.addon):
             continue
-        for k in (e.receivers or [addon_receiver(e.addon)]):
+        for k in (e.receivers[:1] or [addon_receiver(e.addon)]):          # one program runs on one receiver
             if 0 <= k < count and not plans[k].addon and k not in held:
                 plans[k].addon, plans[k].entries = e.addon, (i,)
     free = [k for k in range(count) if not plans[k].addon and k not in held]

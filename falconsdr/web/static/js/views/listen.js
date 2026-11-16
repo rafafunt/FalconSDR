@@ -117,13 +117,13 @@ export function listenView(root) {
   let addonName = '';
 
   async function pollAddon() {
-    const id = S.live && S.live.addon;
-    if (!id) return;
+    const ids = ((S.live && S.live.addons) || []).map((a) => a.id);
+    if (!ids.length) return;
     try {
-      const r = await api.get(`/api/addons/events?addon=${id}&since=${addonLastId}`);
+      const r = await api.get(`/api/addons/events?since=${addonLastId}`);
       if (r.events.length) {
         addonLastId = r.events[r.events.length - 1].id;
-        addonSeen = addonSeen.concat(r.events).slice(-200);
+        addonSeen = addonSeen.concat(r.events.filter((e) => ids.includes(e.addon))).slice(-200);
       }
     } catch { return; }
     drawAddon();
@@ -154,7 +154,8 @@ export function listenView(root) {
       h('span.mono.small.muted', { style: { width: '70px' } }, (f / 1e6).toFixed(3)),
       h('div.chan-bar', h('div', { style: { width: `${Math.max(3, 100 * c.n / top)}%` } })),
       h('span.small.muted', { style: { minWidth: '90px', textAlign: 'right' } }, c.levels ? `${c.n} · ${(c.sum / c.levels).toFixed(0)} dB` : String(c.n)))));
-    mount(addonTitle, h('span.chip.good.live', h('span.dot'), t('{name} is using the receiver', { name: names[live.addon] || live.addon })),
+    const running = (live.addons || []).map((a) => names[a.id] || a.id);
+    mount(addonTitle, h('span.chip.good.live', h('span.dot'), running.length > 1 ? t('{name} are using receivers', { name: running.join(', ') }) : t('{name} is using the receiver', { name: names[live.addon] || live.addon })),
       h('span.faint.small', t('running for {time}', { time: clock })), h('span.spacer'),
       h('span.faint.small', t('{n} messages decoded', { n: addonSeen.length })));
     const groups = fold(shown).slice(-8).reverse();

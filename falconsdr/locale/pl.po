@@ -3405,3 +3405,96 @@ msgstr "Usuń wszystkie kanały"
 
 msgid "Empty the blacklist"
 msgstr "Opróżnij czarną listę"
+
+msgid "The schedule is off - the switches in Listen → What to scan decide."
+msgstr "Harmonogram jest wyłączony - decydują przełączniki w Nasłuch → Co skanować."
+
+msgid "No time range right now"
+msgstr "Teraz żaden przedział czasu"
+
+msgid "{name} runs here"
+msgstr "działa tu {name}"
+
+msgid "by the schedule"
+msgstr "z harmonogramu"
+
+msgid "started by hand"
+msgstr "uruchomiony ręcznie"
+
+msgid "scanning"
+msgstr "skanuje"
+
+msgid "nothing planned"
+msgstr "nic nie zaplanowano"
+
+msgid "The day at a glance"
+msgstr "Dzień w skrócie"
+
+msgid "Add-on"
+msgstr "Dodatek"
+
+msgid "Empty stretches: scanning as usual"
+msgstr "Puste odcinki: skanowanie jak zwykle"
+
+msgid "Empty stretches: nothing is scanned"
+msgstr "Puste odcinki: nic nie jest skanowane"
+
+msgid "The schedule is off"
+msgstr "Harmonogram jest wyłączony"
+
+msgid "Add a scanning time range"
+msgstr "Dodaj przedział skanowania"
+
+msgid "Add an add-on time range"
+msgstr "Dodaj przedział z dodatkiem"
+
+msgid "What to do"
+msgstr "Co robić"
+
+msgid "{name} is not installed - this range is ignored until it is. Install it in Add-ons."
+msgstr "{name} nie jest zainstalowany - ten przedział jest ignorowany, dopóki go nie będzie. Zainstaluj go w Dodatkach."
+
+msgid "Receivers"
+msgstr "Odbiorniki"
+
+msgid "As set in Add-ons ({name})"
+msgstr "Jak w Dodatkach ({name})"
+
+msgid "The program holds this receiver while the range runs; the others keep scanning."
+msgstr "Program zajmuje ten odbiornik na czas przedziału; pozostałe skanują dalej."
+
+msgid "The scanner pauses while the range runs."
+msgstr "Skaner jest wstrzymany na czas przedziału."
+
+msgid "Only these receivers scan this range, and they scan nothing else meanwhile."
+msgstr "Ten przedział skanują tylko te odbiorniki i nie skanują w tym czasie niczego innego."
+
+msgid "All receivers share this range: together they scan what it selects."
+msgstr "Wszystkie odbiorniki dzielą ten przedział: razem skanują to, co wybrano."
+
+msgid "Overlaps with {names} on the same receiver - only the first of them runs."
+msgstr "Nakłada się z: {names} na tym samym odbiorniku - uruchomi się tylko pierwszy z nich."
+
+msgid "Add-on settings →"
+msgstr "Ustawienia dodatku →"
+
+msgid "Schedule: {addon} has this receiver now."
+msgstr "Harmonogram: ten odbiornik ma teraz {addon}."
+
+msgid "Schedule: {name} started on receiver {n}."
+msgstr "Harmonogram: uruchomiono {name} na odbiorniku {n}."
+
+msgid "Schedule: could not start {name}: {error}"
+msgstr "Harmonogram: nie udało się uruchomić {name}: {error}"
+
+msgid "Schedule: {name} stopped."
+msgstr "Harmonogram: zatrzymano {name}."
+
+msgid "{name} is already running."
+msgstr "{name} już działa."
+
+msgid "Receiver {n} is already used by {name} - stop it first."
+msgstr "Odbiornik {n} jest już używany przez {name} - najpierw go zatrzymaj."
+
+msgid "{name} are using receivers"
+msgstr "{name} używają odbiorników"

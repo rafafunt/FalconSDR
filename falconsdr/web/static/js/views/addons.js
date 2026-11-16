@@ -25,7 +25,7 @@ const devName = (d) => {
   const args = String(d.device_args || '');
   return (args.match(/label=([^,]+)/) || args.match(/serial=([^,]+)/) || [])[1] || d.driver || '';
 };
-const receiverName = (i) => (i === 0 ? t('Receiver 1 (main)') : `${t('Receiver {n}', { n: i + 1 })} (${devName(cfg().device.extra_devices[i - 1])})`);
+export const receiverName = (i) => (i === 0 ? t('Receiver 1 (main)') : `${t('Receiver {n}', { n: i + 1 })} (${devName(cfg().device.extra_devices[i - 1])})`);
 
 function setting(title, desc, control) {
   return h('div.setting', h('div', h('b', title), desc ? h('p', desc) : null), control);
@@ -166,7 +166,7 @@ export function decodersCard(box) {
         starting === a.id
           ? h('button.primary', { disabled: true }, h('span.spinner'), t('Starting…'))
           : a.running
-            ? h('button.primary', { onclick: () => act('/api/addons/stop') }, icon('stop'), t('Stop and resume scanning'))
+            ? h('button.primary', { onclick: () => act('/api/addons/stop', { id: a.id }) }, icon('stop'), t('Stop and resume scanning'))
             : h('button.primary', { disabled: !!starting, onclick: () => act('/api/addons/run', { id: a.id }) }, icon('play'),
               several ? t('Start') : t('Start (pauses the scanner)')),
         h('span.faint.small', several ? t('It needs its receiver for itself: that receiver stops scanning while it runs.')
