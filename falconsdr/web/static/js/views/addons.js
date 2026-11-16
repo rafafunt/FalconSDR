@@ -6,7 +6,8 @@ import { S, cfg, loadSettings, patchConfig } from '../state.js';
 import { newBand } from './bands.js';
 
 const mhz = (hz) => (hz / 1e6).toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
-const parseMhz = (text) => text.split(/[\s,;]+/).filter(Boolean).map((v) => Math.round(parseFloat(v.replace(',', '.')) * 1e6)).filter((v) => v > 0);
+// "131.525, 131.725" separates (comma and space); "131,525" (comma between digits) is a decimal comma.
+const parseMhz = (text) => text.replace(/,\s+/g, ' ').split(/[\s;]+/).filter(Boolean).map((v) => Math.round(parseFloat(v.replace(',', '.')) * 1e6)).filter((v) => v > 0);
 
 const gcd = (a, b) => (b ? gcd(b, a % b) : a);
 // Is this frequency inside a scanned band or a Memory List channel? (A schedule may still switch it off.)
@@ -55,7 +56,9 @@ export function decodersCard(box) {
 
   async function load() {
     try { rows = (await api.get('/api/addons')).addons; } catch { return; }
-    if (!busy) render();
+    const a = document.activeElement;
+    const editing = box.contains(a) && ['INPUT', 'SELECT', 'SUMMARY'].includes(a.tagName);   // a refresh would wipe what is being typed
+    if (!busy && !editing) render();
     if (rows.some((r) => r.install && r.install.running)) { clearInterval(timer); timer = setInterval(load, 1500); } else { clearInterval(timer); timer = setInterval(load, 3000); }
   }
 
@@ -75,6 +78,40 @@ export function decodersCard(box) {
       select(options, String(a.receiver), (v) => act('/api/addons/configure', { id: a.id, receiver: +v }), { style: { width: 'auto' }, disabled: a.running }));
   }
 
+  // -- settings of an external program: friendly controls that the server turns into the program's flags ------
+  const BANDS = () => [
+    ['433', t('433.92 MHz - most sensors')], ['868', t('868.3 MHz - European 868 MHz sensors')], ['315', t('315 MHz')],
+    ['915', t('915 MHz')], ['433+868', t('433.92 and 868.3 MHz (switches between them)')], ['custom', t('Own frequencies…')],
+  ];
+  const setOption = (a, key, value) => act('/api/addons/configure', { id: a.id, options: { [key]: value } });
+  const numberOption = (a, key, attrs) => h('input', { type: 'number', value: a.options[key], style: { width: '110px' }, ...attrs,
+    onchange: (e) => setOption(a, key, e.target.value) });
+
+  function optionRows(a) {
+    const o = a.options;
+    const rowsOut = [];
+    if (a.id === 'rtl_433') {
+      rowsOut.push(setting(t('Band'), t('Which frequencies to listen to. Most weather stations and thermometers use 433.92 MHz; many European sensors use 868.3 MHz.'),
+        select(BANDS(), o.band, (v) => setOption(a, 'band', v), { style: { width: 'auto' } })));
+      const custom = (o.custom_mhz || '').split(/\s+/).filter(Boolean);
+      if (o.band === 'custom') {
+        const input = h('input', { value: o.custom_mhz, placeholder: '433.92, 868.3', style: { width: '220px' }, 'aria-label': t('Frequencies (MHz)') });
+        rowsOut.push(setting(t('Frequencies (MHz)'), t('Separated by spaces or "comma and space".'),
+          h('div.row.wrap', input, h('button', { onclick: () => setOption(a, 'custom_mhz', input.value) }, t('Save')))));
+      }
+      if (o.band === '433+868' || (o.band === 'custom' && custom.length > 1)) {
+        rowsOut.push(setting(t('Switch every (seconds)'), t('With several frequencies the receiver listens to each in turn.'), numberOption(a, 'hop_s', { min: 1, max: 3600 })));
+      }
+    }
+    rowsOut.push(setting(t('Gain (dB)'), t('Leave empty for automatic gain.'), numberOption(a, 'gain', { min: 0, max: 80, step: 'any', placeholder: t('auto') })));
+    rowsOut.push(setting(t('Frequency correction (ppm)'), t('For a receiver whose frequency is off. 0 for most.'), numberOption(a, 'ppm', { min: -500, max: 500 })));
+    if (a.id === 'rtl_433') {
+      rowsOut.push(setting(t('Units'), '', select([['native', t('As the sensor reports')], ['si', t('Metric (°C, km/h)')], ['customary', t('Imperial (°F, mph)')]],
+        o.units, (v) => setOption(a, 'units', v), { style: { width: 'auto' } })));
+    }
+    return rowsOut;
+  }
+
   function card(a) {
     const external = a.kind === 'external';
     const status = [
@@ -83,15 +120,16 @@ export function decodersCard(box) {
       a.running ? h('span.chip.good.live', h('span.dot'), t('running')) : null,
       external && !a.installed ? h('span.chip.bad', t('not installed')) : null,
     ];
+    // The switch sits with the name: it is what turns this add-on on (external programs are started with Start).
     const parts = [
-      h('div.row.wrap', h('b', { style: { fontSize: '15px' } }, a.name), ...status),
-      h('p.muted', { style: { margin: '4px 0 0' } }, a.summary),
-      h('p.faint.small', { style: { margin: '2px 0 0' } }, t('Licence: {license}', { license: a.license })),
+      h('div.row.wrap.addon-head', h('b.addon-name', a.name), ...status, h('span.spacer'),
+        external ? null : toggle(a.enabled ? t('On') : t('Off'), a.enabled, (v) => act('/api/addons/configure', { id: a.id, enabled: v }))),
+      h('p.muted', { style: { margin: 0 } }, a.summary),
+      h('p.faint.small', { style: { margin: 0 } }, t('Licence: {license}', { license: a.license })),
     ];
     if (!external) {
-      parts.push(setting(t('Decode these channels'), t('While scanning, a transmission on one of these channels is decoded here instead of being played or recorded. Scan a band that contains them.'),
-        toggle('', a.enabled, (v) => act('/api/addons/configure', { id: a.id, enabled: v }))));
       if (a.enabled) {
+        parts.push(h('p.faint.small', { style: { margin: 0 } }, t('While scanning, a transmission on one of these channels is decoded instead of being played or recorded.')));
         const missing = a.frequencies.filter((f) => !scanned(f));
         if (missing.length) {
           parts.push(h('div.notice', { role: 'status' }, icon('ban'),
@@ -101,13 +139,12 @@ export function decodersCard(box) {
         parts.push(setting(t('Channels (MHz)'), '', frequencyEditor(a)));
         const picker = receiverPicker(a);
         if (picker) parts.push(picker);
-        parts.push(h('p.faint.small', { style: { margin: 0 } },
-          t('Channels heard: {slots} · messages decoded: {events}', { slots: a.stats.slots, events: a.stats.events })));
-        parts.push(h('a', { href: '#/messages' }, t('Open Messages')));
+        parts.push(h('div.row.wrap', h('span.faint.small', t('Channels heard: {slots} · messages decoded: {events}', { slots: a.stats.slots, events: a.stats.events })),
+          h('a', { href: '#/messages' }, t('Open Messages'))));
         if (a.experimental) parts.push(h('p.faint.small', { style: { margin: 0 } }, t('Only tested on synthetic signals so far. If channels are heard but nothing is decoded, please report it.')));
       }
     } else if (!a.installed) {
-      parts.push(h('p', { style: { margin: '8px 0' } }, a.install_hint));
+      parts.push(h('p', { style: { margin: '4px 0' } }, a.install_hint));
       if (a.can_install) {
         const st = a.install || {};
         parts.push(h('div.row.wrap',
@@ -124,15 +161,7 @@ export function decodersCard(box) {
         h('div.row.wrap', input, h('button', { onclick: () => act('/api/addons/configure', { id: a.id, path: input.value }) }, t('Save')))));
       if (a.homepage) parts.push(h('a', { href: a.homepage, target: '_blank', rel: 'noopener' }, t('Project page')));
     } else {
-      parts.push(h('p.faint.small', { style: { margin: '4px 0' } }, t('Found: {path}', { path: a.program })));
-      if (a.managed && !a.running) parts.push(h('div.row', h('button.ghost.danger', { onclick: () => act('/api/addons/uninstall', { id: a.id }) }, icon('trash'), t('Uninstall'))));
-      if (a.frequencies.length) parts.push(setting(t('Channels (MHz)'), '', frequencyEditor(a)));
-      const args = h('input', { value: a.extra_args, placeholder: t('Extra options, for example -g 40'), style: { width: '320px' } });
-      parts.push(setting(t('Extra options'), t('Added to the command line.'),
-        h('div.row.wrap', args, h('button', { onclick: () => act('/api/addons/configure', { id: a.id, extra_args: args.value }) }, t('Save')))));
-      const picker = receiverPicker(a);
       const several = (cfg().device.extra_devices || []).length > 0;
-      if (picker) parts.push(picker);
       parts.push(h('div.row.wrap',
         starting === a.id
           ? h('button.primary', { disabled: true }, h('span.spinner'), t('Starting…'))
@@ -143,8 +172,20 @@ export function decodersCard(box) {
         h('span.faint.small', several ? t('It needs its receiver for itself: that receiver stops scanning while it runs.')
           : t('It needs the receiver for itself: the scanner stops while it runs.'))));
       if (a.error) parts.push(h('span', { style: { color: 'var(--red)' } }, a.error));
+      parts.push(h('h4.addon-sub', t('Settings')));
+      if (a.running) parts.push(h('p.faint.small', { style: { margin: 0 } }, t('Changes apply the next time it starts.')));
+      if (a.frequencies.length) parts.push(setting(t('Channels (MHz)'), '', frequencyEditor(a)));
+      parts.push(...optionRows(a));
+      const picker = receiverPicker(a);
+      if (picker) parts.push(picker);
+      const args = h('input', { value: a.extra_args, placeholder: t('Extra options, for example -g 40'), style: { width: '320px' } });
+      parts.push(h('details.addon-advanced', h('summary', t('Advanced')),
+        h('p.faint.small', { style: { margin: '6px 0' } }, t('Found: {path}', { path: a.program })),
+        setting(t('Extra options'), t('Added to the command line.'),
+          h('div.row.wrap', args, h('button', { onclick: () => act('/api/addons/configure', { id: a.id, extra_args: args.value }) }, t('Save')))),
+        a.managed && !a.running ? h('div.row', h('button.ghost.danger', { onclick: () => act('/api/addons/uninstall', { id: a.id }) }, icon('trash'), t('Uninstall'))) : null));
     }
-    return h('div.col', { style: { gap: '8px', paddingBottom: '12px' } }, ...parts);
+    return h('section.addon-card', ...parts);
   }
 
   function render() {
@@ -152,8 +193,10 @@ export function decodersCard(box) {
     box.replaceChildren(
       h('p.muted', { style: { margin: 0 } }, t('Optional decoders. The built-in ones read the channels your scanner stops on; the separate programs are installed by you and use the receiver on their own - FalconSDR only starts and stops them and shows what they decode in Messages.')),
       ...rows.filter((a) => a.kind === 'builtin').map(card),
-      setting(t('Hear and record data channels too'), t('Normally ACARS and APRS channels are only decoded - their buzz is not played or recorded.'),
-        toggle('', listen, async (v) => { await act('/api/addons/configure', { id: 'acars', listen_to_data: v }); })),
+      h('section.addon-card',
+        h('div.row.wrap.addon-head', h('b.addon-name', t('Hear and record data channels too')), h('span.spacer'),
+          toggle(listen ? t('On') : t('Off'), listen, async (v) => { await act('/api/addons/configure', { id: 'acars', listen_to_data: v }); })),
+        h('p.faint.small', { style: { margin: 0 } }, t('Normally ACARS and APRS channels are only decoded - their buzz is not played or recorded.'))),
       ...rows.filter((a) => a.kind === 'external').map(card));
   }
 

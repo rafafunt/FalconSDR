@@ -3153,3 +3153,72 @@ msgstr "Nic nie pasuje do filtrów."
 
 msgid "Show only this"
 msgstr "Pokaż tylko to"
+
+msgid "While scanning, a transmission on one of these channels is decoded instead of being played or recorded."
+msgstr "Podczas skanowania transmisja na jednym z tych kanałów jest dekodowana zamiast odtwarzana i nagrywana."
+
+msgid "Band"
+msgstr "Pasmo"
+
+msgid "433.92 MHz - most sensors"
+msgstr "433,92 MHz - większość czujników"
+
+msgid "868.3 MHz - European 868 MHz sensors"
+msgstr "868,3 MHz - europejskie czujniki 868 MHz"
+
+msgid "315 MHz"
+msgstr "315 MHz"
+
+msgid "915 MHz"
+msgstr "915 MHz"
+
+msgid "433.92 and 868.3 MHz (switches between them)"
+msgstr "433,92 i 868,3 MHz (przełącza się między nimi)"
+
+msgid "Own frequencies…"
+msgstr "Własne częstotliwości…"
+
+msgid "Which frequencies to listen to. Most weather stations and thermometers use 433.92 MHz; many European sensors use 868.3 MHz."
+msgstr "Jakich częstotliwości słuchać. Większość stacji pogodowych i termometrów używa 433,92 MHz, wiele europejskich czujników 868,3 MHz."
+
+msgid "Frequencies (MHz)"
+msgstr "Częstotliwości (MHz)"
+
+msgid "Separated by spaces or \"comma and space\"."
+msgstr "Oddzielone spacjami lub „przecinek i spacja”. Przecinek między cyframi to przecinek dziesiętny."
+
+msgid "Switch every (seconds)"
+msgstr "Przełączaj co (sekundy)"
+
+msgid "With several frequencies the receiver listens to each in turn."
+msgstr "Przy kilku częstotliwościach odbiornik słucha każdej po kolei."
+
+msgid "Gain (dB)"
+msgstr "Wzmocnienie (dB)"
+
+msgid "Leave empty for automatic gain."
+msgstr "Puste = wzmocnienie automatyczne."
+
+msgid "auto"
+msgstr "auto"
+
+msgid "Frequency correction (ppm)"
+msgstr "Korekcja częstotliwości (ppm)"
+
+msgid "For a receiver whose frequency is off. 0 for most."
+msgstr "Dla odbiornika, którego częstotliwość jest przesunięta. Zwykle 0."
+
+msgid "Units"
+msgstr "Jednostki"
+
+msgid "As the sensor reports"
+msgstr "Tak jak podaje czujnik"
+
+msgid "Metric (°C, km/h)"
+msgstr "Metryczne (°C, km/h)"
+
+msgid "Imperial (°F, mph)"
+msgstr "Imperialne (°F, mph)"
+
+msgid "Changes apply the next time it starts."
+msgstr "Zmiany zadziałają przy następnym uruchomieniu."

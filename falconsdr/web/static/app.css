@@ -445,6 +445,12 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 .chan-bar > div { height: 100%; background: var(--accent); border-radius: 4px; }
 .msg-line b.pick { cursor: pointer; border-bottom: 1px dotted var(--secondary); }
 .msg-line b.pick:hover { color: var(--accent); }
+/* Add-ons: every add-on is a card of its own, its switch next to its name */
+.addon-card { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; padding: 16px 18px; border: 1px solid var(--separator); border-radius: var(--radius); background: color-mix(in srgb, var(--fill) 45%, transparent); }
+.addon-head { gap: 10px; align-items: center; }
+.addon-name { font-size: 17px; font-weight: 650; }
+.addon-sub { margin: 6px 0 0; font-size: 13px; font-weight: 600; color: var(--secondary); text-transform: uppercase; letter-spacing: .04em; }
+.addon-advanced summary { cursor: pointer; color: var(--accent); padding: 4px 0; }
 .msg-text { overflow-wrap: anywhere; }
 .msg-line b { font-weight: 600; }
 .sensor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 4px; }

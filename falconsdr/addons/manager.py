@@ -58,6 +58,52 @@ CATALOG: tuple[AddonSpec, ...] = (
 SPECS = {s.id: s for s in CATALOG}
 
 
+# What can be set for an external program. Everything is checked and turned into flags here (never passed through
+# as text), so a typo cannot become a command line. rtl_433: -f/-H/-g/-p/-C; dumpvdl2: --gain/--correction.
+RTL433_BANDS = {"433": [433.92], "868": [868.3], "315": [315.0], "915": [915.0], "433+868": [433.92, 868.3]}
+OPTION_DEFAULTS: dict[str, dict] = {
+    "rtl_433": {"band": "433", "custom_mhz": "", "hop_s": 30, "gain": "", "ppm": 0, "units": "native"},
+    "vdl2": {"gain": "", "ppm": 0},
+}
+
+
+def _number(value, low: float, high: float, name: str) -> float:
+    try:
+        number = float(str(value).replace(",", "."))
+    except ValueError as exc:
+        raise ValueError(f"{name}: not a number") from exc
+    if not low <= number <= high:
+        raise ValueError(f"{name}: must be between {low:g} and {high:g}")
+    return number
+
+
+def clean_options(addon_id: str, current: dict, patch: dict) -> dict:
+    """``current`` updated with the valid keys of ``patch``; raises ValueError for a bad value."""
+    defaults = OPTION_DEFAULTS.get(addon_id, {})
+    out = {**defaults, **{k: v for k, v in current.items() if k in defaults}}
+    for key, value in patch.items():
+        if key not in defaults:
+            continue
+        if key == "band":
+            if value not in (*RTL433_BANDS, "custom"):
+                raise ValueError("band: unknown")
+        elif key == "custom_mhz":
+            # "433.92, 868.3" (a comma and a space) separates; "868,95" (a comma between digits) is a decimal comma.
+            tokens = re.split(r"[\s;]+", re.sub(r",\s+", " ", str(value).strip()))
+            value = " ".join(f"{_number(v, 1, 6000, 'frequency'):g}" for v in tokens if v)
+        elif key == "hop_s":
+            value = int(_number(value, 1, 3600, "hop"))
+        elif key == "gain":
+            value = "" if str(value).strip() == "" else _number(value, 0, 80, "gain")
+        elif key == "ppm":
+            value = int(_number(value, -500, 500, "ppm"))
+        elif key == "units":
+            if value not in ("native", "si", "customary"):
+                raise ValueError("units: unknown")
+        out[key] = value
+    return out
+
+
 def _install_hint(spec: AddonSpec) -> str:
     if spec.id == "rtl_433":
         if installer.can_install("rtl_433"):
@@ -128,6 +174,7 @@ class AddonManager:
                 "running": self.running_external == spec.id,
                 "frequencies": list(getattr(cfg, spec.frequencies)) if spec.frequencies else [],
                 "receiver": self.receiver(spec.id, 0 if spec.kind == "external" else -1),
+                "options": clean_options(spec.id, cfg.options.get(spec.id, {}), {}) if spec.id in OPTION_DEFAULTS else {},
                 "path": str(cfg.paths.get(spec.id, "")), "extra_args": str(cfg.extra_args.get(spec.id, "")),
                 "install_hint": _install_hint(spec) if spec.kind == "external" and program is None else "",
                 "managed": bool(program) and Path(program).is_relative_to(BIN_DIR),
@@ -150,6 +197,8 @@ class AddonManager:
         if "frequencies" in patch and spec.frequencies:
             freqs = sorted({int(f) for f in patch["frequencies"] if 1_000_000 <= int(f) <= 6_000_000_000})
             setattr(cfg, spec.frequencies, freqs)
+        if "options" in patch and spec.id in OPTION_DEFAULTS:
+            cfg.options = {**cfg.options, addon_id: clean_options(addon_id, cfg.options.get(addon_id, {}), patch["options"])}
         if "receiver" in patch:
             cfg.receivers = {**cfg.receivers, addon_id: int(patch["receiver"])}
         if "path" in patch:
@@ -196,6 +245,24 @@ class AddonManager:
             return ["--rtlsdr", ident or "0"]
         return ["-d", (":" + ident) if args.get("serial") else ident] if ident else []
 
+    def _argv(self, addon_id: str, program: str, device: dict):
+        cfg = self._config.addons
+        opts = clean_options(addon_id, cfg.options.get(addon_id, {}), {})
+        extra = shlex.split(str(cfg.extra_args.get(addon_id, "")))
+        gain = [] if opts["gain"] == "" else [("--gain" if addon_id == "vdl2" else "-g"), f"{float(opts['gain']):g}"]
+        ppm = [] if not opts["ppm"] else [("--correction" if addon_id == "vdl2" else "-p"), str(int(opts["ppm"]))]
+        if addon_id == "vdl2":
+            return [program, "--output", "decoded:json:file:path=-", *self._device_args(addon_id, device), *gain, *ppm, *extra,
+                    *[str(int(f)) for f in cfg.vdl2_frequencies_hz]], parse_vdl2
+        if opts["band"] == "custom":
+            freqs = [float(v) for v in opts["custom_mhz"].split()] or RTL433_BANDS["433"]
+        else:
+            freqs = RTL433_BANDS[opts["band"]]
+        band = [x for f in freqs for x in ("-f", f"{f:g}M")] + (["-H", str(int(opts["hop_s"]))] if len(freqs) > 1 else [])
+        units = [] if opts["units"] == "native" else ["-C", opts["units"]]
+        # "-F log" as well: without it rtl_433 says nothing about why it failed
+        return [program, "-F", "json", "-F", "log", *self._device_args(addon_id, device), *band, *gain, *ppm, *units, *extra], parse_rtl_433
+
     def start_external(self, addon_id: str, device: dict) -> None:
         spec = SPECS.get(addon_id)
         if spec is None or spec.kind != "external":
@@ -203,15 +270,7 @@ class AddonManager:
         program = self.program(addon_id)
         if program is None:
             raise RuntimeError(tr("{name} is not installed.").format(name=spec.name))
-        cfg = self._config.addons
-        extra = shlex.split(str(cfg.extra_args.get(addon_id, "")))
-        if addon_id == "vdl2":
-            argv = [program, "--output", "decoded:json:file:path=-", *self._device_args(addon_id, device), *extra,
-                    *[str(int(f)) for f in cfg.vdl2_frequencies_hz]]
-            parse = parse_vdl2
-        else:   # "-F log" as well: without it rtl_433 says nothing about why it failed
-            argv = [program, "-F", "json", "-F", "log", *self._device_args(addon_id, device), *extra]
-            parse = parse_rtl_433
+        argv, parse = self._argv(addon_id, program, device)
         with self._lock:
             if self.running_external:
                 raise RuntimeError(tr("Another add-on is running - stop it first."))

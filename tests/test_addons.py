@@ -632,5 +632,42 @@ class InstallerTest(unittest.TestCase):
         self.assertFalse(install.can_install("acars"))
 
 
+class OptionsTest(unittest.TestCase):
+    """The friendly settings become the program's flags - and only valid ones do."""
+    def _manager(self):
+        from falconsdr.addons.manager import AddonManager
+        from falconsdr.config import AppConfig
+        return AddonManager(AppConfig())
+
+    def test_rtl_433_flags_follow_the_settings(self) -> None:
+        m = self._manager()
+        argv, _ = m._argv("rtl_433", "/x/rtl_433", {"driver": "auto", "device_args": ""})
+        self.assertEqual(argv, ["/x/rtl_433", "-F", "json", "-F", "log", "-f", "433.92M"])           # the defaults
+        m.configure("rtl_433", {"options": {"band": "433+868", "hop_s": 45, "gain": "28,5", "ppm": -3, "units": "si"}})
+        argv, _ = m._argv("rtl_433", "/x/rtl_433", {"driver": "auto", "device_args": ""})
+        self.assertEqual(argv[5:], ["-f", "433.92M", "-f", "868.3M", "-H", "45", "-g", "28.5", "-p", "-3", "-C", "si"])
+        m.configure("rtl_433", {"options": {"band": "custom", "custom_mhz": "868,95 915"}})
+        argv, _ = m._argv("rtl_433", "/x/rtl_433", {"driver": "auto", "device_args": ""})
+        self.assertIn("868.95M", argv)
+        self.assertEqual(argv.count("-f"), 2)
+
+    def test_vdl2_gets_gain_and_correction_before_the_channels(self) -> None:
+        m = self._manager()
+        m.configure("vdl2", {"options": {"gain": 40, "ppm": 12}})
+        argv, _ = m._argv("vdl2", "/x/dumpvdl2", {"driver": "auto", "device_args": ""})
+        i = argv.index("--gain")
+        self.assertEqual(argv[i:i + 4], ["--gain", "40", "--correction", "12"])
+        self.assertEqual(argv[-1], "136975000")
+
+    def test_bad_values_are_refused_and_unknown_keys_ignored(self) -> None:
+        m = self._manager()
+        for bad in ({"band": "12"}, {"gain": 500}, {"ppm": "x"}, {"units": "furlongs"}, {"hop_s": 0}, {"custom_mhz": "433.92 abc"}):
+            with self.assertRaises(ValueError, msg=bad):
+                m.configure("rtl_433", {"options": bad})
+        m.configure("rtl_433", {"options": {"; rm -rf /": "1", "ppm": 2}})            # not an option: dropped
+        self.assertEqual(m.status()[2]["options"]["ppm"], 2)
+        self.assertNotIn("; rm -rf /", m.status()[2]["options"])
+
+
 if __name__ == "__main__":
     unittest.main()

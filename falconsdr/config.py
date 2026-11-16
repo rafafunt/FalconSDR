@@ -311,6 +311,9 @@ class AddonsConfig:
     # External programs hold that one receiver while the others keep scanning; a built-in decoder only decodes
     # what that receiver hears (no entry = any receiver).
     receivers: dict = field(default_factory=dict)
+    # Settings of an add-on's program, id -> {name: value} (see addons/manager.py OPTION_DEFAULTS): the options are
+    # turned into the program's flags there, so nobody has to know them.
+    options: dict = field(default_factory=dict)
     listen_to_data: bool = False                  # hear (and record) the data channels like any other
     paths: dict = field(default_factory=dict)     # id -> explicit path of an external program ("" = find it)
     extra_args: dict = field(default_factory=dict)  # id -> extra command line of an external program
