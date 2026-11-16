@@ -3108,3 +3108,48 @@ msgstr "Ten program zajmuje ten odbiornik; pozostałe skanują dalej."
 
 msgid "It needs its receiver for itself: that receiver stops scanning while it runs."
 msgstr "Potrzebuje swojego odbiornika tylko dla siebie: ten odbiornik nie skanuje na czas jego pracy."
+
+msgid "Clear list"
+msgstr "Wyczyść listę"
+
+msgid "Hides the messages received so far from this list. Nothing is deleted."
+msgstr "Ukrywa dotychczasowe wiadomości na tej liście. Nic nie jest usuwane."
+
+msgid "Last 5 minutes"
+msgstr "Ostatnie 5 minut"
+
+msgid "Last hour"
+msgstr "Ostatnia godzina"
+
+msgid "Last 24 hours"
+msgstr "Ostatnie 24 godziny"
+
+msgid "Everything"
+msgstr "Wszystko"
+
+msgid "Time range"
+msgstr "Zakres czasu"
+
+msgid "Most messages first"
+msgstr "Najwięcej wiadomości na górze"
+
+msgid "Sort"
+msgstr "Sortuj"
+
+msgid "By aircraft / station"
+msgstr "Wg samolotu / stacji"
+
+msgid "All frequencies"
+msgstr "Wszystkie częstotliwości"
+
+msgid "{n} earlier messages are hidden."
+msgstr "Ukryte wcześniejsze wiadomości: {n}."
+
+msgid "Show them"
+msgstr "Pokaż je"
+
+msgid "Nothing matches the filters."
+msgstr "Nic nie pasuje do filtrów."
+
+msgid "Show only this"
+msgstr "Pokaż tylko to"

@@ -2,7 +2,7 @@
 // from their programs. Newest first; repeats are folded into one row with a counter; VDL2 link-layer chatter
 // is hidden unless asked for; sensors are shown as one card per device. Also used by the Listen page while an
 // external program holds the receiver (eventLine).
-import { api, fmtTime, h, mount, seg, t } from '../core.js';
+import { api, fmtTime, h, mount, select, seg, t } from '../core.js';
 import { S, cfg, on } from '../state.js';
 
 export const NAMES = () => ({ acars: 'ACARS', aprs: 'APRS', rtl_433: t('Sensors'), vdl2: 'VDL2' });
@@ -62,13 +62,25 @@ function body(e) {
   return [h('span', e.summary)];
 }
 
-export function eventLine(e, count = 1) {
+export function whoOf(e) {
+  if (e.kind === 'sensor') return `${e.model} #${e.device_id}`;      // as the summary spells it, so the search finds it
+  return e.registration || e.source || e.src || e.model || '';
+}
+
+// onPick(text): clicking the aircraft / station / sensor name filters by it (Messages page).
+export function eventLine(e, count = 1, onPick = null) {
   const names = NAMES();
+  const parts = body(e);
+  const who = whoOf(e);
+  if (onPick && who && parts[0] && parts[0].tagName === 'B') {
+    parts[0] = h('b.pick', { title: t('Show only this'), tabindex: 0, role: 'button', onclick: (ev) => { ev.stopPropagation(); onPick(who); },
+      onkeydown: (ev) => { if (ev.key === 'Enter') { ev.stopPropagation(); onPick(who); } } }, parts[0].textContent);
+  }
   return h('div.row.msg-line', { style: { gap: '10px', alignItems: 'baseline', flexWrap: 'wrap' } },
     h('span.mono.small.muted', fmtTime(new Date(e.ts * 1000).toISOString())),
     h('span.chip', names[e.addon] || e.addon),
     e.freq_hz ? h('span.mono.small.muted', (e.freq_hz / 1e6).toFixed(4)) : null,
-    ...body(e), count > 1 ? h('span.chip.accent', `×${count}`) : null);
+    ...parts, count > 1 ? h('span.chip.accent', `×${count}`) : null);
 }
 
 // -- grouping --------------------------------------------------------------------------------------------
@@ -86,6 +98,9 @@ export function fold(events) {
   return groups;
 }
 
+const prefS = (k, d) => { try { return localStorage.getItem(k) || d; } catch { return d; } };
+const setPrefS = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private window */ } };
+
 export function messagesView(root) {
   let rows = [];
   let lastId = 0;
@@ -94,32 +109,71 @@ export function messagesView(root) {
   let paused = false;
   let timer = null;
   let fold_ = pref('msgFold', true);
+  let range = +prefS('msgRange', '3600');        // seconds back; 0 = everything
+  let sort = prefS('msgSort', 'new');            // new | old | count
+  let view = prefS('msgView', 'items');          // items | who
+  let freq = '';
+  let clearedAt = +prefS('msgClearedAt', '0');   // "Clear list" hides what came before, here only - nothing is deleted
+  let freqSig = '';
   const open = new Set();
 
   const list = h('div.msg-list');
   const chips = h('div.row.wrap');
-  const options = h('div.row.wrap');
+  const levelRow = h('div.row.wrap');
+  const hidden = h('div');
   const search = h('input', { type: 'search', placeholder: t('Search…'), oninput: (e) => { query = e.target.value.toLowerCase(); draw(); } });
   const pauseBtn = h('button.ghost', { onclick: () => { paused = !paused; pauseBtn.textContent = paused ? t('Resume') : t('Pause'); } }, t('Pause'));
-  const clearBtn = h('button.ghost', { onclick: async () => { await api.post('/api/addons/clear', {}); rows = []; draw(); } }, t('Clear'));
+  const clearBtn = h('button.ghost', { title: t('Hides the messages received so far from this list. Nothing is deleted.'),
+    onclick: () => { clearedAt = Date.now(); setPrefS('msgClearedAt', String(clearedAt)); draw(); } }, t('Clear list'));
+  const rangeSel = select([['300', t('Last 5 minutes')], ['3600', t('Last hour')], ['86400', t('Last 24 hours')], ['0', t('Everything')]], String(range),
+    (v) => { range = +v; setPrefS('msgRange', v); draw(); }, { style: { width: 'auto' }, 'aria-label': t('Time range') });
+  const sortSel = select([['new', t('Newest first')], ['old', t('Oldest first')], ['count', t('Most messages first')]], sort,
+    (v) => { sort = v; setPrefS('msgSort', v); draw(); }, { style: { width: 'auto' }, 'aria-label': t('Sort') });
+  const viewSeg = seg([['items', t('Messages')], ['who', t('By aircraft / station')]], view, (v) => { view = v; setPrefS('msgView', v); draw(); });
+  let freqSel = h('span');
+  const foldBox = h('label.switch.small', h('input', { type: 'checkbox', checked: fold_, onchange: (e) => { fold_ = e.target.checked; setPref('msgFold', fold_); draw(); } }),
+    h('span.label', t('Fold repeats')));
   const banner = h('div');
+  const toolbar = h('div.row.wrap', { style: { gap: '10px' } }, viewSeg, rangeSel, sortSel, freqSel, foldBox, levelRow);
   mount(root, h('div.page', h('div.page-head', h('h1', t('Messages'))),
-    h('section.card', banner, h('div.row.wrap', chips, h('span.spacer'), search, pauseBtn, clearBtn), options, list)));
+    h('section.card', banner, h('div.row.wrap', chips, h('span.spacer'), search, pauseBtn, clearBtn), toolbar, hidden, list)));
 
-  const visible = passes;
+  const pick = (who) => { query = who.toLowerCase(); search.value = who; draw(); };
 
-  function drawChips() {
+  // -- what is shown ---------------------------------------------------------------------------------------
+  function selected() {
+    const since = range ? Date.now() / 1000 - range : 0;
+    return rows.filter((e) => passes(e) && e.ts * 1000 > clearedAt && e.ts >= since && (!filter || e.addon === filter)
+      && (!freq || String(e.freq_hz) === freq) && (!query || JSON.stringify(e).toLowerCase().includes(query)));
+  }
+
+  function drawChips(base) {
     const names = NAMES();
     const counts = {};
-    for (const r of rows) if (visible(r)) counts[r.addon] = (counts[r.addon] || 0) + 1;
-    const ids = Object.keys(names).filter((id) => counts[id] || cfg().addons.enabled.includes(id));
+    for (const r of base) counts[r.addon] = (counts[r.addon] || 0) + 1;
+    const ids = Object.keys(names).filter((id) => counts[id] || cfg().addons.enabled.includes(id) || filter === id);
     mount(chips, ...['', ...ids].map((id) => h('button', { class: id === filter ? 'primary' : 'ghost', onclick: () => { filter = id; draw(); } },
       id ? `${names[id]}${counts[id] ? ` · ${counts[id]}` : ''}` : t('All'))));
+  }
+
+  function drawToolbar() {
+    // The frequency list follows what has been received; rebuilt only when it changes (an open list must not close).
+    const freqs = [...new Set(rows.filter((e) => e.freq_hz).map((e) => e.freq_hz))].sort((a, b) => a - b);
+    const sig = freqs.join(',');
+    if (sig !== freqSig) {
+      freqSig = sig;
+      const next = select([['', t('All frequencies')], ...freqs.map((f) => [String(f), (f / 1e6).toFixed(4)])], freq,
+        (v) => { freq = v; draw(); }, { style: { width: 'auto' }, 'aria-label': t('Frequency') });
+      freqSel.replaceWith(next);
+      freqSel = next;
+    }
+    freqSel.classList.toggle('hidden', freqs.length < 2);
     const hasVdl2 = rows.some((r) => r.kind === 'vdl2') && (!filter || filter === 'vdl2');
-    mount(options,
-      hasVdl2 ? h('div.row', h('span.small.muted', 'VDL2'), levelControl(draw)) : null,
-      filter === 'rtl_433' ? null : h('label.switch.small', h('input', { type: 'checkbox', checked: fold_, onchange: (e) => { fold_ = e.target.checked; setPref('msgFold', fold_); draw(); } }),
-        h('span.label', t('Fold repeats'))));
+    mount(levelRow, hasVdl2 ? h('div.row', h('span.small.muted', 'VDL2'), levelControl(draw)) : null);
+    foldBox.classList.toggle('hidden', filter === 'rtl_433' || view === 'who');
+    const n = rows.filter((e) => e.ts * 1000 <= clearedAt).length;
+    mount(hidden, n ? h('p.small.muted', { style: { margin: '8px 0 0' } }, t('{n} earlier messages are hidden.', { n }), ' ',
+      h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); clearedAt = 0; setPrefS('msgClearedAt', '0'); draw(); } }, t('Show them'))) : null);
   }
 
   function sensorCards(events) {
@@ -130,7 +184,8 @@ export function messagesView(root) {
       d.last = e; d.count += 1; d.history.push(e);
       devices.set(key, d);
     }
-    const cards = [...devices.values()].sort((a, b) => b.last.ts - a.last.ts).map((d) => {
+    const order = { new: (a, b) => b.last.ts - a.last.ts, old: (a, b) => a.history[0].ts - b.history[0].ts, count: (a, b) => b.count - a.count };
+    const cards = [...devices.values()].sort(order[sort]).map((d) => {
       const f = d.last.fields || {};
       const readings = sensorReadings(f);
       const [main, ...rest] = readings;
@@ -145,12 +200,44 @@ export function messagesView(root) {
     return h('div.sensor-grid', ...cards);
   }
 
+  // One row per aircraft / station: how many messages, the latest one, and the whole thread on a click.
+  function whoRows(events) {
+    const people = new Map();
+    for (const e of events) {
+      const who = whoOf(e) || NAMES()[e.addon];
+      const g = people.get(who) || { who, events: [], addons: new Set() };
+      g.events.push(e); g.addons.add(e.addon);
+      people.set(who, g);
+    }
+    const order = { new: (a, b) => b.events[b.events.length - 1].ts - a.events[a.events.length - 1].ts, old: (a, b) => a.events[0].ts - b.events[0].ts, count: (a, b) => b.events.length - a.events.length };
+    return [...people.values()].sort(order[sort]).map((g) => {
+      const last = g.events[g.events.length - 1];
+      const id = `w${g.who}`;
+      const toggleOpen = () => { if (open.has(id)) open.delete(id); else open.add(id); draw(); };
+      return h('div.msg', { class: open.has(id) ? 'open' : '', tabindex: 0, role: 'button', onclick: toggleOpen,
+        onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggleOpen(); } } },
+      h('div.row', { style: { gap: '10px', alignItems: 'baseline', flexWrap: 'wrap' } },
+        h('b', g.who), last.flight ? h('span.muted', last.flight) : null, h('span.chip.accent', String(g.events.length)),
+        h('span.mono.small.muted', fmtTime(new Date(last.ts * 1000).toISOString())), h('span.grow.muted.small', last.summary)),
+      open.has(id) ? h('div.col', { style: { gap: '2px', marginTop: '6px' } }, ...fold(g.events).slice(-30).reverse().map((x) => eventLine(x.last, x.count))) : null);
+    });
+  }
+
   function draw() {
-    drawChips();
-    const shown = rows.filter((r) => visible(r) && (!filter || r.addon === filter) && (!query || JSON.stringify(r).toLowerCase().includes(query)));
-    if (filter === 'rtl_433' && shown.length) { mount(list, sensorCards(shown)); return; }
-    const groups = (fold_ ? fold(shown) : shown.map((e) => ({ last: e, count: 1, times: [e.ts] }))).slice(-MAX_ROWS).reverse();
-    mount(list, ...(groups.length ? groups.map((g) => {
+    const base = selected();
+    drawChips(rows.filter((e) => passes(e) && e.ts * 1000 > clearedAt));
+    drawToolbar();
+    if (!base.length) {
+      mount(list, h('div.empty', rows.length ? t('Nothing matches the filters.') : t('Nothing decoded yet. Turn an add-on on in Add-ons and scan a band that contains its channels.')));
+      return;
+    }
+    if (filter === 'rtl_433') { mount(list, sensorCards(base)); return; }
+    if (view === 'who') { mount(list, ...whoRows(base)); return; }
+    let groups = fold_ ? fold(base) : base.map((e) => ({ last: e, count: 1, times: [e.ts] }));
+    if (sort === 'count') groups = [...groups].sort((a, b) => b.count - a.count || b.last.ts - a.last.ts);
+    else if (sort === 'new') groups = [...groups].reverse();
+    groups = groups.slice(0, MAX_ROWS);
+    mount(list, ...groups.map((g) => {
       const e = g.last;
       const toggleOpen = () => { if (open.has(e.id)) open.delete(e.id); else open.add(e.id); draw(); };
       const detail = open.has(e.id) ? h('pre.msg-detail',
@@ -158,8 +245,8 @@ export function messagesView(root) {
         + JSON.stringify(Object.fromEntries(Object.entries(e).filter(([k]) => !['id', 'summary'].includes(k))), null, 2)) : null;
       return h('div.msg', { class: open.has(e.id) ? 'open' : '', tabindex: 0, role: 'button', onclick: toggleOpen,
         onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggleOpen(); } } },
-      eventLine(e, g.count), detail);
-    }) : [h('div.empty', t('Nothing decoded yet. Turn an add-on on in Add-ons and scan a band that contains its channels.'))]));
+      eventLine(e, g.count, pick), detail);
+    }));
   }
 
   async function poll() {

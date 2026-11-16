@@ -443,6 +443,8 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 .chan-bar { flex: 1; height: 8px; background: var(--fill); border-radius: 4px; overflow: hidden; }
 .chan-bar > div { height: 100%; background: var(--accent); border-radius: 4px; }
+.msg-line b.pick { cursor: pointer; border-bottom: 1px dotted var(--secondary); }
+.msg-line b.pick:hover { color: var(--accent); }
 .msg-text { overflow-wrap: anywhere; }
 .msg-line b { font-weight: 600; }
 .sensor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 4px; }
