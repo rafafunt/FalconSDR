@@ -910,7 +910,7 @@ catalog loads; wrap them in a function called at point of use
     or link them, never port their code** (rtl_433 is GPL-2.0): they are separate programs, which is what keeps the
     licences apart. Events go to `EventHub` (ring + `CONFIG_DIR/addons/events-DATE.jsonl`, `keep_days`), the UI polls
     `/api/addons/events`. Transcription and digital voice are shown on the Add-ons page: `settingsView(root, hash,
-    'addons')`, `#/settings/transcription|digital` redirect. The nav hides Messages until an add-on is on.
+    'addons')`, `#/settings/transcription|digital` redirect. Messages is always in the nav: with nothing received it explains itself and points to Add-ons. Settings has a signpost card ("Transcription & add-ons") to the moved settings; a deep link (`#/addons/digital`) keeps the target card in view while the cards above load (ResizeObserver until the user scrolls).
     **Installing** (`addons/install.py`): rtl_433 = the author's release zip for Windows/macOS, dumpvdl2 = pinned source
     built here (libacars + dumpvdl2 into `CONFIG_DIR/addons/bin/vdl2/prefix`, RPATH, `cmake` + dev packages; the
     missing-package command is shown, never run). Both are checked against a SHA-256 of the gunzipped tar / the zip;

@@ -14,11 +14,8 @@ const app = document.getElementById('app');
 const ROUTES = {
   listen: { label: () => t('Listen'), icon: 'listen', view: listenView },
   recordings: { label: () => t('Recordings'), icon: 'library', view: recordingsView },
-  // What the add-on decoders found: only offered while one is switched on or running.
-  messages: {
-    label: () => t('Messages'), icon: 'messages', view: messagesView,
-    show: () => S.settings.config.addons.enabled.length > 0 || !!(S.live && S.live.addon),
-  },
+  // What the add-on decoders found; with nothing yet it explains itself and points to Add-ons.
+  messages: { label: () => t('Messages'), icon: 'messages', view: messagesView },
   channels: { label: () => t('Channels'), icon: 'channels', view: channelsView },
   schedule: { label: () => t('Schedule'), icon: 'clock', view: scheduleView },
   stats: { label: () => t('Statistics'), icon: 'stats', view: statsView },

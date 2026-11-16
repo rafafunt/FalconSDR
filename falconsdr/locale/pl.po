@@ -3222,3 +3222,36 @@ msgstr "Imperialne (°F, mph)"
 
 msgid "Changes apply the next time it starts."
 msgstr "Zmiany zadziałają przy następnym uruchomieniu."
+
+msgid "Transcription & add-ons"
+msgstr "Transkrypcja i dodatki"
+
+msgid "Transcription, digital voice and the decoders (ACARS, APRS, VDL2, rtl_433) now have their own page."
+msgstr "Transkrypcja, głos cyfrowy i dekodery (ACARS, APRS, VDL2, rtl_433) mają teraz własną stronę."
+
+msgid "Go to transcription settings"
+msgstr "Przejdź do ustawień transkrypcji"
+
+msgid "All add-on settings"
+msgstr "Wszystkie ustawienia dodatków"
+
+msgid "For example: the Whisper model and the computers that transcribe · DMR and C4FM digital voice · ACARS and APRS decoders · rtl_433 sensors on 433 or 868 MHz · VDL2."
+msgstr "Na przykład: model Whisper i komputery, które transkrybują · głos cyfrowy DMR i C4FM · dekodery ACARS i APRS · czujniki rtl_433 na 433 lub 868 MHz · VDL2."
+
+msgid "What is this page?"
+msgstr "Co to za strona?"
+
+msgid "Whatever the add-on decoders read appears here: aircraft text messages (ACARS and VDL2), amateur radio position reports and messages (APRS) and readings of weather stations and sensors (rtl_433)."
+msgstr "Tu pojawia się wszystko, co odczytają dekodery dodatków: tekstowe wiadomości samolotów (ACARS i VDL2), krótkofalarskie raporty pozycji i wiadomości (APRS) oraz odczyty stacji pogodowych i czujników (rtl_433)."
+
+msgid "Switched on: {list}. Waiting for the first message - the scanner has to visit their channels."
+msgstr "Włączone: {list}. Czekam na pierwszą wiadomość - skaner musi odwiedzać ich kanały."
+
+msgid "No add-on is switched on yet."
+msgstr "Żaden dodatek nie jest jeszcze włączony."
+
+msgid "Add-on settings"
+msgstr "Ustawienia dodatków"
+
+msgid "Go to Add-ons and switch one on"
+msgstr "Przejdź do Dodatków i włącz któryś"

@@ -15,6 +15,7 @@ const ADDON_SECTIONS = [
 ];
 const SECTIONS = [
   ['recording', () => t('Recording')],
+  ['addons', () => t('Transcription & add-ons')],     // a signpost: these settings moved to the Add-ons page
   ['presets', () => t('Band presets')],
   ['location', () => t('Location')],
   ['appearance', () => t('Language & listening')],
@@ -81,7 +82,6 @@ export function settingsView(root, hash, scope = 'settings') {
   const nav = h('nav', visible.map(([k, label]) => h('a', { href: `#/${scope}/${k}`, onclick: (e) => { e.preventDefault(); cards[k].scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, label())));
   const content = h('div.col', { style: { gap: '16px' } });
   mount(root, h('div.page', h('div.page-head', h('h1', scope === 'addons' ? t('Add-ons') : t('Settings'))),
-    scope === 'settings' ? h('p.muted', { style: { margin: 0 } }, t('Transcription, digital voice and decoders moved to'), ' ', h('a', { href: '#/addons' }, t('Add-ons')), '.') : null,
     h('div.settings', nav, content)));
   for (const [k, label] of visible) {
     cards[k] = h('section.card', { id: `s-${k}` }, h('div.card-head', h('h2', label())), h('div.col'));
@@ -532,13 +532,23 @@ export function settingsView(root, hash, scope = 'settings') {
   }
 
   let stopDecoders = null;
+  function renderAddonsSignpost() {
+    mount(body('addons'),
+      h('p.muted', { style: { margin: 0 } }, t('Transcription, digital voice and the decoders (ACARS, APRS, VDL2, rtl_433) now have their own page.')),
+      h('div.row.wrap',
+        h('button.primary', { onclick: () => { location.hash = '#/addons/transcription'; } }, icon('settings'), t('Go to transcription settings')),
+        h('button', { onclick: () => { location.hash = '#/addons'; } }, t('All add-on settings'))),
+      h('p.faint.small', { style: { margin: 0 } },
+        t('For example: the Whisper model and the computers that transcribe · DMR and C4FM digital voice · ACARS and APRS decoders · rtl_433 sensors on 433 or 868 MHz · VDL2.')));
+  }
+
   function renderAll() {
     if (scope === 'addons') {
       renderTranscription(); renderDigital();
       if (!stopDecoders) stopDecoders = decodersCard(body('decoders'));
       return;
     }
-    renderRecording(); renderStorage(); renderConnect(); renderAccess();
+    renderRecording(); renderAddonsSignpost(); renderStorage(); renderConnect(); renderAccess();
     renderLocation(); renderPresets(); renderAppearance(); renderAdvanced();
   }
   renderAll();
@@ -546,9 +556,22 @@ export function settingsView(root, hash, scope = 'settings') {
   let pollTick = 0;
   if (scope === 'addons') timers.push(setInterval(() => { pollTick += 1; if (fastPoll || pollTick % 3 === 0) loadWorkers(); }, 1000));
   const sub = (hash.match(/^#\/(?:settings|addons)\/(\w+)/) || [])[1];
+  let stopFollowing = () => {};
   if (sub && cards[sub]) {
-    setTimeout(() => cards[sub].scrollIntoView({ block: 'start' }), 50);
     cards[sub].classList.add('spotlight');  // arrived from a link (e.g. a greyed-out modulation) - show where
+    // Room below the last card, or it cannot be scrolled up to the top of the page.
+    content.append(h('div', { 'aria-hidden': 'true', style: { minHeight: '70vh' } }));
+    // The cards above (decoders, workers) fill in after the page opens and push this one down: stay on it until
+    // the page has settled or the user scrolls.
+    const go = () => cards[sub].scrollIntoView({ block: 'start' });
+    setTimeout(go, 50);
+    const observer = new ResizeObserver(go);
+    observer.observe(content);
+    const events = ['wheel', 'touchstart', 'keydown', 'mousedown'];
+    const stop = () => { observer.disconnect(); events.forEach((e) => window.removeEventListener(e, stop)); };
+    events.forEach((e) => window.addEventListener(e, stop, { passive: true }));
+    const timeout = setTimeout(stop, 4000);
+    stopFollowing = () => { clearTimeout(timeout); stop(); };
   }
-  return { destroy() { timers.forEach(clearInterval); clearTimeout(digitalPoll); offs.forEach((f) => f()); if (stopDecoders) stopDecoders(); } };
+  return { destroy() { timers.forEach(clearInterval); clearTimeout(digitalPoll); offs.forEach((f) => f()); if (stopDecoders) stopDecoders(); stopFollowing(); } };
 }

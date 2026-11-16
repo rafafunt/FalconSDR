@@ -2,7 +2,7 @@
 // from their programs. Newest first; repeats are folded into one row with a counter; VDL2 link-layer chatter
 // is hidden unless asked for; sensors are shown as one card per device. Also used by the Listen page while an
 // external program holds the receiver (eventLine).
-import { api, fmtTime, h, mount, select, seg, t } from '../core.js';
+import { api, fmtTime, h, icon, mount, select, seg, t } from '../core.js';
 import { S, cfg, on } from '../state.js';
 
 export const NAMES = () => ({ acars: 'ACARS', aprs: 'APRS', rtl_433: t('Sensors'), vdl2: 'VDL2' });
@@ -135,8 +135,23 @@ export function messagesView(root) {
     h('span.label', t('Fold repeats')));
   const banner = h('div');
   const toolbar = h('div.row.wrap', { style: { gap: '10px' } }, viewSeg, rangeSel, sortSel, freqSel, foldBox, levelRow);
+  const controls = h('div.col', { style: { gap: '12px' } }, h('div.row.wrap', chips, h('span.spacer'), search, pauseBtn, clearBtn), toolbar, hidden);
+  const intro = h('div.msg-intro');
   mount(root, h('div.page', h('div.page-head', h('h1', t('Messages'))),
-    h('section.card', banner, h('div.row.wrap', chips, h('span.spacer'), search, pauseBtn, clearBtn), toolbar, hidden, list)));
+    h('section.card', banner, controls, intro, list)));
+
+  // Nothing received yet: say what this page is and where to switch the decoders on.
+  function drawIntro() {
+    const names = NAMES();
+    const on_ = cfg().addons.enabled.map((id) => names[id] || id);
+    mount(intro,
+      h('h2', { style: { margin: '0 0 6px' } }, t('What is this page?')),
+      h('p', { style: { margin: '0 0 8px' } }, t('Whatever the add-on decoders read appears here: aircraft text messages (ACARS and VDL2), amateur radio position reports and messages (APRS) and readings of weather stations and sensors (rtl_433).')),
+      h('p.muted', { style: { margin: '0 0 12px' } }, on_.length
+        ? t('Switched on: {list}. Waiting for the first message - the scanner has to visit their channels.', { list: on_.join(', ') })
+        : t('No add-on is switched on yet.')),
+      h('button.primary', { onclick: () => { location.hash = '#/addons'; } }, icon('addons'), on_.length ? t('Add-on settings') : t('Go to Add-ons and switch one on')));
+  }
 
   const pick = (who) => { query = who.toLowerCase(); search.value = who; draw(); };
 
@@ -224,6 +239,10 @@ export function messagesView(root) {
   }
 
   function draw() {
+    const empty = !rows.length;
+    controls.classList.toggle('hidden', empty);
+    intro.classList.toggle('hidden', !empty);
+    if (empty) { drawIntro(); mount(list); return; }
     const base = selected();
     drawChips(rows.filter((e) => passes(e) && e.ts * 1000 > clearedAt));
     drawToolbar();
