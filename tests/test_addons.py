@@ -1154,6 +1154,11 @@ class SensorCatalogTest(unittest.TestCase):
         self.assertTrue(summary.startswith("Nexus-T #246"))
         self.assertEqual(rubicson["fields"]["model_reported"], "Rubicson-Temperature")          # what the program said is not lost
 
+    def test_a_thermometer_with_a_test_button_is_not_a_remote(self) -> None:
+        event, _ = self._parse({"model": "Eurochron-TH", "id": 246, "temperature_C": -25.6, "humidity": 64, "button": 0})
+        self.assertEqual(event["category"], "thermometer")
+        self.assertIsNone(self._parse({"model": "Ford-CarRemote", "id": "1", "button": 2}))       # no reading: still a remote
+
     def test_decoder_noise_is_not_kept(self) -> None:
         event, _ = self._parse({"model": "X", "id": 1, "temperature_C": 1, "flags": 3, "unknown1": 5, "raw": "ff", "counter": 7})
         self.assertEqual(sorted(event["fields"]), ["id", "temperature_C"])

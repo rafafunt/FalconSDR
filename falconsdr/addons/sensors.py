@@ -102,7 +102,9 @@ def category(model: str, fields: dict) -> str:
     keys = set(fields)
     if fields.get("type") == "TPMS" or "TPMS" in model.upper():
         return "tpms"
-    if keys & {"button", "command", "rolling", "fixed"} or _REMOTE_MODEL.search(model):
+    # A weather sensor also has a "button" (its test-transmit button): a remote is what has no temperature or humidity.
+    measures = any(k.startswith(("temperature", "humidity")) for k in keys)
+    if (keys & {"button", "command", "rolling", "fixed"} and not measures) or _REMOTE_MODEL.search(model):
         return "remote"
     if keys & {"strike_count"}:
         return "lightning"
