@@ -13,9 +13,30 @@ const MAX_AHEAD_S = 1.2;
 // after every hiccup; measured with tests/live_audio: max pitch error 1.4 % -> 0.5 %, still 0 silences).
 const MAX_RATE_CHANGE = 0.01;
 
+// Listening aids, in the browser so they work for every device (a phone has no louder setting than
+// its maximum). Chain: source -> boost -> compressor -> volume. The compressor is a safety net (a loud
+// burst after a quiet stretch never reaches the ears at full force) and what makes boost usable.
+export const BOOST_STEPS_DB = [0, 6, 12, 18];
+const COMPRESSOR = { threshold: -14, knee: 10, ratio: 12, attack: 0.003, release: 0.2 };
+const boostDb = () => {
+  const v = parseInt(localStorage.getItem('boostDb') ?? '0', 10);
+  return BOOST_STEPS_DB.includes(v) ? v : 0;
+};
+
+export function makeLoudnessChain(ctx, boostDbValue) {
+  const boost = ctx.createGain();
+  boost.gain.value = 10 ** (boostDbValue / 20);
+  const comp = ctx.createDynamicsCompressor();
+  for (const [k, v] of Object.entries(COMPRESSOR)) comp[k].value = v;
+  boost.connect(comp);
+  return { input: boost, boost, output: comp };
+}
+
 export const liveAudio = {
   ctx: null,
   gain: null,
+  chain: null,
+  boostDb: boostDb(),
   ctrl: null,
   playing: false,
   volume: parseFloat(localStorage.getItem('volume') ?? '0.9'),
@@ -27,6 +48,8 @@ export const liveAudio = {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
       this.gain = this.ctx.createGain();
       this.gain.gain.value = this.volume;
+      this.chain = makeLoudnessChain(this.ctx, this.boostDb);
+      this.chain.output.connect(this.gain);
       // Through an <audio> element, not straight to the speakers: Android then treats
       // it as media playback - keeps it going with the screen off, shows controls.
       if (this.ctx.createMediaStreamDestination) {
@@ -63,6 +86,12 @@ export const liveAudio = {
     if (this.gain) this.gain.gain.value = v;
   },
 
+  setBoost(db) {
+    this.boostDb = db;
+    localStorage.setItem('boostDb', String(db));
+    if (this.chain) this.chain.boost.gain.value = 10 ** (db / 20);
+  },
+
   async _stream() {
     const ctrl = new AbortController();
     this.ctrl = ctrl;
@@ -87,7 +116,7 @@ export const liveAudio = {
         buf.copyToChannel(f, 0);
         const src = this.ctx.createBufferSource();
         src.buffer = buf;
-        src.connect(this.gain);
+        src.connect(this.chain.input);
         const now = this.ctx.currentTime;
         // Really ran dry (or a new transmission after silence) / far too far ahead: start over.
         if (this.t <= now || this.t > now + MAX_AHEAD_S) this.t = now + LATENCY_S;

@@ -1,7 +1,7 @@
 // "Listen": the live scanner - what's on air now, controls, spectrum, quick
 // settings, the scanned bands and the activity feed.
 import { api, confirmDialog, errorToast, fmtChannel, fmtMHz, h, icon, modal, mount, select, seg, slider, t, toast, toggle } from '../core.js';
-import { liveAudio } from '../live-audio.js';
+import { BOOST_STEPS_DB, liveAudio } from '../live-audio.js';
 import { S, cfg, confirmRecording, on, patchConfig, setFastPolling } from '../state.js';
 import { askCustomRange, askSingleFrequency, bandEditor, bandRange, clearOverrides, hasOverrides, presetPicker } from './bands.js';
 
@@ -67,6 +67,8 @@ export function listenView(root) {
   const startBtn = h('button.big.primary', { onclick: () => toggleScan() });
   const listenBtn = h('button.big', { onclick: () => liveAudio.toggle().catch(errorToast) });
   const volume = h('input', { type: 'range', min: 0, max: 1.5, step: 0.05, value: liveAudio.volume, oninput: (e) => liveAudio.setVolume(+e.target.value), title: t('Volume') });
+  const boost = select(BOOST_STEPS_DB.map((db) => [db, db ? `+${db} dB` : t('No boost')]), liveAudio.boostDb, (v) => liveAudio.setBoost(+v),
+    { style: { width: 'auto' }, title: t('Louder quiet voices on a phone or a weak speaker - loud peaks are still held back') });
   const skipBtn = h('button', { onclick: () => command('skip'), title: t('Leave this frequency for now') }, icon('skip'), t('Skip'));
   const blBtn = h('button', { onclick: () => command('blacklist'), title: t('Leave it and never stop on it again (adds it to the blacklist)') }, icon('ban'), t('Skip + blacklist'));
   const holdBtn = h('button', { onclick: () => command('hold', { enabled: !(S.live && S.live.hold) }), title: t('Stay on this frequency - the scanner stops moving on') }, icon('pause'), t('Hold'));
@@ -91,7 +93,7 @@ export function listenView(root) {
     h('div.col', { style: { gap: '4px' } },
       h('div.meter', meterFill, meterMark),
       h('div.meter-legend', h('span', '-100'), levelText, h('span', '0 dBFS'))),
-    h('div.controls', startBtn, h('div.row', listenBtn, h('div.volume', icon('volume'), volume)), skipBtn, blBtn, holdBtn, recBtn),
+    h('div.controls', startBtn, h('div.row', listenBtn, h('div.volume', icon('volume'), volume, boost)), skipBtn, blBtn, holdBtn, recBtn),
     h('div.row.wrap', autoRec, h('span.spacer'), iqBtn));
 
   // ---------------------------------------------------------- spectrum
