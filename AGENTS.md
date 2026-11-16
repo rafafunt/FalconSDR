@@ -28,7 +28,7 @@ program, three modes (`main.py`):
 
 ```
 python3 main.py                 # local; --server for the network; --local ignores a saved server
-python3 -m unittest tests/test_core.py
+python3 -m unittest tests/test_core.py tests/test_addons.py
 python3 main.py --probe-sdr [driver]   # with the scanner stopped: measures a real receiver (gotcha 55)
 ```
 
@@ -70,6 +70,8 @@ catalog loads; wrap them in a function called at point of use
   stats, retention, and the server side of the worker protocol (gotcha 37).
 - `falconsdr/worker.py` — `Worker`: transcription jobs (leased), mirroring,
   one-shot upload/import of a client's own library, install command.
+- `falconsdr/addons/` — optional decoders: built-in APRS/ACARS on a slot's audio, external rtl_433/dumpvdl2
+  supervised as processes (gotcha 58, `docs/addons.md`). `AppConfig.addons`; UI `views/addons.js`, `views/messages.js`.
 - `falconsdr/models.py` — `ScannerState`, `Channel`, `BlacklistEntry`.
 - `falconsdr/config.py` — `AppConfig`, persisted (atomically) to
   `~/.config/FalconSDR/config.json`; unknown keys ignored on load.
@@ -892,6 +894,23 @@ catalog loads; wrap them in a function called at point of use
     scale from before - no cache needs invalidating (signal_level is measured
     from the file). A `createMediaElementSource` audio element is silent while
     its `AudioContext` is suspended: the player resumes it on `play`.
+
+58. **Add-ons (`falconsdr/addons/`, design in `docs/addons.md`).** Built-in decoders (APRS, ACARS) are *data slots*:
+    `AddonManager.claim(freq)` (enabled add-on, within `CLAIM_TOLERANCE_HZ` = half the 8.333 kHz grid, so only the
+    nearest grid point) makes `_open_slot` force the demodulation the decoder needs and attach `slot.data_decoder`;
+    `_process_one_slot` feeds it the demod audio and returns before `_play_and_record_slot` (nothing played or
+    recorded, no "discarded" log line) unless `listen_to_data`. A data slot has primary weight -1: it never takes the
+    speaker from a voice channel. A decoder exception drops that decoder, never the scanner. They work only
+    while the scanner visits the window - a bonus, not full reception (a dedicated dongle or an external program
+    for that). **ACARS is unvalidated on real signals**: the receiver's recordings (noise reduction + MP3, 0.2-0.5 s
+    bursts) gave clean bit timing but no mapping with valid parity; decoders try four tone-to-bit mappings and the
+    CRC decides. Check live (Add-ons -> "channels heard" vs "messages decoded") before trusting it. APRS is checked
+    against aprslib (dev only). External programs (rtl_433, dumpvdl2): `Controller.run_addon` stops the scanner,
+    `ExternalRunner` takes the dongle, `stop_addon` resumes scanning; `_start` refuses while one runs. **Never bundle
+    or link them, never port their code** (rtl_433 is GPL-2.0): they are separate programs, which is what keeps the
+    licences apart. Events go to `EventHub` (ring + `CONFIG_DIR/addons/events-DATE.jsonl`, `keep_days`), the UI polls
+    `/api/addons/events`. Transcription and digital voice are shown on the Add-ons page: `settingsView(root, hash,
+    'addons')`, `#/settings/transcription|digital` redirect. The nav hides Messages until an add-on is on.
 
 ## Testing without touching the user's real config/recordings
 
