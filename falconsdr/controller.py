@@ -14,6 +14,7 @@ import datetime as dt
 import queue
 import sys
 import threading
+import traceback
 import time
 from collections import deque
 from dataclasses import asdict, fields, is_dataclass
@@ -129,7 +130,10 @@ class Controller:
         self.addons = AddonManager(self.config, self.log, self._addon_ended)
         self._held: set[int] = set()            # receivers an external add-on holds (antenna_range.device_ranges reads it)
         self.config._held_dongles = self._held
-        self._addon_dongle: Optional[int] = None
+        self._addon_dongles: dict[str, int] = {}     # running external add-on -> the receiver it holds
+        self._sched_started: dict[str, int] = {}     # the ones the schedule started (it stops them again)
+        self._sched_suppressed: dict[str, tuple] = {}  # stopped by the user while scheduled: not restarted until the range ends
+        self._bg_stop = threading.Event()
         self._shared: Optional[SharedFrequencies] = None
         self._resume = False    # one receiver only: the scanner was running when an add-on took it
         self.log(i18n.tr("Ready."))
@@ -143,6 +147,7 @@ class Controller:
 
     def start_background(self) -> None:
         self.library.start()
+        threading.Thread(target=self._schedule_loop, daemon=True, name="schedule-addons").start()
 
     @staticmethod
     def _join(engine: ScannerEngine, timeout: float) -> None:
@@ -150,6 +155,7 @@ class Controller:
             engine.join(timeout=timeout)
 
     def shutdown(self) -> None:
+        self._bg_stop.set()
         self.addons.stop_external()
         self.addons.stats.flush(force=True)
         engines = self._engines
@@ -254,15 +260,19 @@ class Controller:
     def run_addon(self, addon_id: str, dongle: Optional[int] = None) -> None:
         """Hands a receiver (``dongle``, else the one chosen for the add-on) to an external program. With one
         receiver the scanner pauses; with several only that receiver's engine does, the others take over its
-        share of the scan plan and keep scanning - and the scanner can be started or stopped meanwhile."""
+        share of the scan plan and keep scanning - and the scanner can be started or stopped meanwhile. Several
+        add-ons may run at once, each on its own receiver."""
         with self._start_lock:
-            if self.addons.running_external:
-                raise RuntimeError(i18n.tr("Another add-on is running - stop it first."))
+            if addon_id in self.addons.running_ids:
+                raise RuntimeError(i18n.tr("{name} is already running.").format(name=addon_id))
             devices = self._devices()
             if dongle is None:
                 dongle = self.addons.receiver(addon_id, 0)
             if not 0 <= dongle < len(devices):
                 dongle = 0      # the receiver that was chosen has been removed since
+            if dongle in self._held:
+                other = next((a for a, d in self._addon_dongles.items() if d == dongle), "")
+                raise RuntimeError(i18n.tr("Receiver {n} is already used by {name} - stop it first.").format(n=dongle + 1, name=other))
             with self._lock:
                 engines = list(self._engines)
             targets = engines if len(devices) == 1 else engines[dongle:dongle + 1]
@@ -273,32 +283,40 @@ class Controller:
                 self._join(engine, 8.0)
             if any(e.is_alive() for e in targets):
                 raise RuntimeError(i18n.tr("Scanner is still stopping - try again"))
-            self._resume = bool(targets) and len(devices) == 1
+            self._resume = (bool(targets) and len(devices) == 1) or self._resume
+            self._addon_dongles[addon_id] = dongle
             self._held.add(dongle)
-            self._addon_dongle = dongle
             for e in engines:
                 if e not in targets and e.is_alive():
                     e.request_rebuild()       # they take over what this receiver scanned
             try:
                 self.addons.start_external(addon_id, asdict(self.config.device) if devices[dongle] is None else devices[dongle])
             except Exception:
-                self._resume_scanning()
+                self._resume_scanning(addon_id)
                 raise
 
-    def stop_addon(self) -> None:
-        self.addons.stop_external()
+    def stop_addon(self, addon_id: str = "") -> None:
+        """Stops one add-on (or all). Stopping a scheduled one by hand keeps the schedule from starting it again
+        until its time range has passed."""
+        ids = [addon_id] if addon_id else list(self._addon_dongles)
+        for i in ids:
+            if i in self._sched_started or self._scheduled_receiver(i) is not None:
+                self._sched_suppressed[i] = self._schedule_key(i)
+        self.addons.stop_external(addon_id)
         with self._start_lock:
-            self._resume_scanning()
+            for i in ids or list(self._addon_dongles):
+                self._resume_scanning(i)
 
-    def _addon_ended(self) -> None:
+    def _addon_ended(self, addon_id: str) -> None:
         """An external program ended (its own exit or a stop): give its receiver back, off the reader's thread."""
         def release() -> None:
             with self._start_lock:
-                self._resume_scanning()
+                self._resume_scanning(addon_id)
         threading.Thread(target=release, daemon=True, name="addon-release").start()
 
-    def _resume_scanning(self) -> None:
-        dongle, self._addon_dongle = self._addon_dongle, None
+    def _resume_scanning(self, addon_id: str) -> None:
+        dongle = self._addon_dongles.pop(addon_id, None)
+        self._sched_started.pop(addon_id, None)
         if dongle is None:
             return
         self._held.discard(dongle)
@@ -333,6 +351,79 @@ class Controller:
             self._lives[k] = {**self._idle_live(), "state": "CALCULATE_NEXT_FREQ"}
         self._connect(k, engine, len(self._engines))
         engine.start()
+
+    # -- the schedule starts and stops add-ons --------------------------------------------------------------
+    def _plans(self, held: Optional[set] = None) -> list:
+        n = len(self._devices())
+        return schedule.assignments(
+            self.config, n, self._held if held is None else held,
+            addon_receiver=lambda a: self.addons.receiver(a, 0), addon_ok=self.addons.can_run)
+
+    def _scheduled_receiver(self, addon_id: str) -> Optional[int]:
+        """The receiver the schedule wants this add-on on right now, or None."""
+        manual = {d for a, d in self._addon_dongles.items() if a not in self._sched_started}
+        for k, p in enumerate(self._plans(manual)):
+            if p.addon == addon_id:
+                return k
+        return None
+
+    def _schedule_key(self, addon_id: str) -> tuple:
+        manual = {d for a, d in self._addon_dongles.items() if a not in self._sched_started}
+        return next((p.entries for p in self._plans(manual) if p.addon == addon_id), ())
+
+    def _schedule_loop(self) -> None:
+        while not self._bg_stop.wait(5.0):
+            try:
+                self.reconcile_schedule()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+
+    def reconcile_schedule(self) -> None:
+        """Brings the running add-ons in line with the schedule (called every few seconds)."""
+        addons = self.addons
+        manual = {d for a, d in self._addon_dongles.items() if a not in self._sched_started}
+        sched = self.config.schedule
+        # What the entries ask for, whether or not it can run - failures are forgotten once the entry is over.
+        wanted = {e.addon for i, e in enumerate(sched.entries) if sched.enabled and e.addon and i in schedule.active_indices(self.config)}
+        addons.schedule_failed &= wanted
+        for a in [a for a in self._sched_suppressed if a not in wanted]:
+            del self._sched_suppressed[a]
+        plans = schedule.assignments(self.config, len(self._devices()), manual,
+                                     addon_receiver=lambda a: addons.receiver(a, 0), addon_ok=addons.can_run)
+        want = {p.addon: (k, p.entries) for k, p in enumerate(plans) if p.addon}
+        for a, k in list(self._sched_started.items()):
+            if a not in want or want[a][0] != k:
+                self.stop_addon_by_schedule(a)
+        for a, (k, entries) in want.items():
+            if a in addons.running_ids or self._sched_suppressed.get(a) == entries:
+                continue
+            try:
+                self.run_addon(a, k)
+                self._sched_started[a] = k
+                self.log(i18n.tr("Schedule: {name} started on receiver {n}.").format(name=a, n=k + 1))
+            except Exception as exc:  # noqa: BLE001 - shown once; the receiver is not held meanwhile
+                addons.schedule_failed.add(a)
+                self.log(i18n.tr("Schedule: could not start {name}: {error}").format(name=a, error=exc))
+
+    def stop_addon_by_schedule(self, addon_id: str) -> None:
+        self.addons.stop_external(addon_id)
+        with self._start_lock:
+            self._resume_scanning(addon_id)
+        self.log(i18n.tr("Schedule: {name} stopped.").format(name=addon_id))
+
+    def schedule_now(self) -> list[dict]:
+        """What every receiver does right now, for the Schedule page."""
+        devices = self._devices()
+        plans = self._plans()
+        names = [e.name or f"{e.start}-{e.end}" for e in self.config.schedule.entries]
+        out = []
+        for k in range(len(devices)):
+            running = next((a for a, d in self._addon_dongles.items() if d == k), "")
+            p = plans[k]
+            out.append({"receiver": k, "addon": running, "by_schedule": running in self._sched_started,
+                        "scanning": not running and bool(p.bands or p.memory), "memory": p.memory and not running,
+                        "bands": [b.label for b in p.bands] if not running else [], "entries": [names[i] for i in p.entries if i < len(names)]})
+        return out
 
     def _on_finished(self, k: int, engine: ScannerEngine) -> None:
         with self._lock:
@@ -487,14 +578,16 @@ class Controller:
                 "log": [e for e in self._log if e["id"] > since_log],
                 "audio_rate": AUDIO_RATE,
                 "addon": self.addons.running_external,
+                "addons": [{"id": a, "receiver": d} for a, d in self._addon_dongles.items()],
                 "addon_since": self.addons.started_at,
+                "schedule_now": self.schedule_now() if self.config.schedule.enabled else [],
             }
 
     def _uncovered(self) -> list[dict]:
         """Selected bands/channels outside every dongle's antenna range (antenna_range.py)."""
         if not antenna_range.is_limited(antenna_range.device_ranges(self.config)):
             return []
-        bands, memory_on = schedule.scan_selection(self.config)
+        bands, memory_on = schedule.union_selection(self._plans())
         return antenna_range.uncovered(self.config, self.channels, bands, memory_on)
 
     def settings(self) -> dict:

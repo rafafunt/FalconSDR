@@ -540,6 +540,7 @@ class ScannerEngine(threading.Thread):
         self._applied_gain_db = None
         # Only while the effective gain mode is "sw_auto" (agc.py).
         self._software_agc: SoftwareAgc | None = None
+        self._plans: list = []
         self.addons = None   # the Controller's AddonManager (decoders for claimed channels); None in tests
         self._had_real_hardware = False
 
@@ -1051,12 +1052,17 @@ class ScannerEngine(threading.Thread):
             plain_channels: list[Channel] = []
             enabled_bands = [self._solo_band] if self._solo_band.enabled else []
         else:
-            enabled_bands, memory_on = schedule.scan_selection(self.config)
+            plan = self._schedule_plan()
+            enabled_bands, memory_on = plan.bands, plan.memory
             channels = list(self.channels) if memory_on else []
             enabled_channels = [c for c in channels if c.enabled]
             weighted_channels = [c for c in enabled_channels if c.weight > 0]
             plain_channels = [c for c in enabled_channels if c.weight <= 0]
-        self._schedule_sig = schedule.signature(self.config)
+        self._schedule_sig = schedule.plan_signature(self._plans)
+        if self._solo_band is not None or self._share[0] >= len(self._plans):
+            group = tuple(range(self._share[1]))                 # solo band: nothing from the schedule; all receivers share it
+        else:
+            group = self._plans[self._share[0]].group or (self._share[0],)
 
         weighted_bands = [b for b in enabled_bands if b.weight > 0]
         plain_bands = [b for b in enabled_bands if b.weight <= 0]
@@ -1210,9 +1216,11 @@ class ScannerEngine(threading.Thread):
         ranges = device_ranges(self.config)
         if len(ranges) != self._share[1]:  # the dongle list changed under a running scan: ignore ranges until restart
             ranges = [(0, OPEN_END_HZ)] * self._share[1]
-        if is_limited(ranges) or mixed:
+        # Receivers outside this plan's group (held by an add-on, scanning something of their own) hold nothing here.
+        eff = [r if j in group else (OPEN_END_HZ, OPEN_END_HZ) for j, r in enumerate(ranges)]
+        if is_limited(eff) or mixed:
             default_windows, priority_lanes = split_by_range(
-                default_windows, priority_lanes, self._share[0], ranges, weights=rates if mixed else None)
+                default_windows, priority_lanes, self._share[0], eff, weights=rates if mixed else None)
             if mixed:   # a wider receiver joins its small windows instead of retuning for each
                 own_rate = rates[self._share[0]]
                 default_windows = widen_windows(default_windows, own_rate, bw_map, default_grouping_bw)
@@ -1224,7 +1232,7 @@ class ScannerEngine(threading.Thread):
                 self.signals.log.emit(tr("Nothing for this receiver to scan inside its antenna range ({low}-{high} MHz).").format(
                     low=f"{low / 1e6:g}", high="..." if high >= OPEN_END_HZ else f"{high / 1e6:g}"))
         elif self._share[1] > 1:
-            default_windows, priority_lanes = _partition_windows(default_windows, priority_lanes, *self._share)
+            default_windows, priority_lanes = _partition_windows(default_windows, priority_lanes, group.index(self._share[0]), len(group))
         with self._lock:
             self._priority_lanes = priority_lanes
             self._default_lane = _Lane(weight=0.0, windows=default_windows, is_range=False)
@@ -1290,17 +1298,30 @@ class ScannerEngine(threading.Thread):
                 # _detect_reflections() and got real signals discarded.
                 slot.level_history.clear()
 
+    def _schedule_plan(self) -> "schedule.Plan":
+        """This receiver's plan now (schedule.assignments): what it scans, who it splits that with, or the add-on
+        that holds it. Every engine computes all plans from the same config, so they agree without talking."""
+        addons = self.addons
+        self._plans = schedule.assignments(
+            self.config, self._share[1], getattr(self.config, "_held_dongles", ()),
+            addon_receiver=(lambda a: addons.receiver(a, 0)) if addons is not None else (lambda a: 0),
+            addon_ok=addons.can_run if addons is not None else (lambda a: True))
+        return self._plans[self._share[0]]
+
     def _maybe_follow_schedule(self) -> None:
         """Rebuilds the windows when a schedule entry starts or ends."""
         now = time.monotonic()
         if now < self._schedule_check_at:
             return
         self._schedule_check_at = now + 5.0
-        sig = schedule.signature(self.config)
+        plan = self._schedule_plan()
+        sig = schedule.plan_signature(self._plans)
         if sig != self._schedule_logged and self.config.schedule.enabled:
             entries = self.config.schedule.entries
-            names = [entries[i].name or f"{entries[i].start}-{entries[i].end}" for i in sig[2]]
-            if names:
+            names = [entries[i].name or f"{entries[i].start}-{entries[i].end}" for i in plan.entries]
+            if plan.addon:
+                text = tr("Schedule: {addon} has this receiver now.").format(addon=plan.addon)
+            elif names:
                 text = tr("Schedule: now {names}.").format(names=", ".join(names))
             elif self.config.schedule.outside == "normal":
                 text = tr("Schedule: outside the time ranges - scanning as usual.")

@@ -243,6 +243,12 @@ class ScheduleEntry:
     name: str = ""
     band_ids: list[str] = field(default_factory=list)
     memory_list: bool = False
+    # Which receivers (index: 0 = the main one, then the extra dongles) the entry is for; empty = all of them, which then
+    # split what it selects. A named receiver scans only its own entries (schedule.assignments).
+    receivers: list[int] = field(default_factory=list)
+    # "" = scan the bands / Memory List above; else the id of an external add-on (rtl_433, vdl2) to run in this range
+    # on the receiver(s) above (empty = the one chosen for the add-on).
+    addon: str = ""
 
 
 @dataclass

@@ -138,7 +138,7 @@ class Claim:
 
 class AddonManager:
     def __init__(self, config: AppConfig, log: Callable[[str], None] = lambda _m: None,
-                 on_stopped: Callable[[], None] = lambda: None):
+                 on_stopped: Callable[[str], None] = lambda _id: None):
         self._config = config
         self._log = log
         self._on_stopped = on_stopped     # an external program ended (by itself or stopped): the Controller gives its receiver back
@@ -149,11 +149,31 @@ class AddonManager:
         self.hub = EventHub(CONFIG_DIR / "addons", config.addons.keep_days, stats=self.stats)
         self._lock = threading.Lock()
         self._stats: dict[str, dict[str, int]] = defaultdict(lambda: {"slots": 0, "events": 0})
-        self._runner: ExternalRunner | None = None
-        self.running_external = ""
+        # Several external programs may run at once, each on its own receiver: id -> {"runner", "since", "cancelled"}.
+        self._runs: dict[str, dict] = {}
         self.last_error = ""
-        self._cancelled = False
-        self.started_at = 0.0       # when the running external program started (0 = none)
+        self.schedule_failed: set[str] = set()      # add-ons the schedule tried and could not start (Controller keeps it)
+
+    @property
+    def running_external(self) -> str:
+        """The first running external program ('' = none): what the single-add-on parts of the UI show."""
+        with self._lock:
+            return next(iter(self._runs), "")
+
+    @property
+    def running_ids(self) -> list[str]:
+        with self._lock:
+            return list(self._runs)
+
+    @property
+    def started_at(self) -> float:
+        with self._lock:
+            return next((r["since"] for r in self._runs.values()), 0.0)
+
+    def can_run(self, addon_id: str) -> bool:
+        """Could the schedule start this add-on? (An installed external program that did not just fail.)"""
+        spec = SPECS.get(addon_id)
+        return bool(spec and spec.kind == "external" and self.program(addon_id) and addon_id not in self.schedule_failed)
 
     # -- state ----------------------------------------------------------------------------------
     def enabled(self, addon_id: str) -> bool:
@@ -176,7 +196,7 @@ class AddonManager:
                 "id": spec.id, "name": spec.name, "kind": spec.kind, "summary": tr(spec.summary), "license": tr(spec.license),
                 "homepage": spec.homepage, "enabled": self.enabled(spec.id), "experimental": spec.experimental,
                 "installed": spec.kind == "builtin" or program is not None, "program": program or "",
-                "running": self.running_external == spec.id,
+                "running": spec.id in self.running_ids,
                 "frequencies": list(getattr(cfg, spec.frequencies)) if spec.frequencies else [],
                 "receiver": self.receiver(spec.id, 0 if spec.kind == "external" else -1),
                 "options": clean_options(spec.id, cfg.options.get(spec.id, {}), {}) if spec.id in OPTION_DEFAULTS else {},
@@ -277,11 +297,10 @@ class AddonManager:
             raise RuntimeError(tr("{name} is not installed.").format(name=spec.name))
         argv, parse = self._argv(addon_id, program, device)
         with self._lock:
-            if self.running_external:
-                raise RuntimeError(tr("Another add-on is running - stop it first."))
-            self.last_error, self._cancelled = "", False
-            self.running_external = addon_id
-            self.started_at = time.time()
+            if addon_id in self._runs:
+                raise RuntimeError(tr("{name} is already running.").format(name=spec.name))
+            self.last_error = ""
+            self._runs[addon_id] = {"runner": None, "since": time.time(), "cancelled": False}
         # The dongle that the scanner just closed is not free for a moment (usb_claim_interface -6): the same
         # cooldown the backends keep between a close and the next open.
         SoapyBackend._wait_for_reopen_cooldown()
@@ -289,7 +308,7 @@ class AddonManager:
             self._launch(addon_id, argv, parse, tries=3)
         except OSError as exc:      # the program could not even be started
             with self._lock:
-                self._runner, self.running_external, self.started_at = None, "", 0.0
+                self._runs.pop(addon_id, None)
             raise RuntimeError(f"{spec.name}: {exc}") from exc
         self._log(tr("{name} started - the scanner is paused while it runs.").format(name=spec.name))
 
@@ -307,34 +326,52 @@ class AddonManager:
         def on_exit(code: int) -> None:
             SoapyBackend._record_close_time()       # the next open (the scanner's) keeps the cooldown too
             with self._lock:
-                runner = self._runner
+                run = self._runs.get(addon_id)
+                runner = run["runner"] if run else None
+                cancelled = run is None or run["cancelled"]
             tail = list(runner.stderr_tail) if runner else []
-            busy = (bool(code) and tries > 0 and not self._cancelled and time.monotonic() - started < 10
+            busy = (bool(code) and tries > 0 and not cancelled and time.monotonic() - started < 10
                     and any(re.search(r"claim|busy|-6\b", line, re.I) for line in tail))
             if busy:    # the receiver was not yet free: wait and try again, quietly
                 self._log(tr("The receiver was still busy - trying again."))
-                threading.Timer(_BUSY_RETRY_S, lambda: None if self._cancelled else self._launch(addon_id, argv, parse, tries - 1)).start()
+                threading.Timer(_BUSY_RETRY_S, lambda: self._retry(addon_id, argv, parse, tries - 1)).start()
                 return
             with self._lock:
-                self._runner, self.running_external, self.started_at = None, "", 0.0
+                self._runs.pop(addon_id, None)
                 if code:
                     shown = " ".join(tail[-3:])
                     self.last_error = f"{addon_id}: exit {code} {shown}".strip()
                     self._log(tr("{name} stopped by itself (exit {code}) {tail}").format(name=spec.name, code=code, tail=shown))
-            self._on_stopped()
+            self._on_stopped(addon_id)
 
         runner = ExternalRunner(argv, on_line, on_exit)
         with self._lock:
-            self._runner = runner
+            if addon_id in self._runs:
+                self._runs[addon_id]["runner"] = runner
         runner.start()
 
-    def stop_external(self) -> None:
-        self._cancelled = True
+    def _retry(self, addon_id: str, argv: list[str], parse, tries: int) -> None:
         with self._lock:
-            runner = self._runner
-        if runner is not None:
-            runner.stop()
+            run = self._runs.get(addon_id)
+            if run is None or run["cancelled"]:
+                return
+        self._launch(addon_id, argv, parse, tries)
+
+    def stop_external(self, addon_id: str = "") -> None:
+        """Stops one external program, or all of them."""
         with self._lock:
-            if not (self._runner is not None and self._runner.alive):
-                self._runner, self.running_external, self.started_at = None, "", 0.0
+            ids = [addon_id] if addon_id else list(self._runs)
+            runners = []
+            for i in ids:
+                run = self._runs.get(i)
+                if run:
+                    run["cancelled"] = True
+                    runners.append((i, run["runner"]))
+        for i, runner in runners:
+            if runner is not None:
+                runner.stop()
+            with self._lock:
+                run = self._runs.get(i)
+                if run and not (run["runner"] is not None and run["runner"].alive):
+                    self._runs.pop(i, None)
         SoapyBackend._record_close_time()

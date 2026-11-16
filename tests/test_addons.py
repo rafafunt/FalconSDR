@@ -744,5 +744,148 @@ class StatsTest(unittest.TestCase):
         self.assertTrue(any(e.get("registration") == "SP-LWA" for e in hub.since(0, limit=5000)))
 
 
+class ScheduleTest(unittest.TestCase):
+    """The schedule with several receivers and add-ons (schedule.assignments and what the engines make of it)."""
+    MON_10 = None
+
+    def _config(self):
+        from falconsdr.config import AppConfig, ScheduleEntry, VfoRangeConfig
+        cfg = AppConfig()
+        cfg.bands = [VfoRangeConfig(id="a", start_hz=118_000_000, stop_hz=118_200_000, step_hz=25_000, label="A"),
+                     VfoRangeConfig(id="b", start_hz=130_000_000, stop_hz=130_200_000, step_hz=25_000, label="B")]
+        cfg.schedule.enabled = True
+        cfg.schedule.entries = [ScheduleEntry(start="08:00", end="16:00", band_ids=["a"], name="day"),
+                                ScheduleEntry(start="00:00", end="00:00", receivers=[1], band_ids=["b"], name="b on 2"),
+                                ScheduleEntry(start="20:00", end="06:00", addon="vdl2", receivers=[2], name="night")]
+        return cfg
+
+    def test_each_receiver_gets_its_own_plan(self) -> None:
+        import datetime as dt
+        from falconsdr import schedule
+        cfg = self._config()
+        day = schedule.assignments(cfg, 3, now=dt.datetime(2026, 11, 16, 10, 0))             # Monday 10:00
+        self.assertEqual([[b.id for b in p.bands] for p in day], [["a"], ["b"], ["a"]])
+        self.assertEqual([p.group for p in day], [(0, 2), (1,), (0, 2)])                    # 0 and 2 split A; 1 scans B alone
+        night = schedule.assignments(cfg, 3, now=dt.datetime(2026, 11, 16, 22, 0))
+        self.assertEqual([p.addon for p in night], ["", "", "vdl2"])
+        self.assertEqual([[b.id for b in p.bands] for p in night], [[], ["b"], []])          # outside the day range: nothing shared
+        self.assertEqual(night[0].group, (0,))
+
+    def test_an_add_on_that_cannot_run_does_not_waste_the_receiver(self) -> None:
+        import datetime as dt
+        from falconsdr import schedule
+        cfg = self._config()
+        plans = schedule.assignments(cfg, 3, now=dt.datetime(2026, 11, 16, 22, 0), addon_ok=lambda a: False)
+        self.assertEqual([p.addon for p in plans], ["", "", ""])
+        cfg.schedule.outside = "normal"
+        again = schedule.assignments(cfg, 3, now=dt.datetime(2026, 11, 16, 22, 0), addon_ok=lambda a: False)
+        self.assertEqual([b.id for b in again[2].bands], ["a", "b"])                         # follows "as usual"
+
+    def test_without_receivers_named_the_add_on_goes_to_its_own_receiver_and_the_first_entry_wins(self) -> None:
+        import datetime as dt
+        from falconsdr import schedule
+        from falconsdr.config import ScheduleEntry
+        cfg = self._config()
+        cfg.schedule.entries = [ScheduleEntry(start="00:00", end="00:00", addon="rtl_433"), ScheduleEntry(start="00:00", end="00:00", addon="vdl2")]
+        plans = schedule.assignments(cfg, 2, now=dt.datetime(2026, 11, 16, 12, 0), addon_receiver=lambda a: 1)
+        self.assertEqual([p.addon for p in plans], ["", "rtl_433"])                           # both want receiver 1: the first wins
+        held = schedule.assignments(cfg, 2, held={1}, now=dt.datetime(2026, 11, 16, 12, 0), addon_receiver=lambda a: 1)
+        self.assertTrue(held[1].held and not held[1].addon)
+
+    def test_an_old_schedule_behaves_as_before(self) -> None:
+        import datetime as dt
+        from falconsdr import schedule
+        cfg = self._config()
+        cfg.schedule.entries = cfg.schedule.entries[:1]                                      # only "day", for everyone
+        plans = schedule.assignments(cfg, 2, now=dt.datetime(2026, 11, 16, 10, 0))
+        bands, memory = schedule.scan_selection(cfg, dt.datetime(2026, 11, 16, 10, 0))
+        self.assertEqual([b.id for b in plans[0].bands], [b.id for b in bands])
+        self.assertEqual(plans[0].group, (0, 1))
+        cfg.schedule.enabled = False
+        self.assertEqual([b.id for b in schedule.assignments(cfg, 2)[1].bands], ["a", "b"])
+
+    def test_the_engines_scan_what_their_receiver_was_given(self) -> None:
+        from falconsdr.scanner_engine import ScannerEngine, SharedFrequencies
+        cfg = self._config()
+        cfg.schedule.entries = cfg.schedule.entries[:2]                                      # "day" may be off at test time: use all-day ones
+        cfg.schedule.entries[0].start = cfg.schedule.entries[0].end = "00:00"
+        cfg.device.extra_devices = [{"driver": "simulated"}]
+        shared = SharedFrequencies()
+        engines = [ScannerEngine(cfg, [], [], share=(k, 2), shared=shared) for k in range(2)]
+        for e in engines:
+            e._rebuild_windows()
+        freqs = [sorted(f for w in e._default_lane.windows for f in w.freqs) for e in engines]
+        # (edge probes reach a little past a band's ends, so "near" is enough)
+        self.assertTrue(freqs[0] and all(117_500_000 <= f <= 118_700_000 for f in freqs[0]))   # A on the first receiver only
+        self.assertTrue(freqs[1] and all(129_500_000 <= f <= 130_700_000 for f in freqs[1]))   # B on the second only
+
+    def test_the_controller_starts_and_stops_a_scheduled_add_on_and_respects_a_manual_stop(self) -> None:
+        import time
+        from unittest import mock
+        from falconsdr.addons import manager as mgr
+        from falconsdr.config import AppConfig, ScheduleEntry
+        from falconsdr.controller import Controller
+        folder = tempfile.mkdtemp(dir=_HOME)
+        program = _script(folder, "import time\ntime.sleep(60)\n")
+        cfg = AppConfig()
+        cfg.debug_mode, cfg.device.driver = True, "simulated"
+        cfg.device.extra_devices = [{"driver": "simulated", "device_args": "serial=2"}]
+        cfg.schedule.enabled = True
+        cfg.schedule.entries = [ScheduleEntry(start="00:00", end="00:00", addon="rtl_433", receivers=[1], name="always")]
+        ctl = Controller(cfg)
+        ctl.addons.configure("rtl_433", {"path": program})
+        try:
+            with (mock.patch.object(mgr.SoapyBackend, "_wait_for_reopen_cooldown", lambda: None),
+                  mock.patch.object(mgr.AddonManager, "_device_args", lambda self, a, d: [])):
+                ctl.start()
+                ctl.reconcile_schedule()
+                self.assertEqual(ctl.addons.running_ids, ["rtl_433"])
+                self.assertEqual(ctl._addon_dongles, {"rtl_433": 1})
+                self.assertTrue(ctl._engines[0].is_alive() and not ctl._engines[1].is_alive())
+                now = {r["receiver"]: r for r in ctl.schedule_now()}
+                self.assertEqual((now[1]["addon"], now[1]["by_schedule"]), ("rtl_433", True))
+                ctl.stop_addon("rtl_433")                                    # the user stops it
+                ctl.reconcile_schedule()
+                self.assertEqual(ctl.addons.running_ids, [])                 # and the schedule leaves it stopped...
+                cfg.schedule.entries[0].end = "00:01"
+                ctl.reconcile_schedule()
+                ctl.reconcile_schedule()                                     # ...until its range is over
+                self.assertEqual(ctl._sched_suppressed, {})
+                cfg.schedule.enabled = False
+                ctl.reconcile_schedule()
+                self.assertEqual(ctl.addons.running_ids, [])
+        finally:
+            ctl.addons.stop_external()
+            ctl.shutdown()
+
+    def test_two_add_ons_run_at_once_on_different_receivers(self) -> None:
+        from unittest import mock
+        from falconsdr.addons import manager as mgr
+        from falconsdr.config import AppConfig
+        from falconsdr.controller import Controller
+        folder = tempfile.mkdtemp(dir=_HOME)
+        program = _script(folder, "import time\ntime.sleep(60)\n")
+        cfg = AppConfig()
+        cfg.debug_mode, cfg.device.driver = True, "simulated"
+        cfg.device.extra_devices = [{"driver": "simulated", "device_args": "serial=2"}]
+        ctl = Controller(cfg)
+        ctl.addons.configure("rtl_433", {"path": program, "receiver": 0})
+        ctl.addons.configure("vdl2", {"path": program, "receiver": 1})
+        try:
+            with (mock.patch.object(mgr.SoapyBackend, "_wait_for_reopen_cooldown", lambda: None),
+                  mock.patch.object(mgr.AddonManager, "_device_args", lambda self, a, d: [])):
+                ctl.run_addon("rtl_433")
+                ctl.run_addon("vdl2")
+                self.assertEqual(sorted(ctl.addons.running_ids), ["rtl_433", "vdl2"])
+                with self.assertRaises(RuntimeError):
+                    ctl.run_addon("rtl_433")
+                ctl.stop_addon("rtl_433")
+                self.assertEqual(ctl.addons.running_ids, ["vdl2"])
+                self.assertEqual(ctl._held, {1})
+        finally:
+            ctl.addons.stop_external()
+            ctl.shutdown()
+
+
 if __name__ == "__main__":
     unittest.main()
