@@ -109,3 +109,10 @@ export async function confirmRecording() {
   await api.post('/api/disclaimer', { kind: 'recording', lang });
   return true;
 }
+
+// Are the add-ons relevant to this user (one is on, one is running, or something was decoded)? Messages and the
+// add-on statistics are only offered then; the Add-ons page is always there to show what exists.
+export function addonsInUse() {
+  const live = S.live;
+  return S.settings.config.addons.enabled.length > 0 || !!(live && live.addon) || !!S.settings.capabilities.addon_messages;
+}

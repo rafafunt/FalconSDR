@@ -18,6 +18,7 @@ from ..models import Modulation
 from .acars import AcarsDecoder
 from .aprs import AprsDecoder
 from .events import EventHub
+from .stats import StatsStore
 from ..sdr_backend import SoapyBackend
 from . import install as installer
 from .external import BIN_DIR, ExternalRunner, find_program, parse_rtl_433, parse_vdl2
@@ -141,7 +142,11 @@ class AddonManager:
         self._config = config
         self._log = log
         self._on_stopped = on_stopped     # an external program ended (by itself or stopped): the Controller gives its receiver back
-        self.hub = EventHub(CONFIG_DIR / "addons", config.addons.keep_days)
+        home = lambda: (float(config.location.home_lat or 0), float(config.location.home_lon or 0))   # noqa: E731
+        self.stats = StatsStore(CONFIG_DIR / "addons" / "stats", home)
+        if self.stats.empty:
+            self.stats.backfill(CONFIG_DIR / "addons")       # the days of messages already on disk
+        self.hub = EventHub(CONFIG_DIR / "addons", config.addons.keep_days, stats=self.stats)
         self._lock = threading.Lock()
         self._stats: dict[str, dict[str, int]] = defaultdict(lambda: {"slots": 0, "events": 0})
         self._runner: ExternalRunner | None = None

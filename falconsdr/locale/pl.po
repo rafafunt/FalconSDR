@@ -3255,3 +3255,120 @@ msgstr "Ustawienia dodatków"
 
 msgid "Go to Add-ons and switch one on"
 msgstr "Przejdź do Dodatków i włącz któryś"
+
+msgid "Voice"
+msgstr "Głos"
+
+msgid "Overview"
+msgstr "Przegląd"
+
+msgid "Everything stored"
+msgstr "Wszystko, co zapisano"
+
+msgid "last {when}"
+msgstr "ostatnio {when}"
+
+msgid "nothing yet"
+msgstr "jeszcze nic"
+
+msgid "{n} acknowledgements and polls not counted"
+msgstr "{n} potwierdzeń i zapytań nie wliczono"
+
+msgid "Messages per hour"
+msgstr "Wiadomości na godzinę"
+
+msgid "Messages per day"
+msgstr "Wiadomości na dzień"
+
+msgid "Nothing decoded by {name} in this period."
+msgstr "{name} nic nie zdekodował w tym okresie."
+
+msgid "Nothing decoded in this period."
+msgstr "Nic nie zdekodowano w tym okresie."
+
+msgid "Aircraft"
+msgstr "Samoloty"
+
+msgid "Busiest hour"
+msgstr "Najbardziej ruchliwa godzina"
+
+msgid "Acknowledgements and polls"
+msgstr "Potwierdzenia i zapytania"
+
+msgid "Stations"
+msgstr "Stacje"
+
+msgid "Positions"
+msgstr "Pozycje"
+
+msgid "Farthest"
+msgstr "Najdalsza"
+
+msgid "set your location in Settings"
+msgstr "ustaw lokalizację w Ustawieniach"
+
+msgid "Devices"
+msgstr "Urządzenia"
+
+msgid "Warmest"
+msgstr "Najcieplej"
+
+msgid "Coldest"
+msgstr "Najzimniej"
+
+msgid "Per hour"
+msgstr "Na godzinę"
+
+msgid "Per day"
+msgstr "Na dzień"
+
+msgid "Click a row to see its messages"
+msgstr "Kliknij wiersz, żeby zobaczyć jego wiadomości"
+
+msgid "Click a row to see its readings"
+msgstr "Kliknij wiersz, żeby zobaczyć jego odczyty"
+
+msgid "Share"
+msgstr "Udział"
+
+msgid "Level"
+msgstr "Poziom"
+
+msgid "Message labels"
+msgstr "Etykiety wiadomości"
+
+msgid "The two-character ACARS label says what kind of message it is"
+msgstr "Dwuznakowa etykieta ACARS mówi, jakiego rodzaju jest wiadomość"
+
+msgid "Station"
+msgstr "Stacja"
+
+msgid "Packets"
+msgstr "Pakiety"
+
+msgid "Packet types"
+msgstr "Typy pakietów"
+
+msgid "Type"
+msgstr "Typ"
+
+msgid "Readings"
+msgstr "Odczyty"
+
+msgid "Temperature min / avg / max"
+msgstr "Temperatura min / średnia / max"
+
+msgid "Humidity"
+msgstr "Wilgotność"
+
+msgid "Battery"
+msgstr "Bateria"
+
+msgid "Counts of what was decoded, kept for up to {n} days (the messages themselves for a few days)."
+msgstr "Liczby tego, co zdekodowano, przechowywane do {n} dni (same wiadomości tylko kilka dni)."
+
+msgid "Stored so far: {n} days."
+msgstr "Dotąd zapisano: {n} dni."
+
+msgid "Click to see its messages"
+msgstr "Kliknij, żeby zobaczyć jego wiadomości"

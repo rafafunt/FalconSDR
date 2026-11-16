@@ -10,11 +10,13 @@ from pathlib import Path
 
 
 class EventHub:
-    def __init__(self, directory: Path | None, keep_days: int = 7, ring: int = 3000):
+    def __init__(self, directory: Path | None, keep_days: int = 7, ring: int = 3000, stats=None):
         self._dir = directory
+        self.stats = stats          # StatsStore: every event is counted there, link frames too
         self._keep_days = keep_days
         self._lock = threading.Lock()
         self._ring: deque[dict] = deque(maxlen=ring)
+        self._link_ring: deque[dict] = deque(maxlen=600)    # link-layer frames flood the ring: they get a small one of their own
         self._next_id = 1
         self._pruned_on: date | None = None
         self._load_today()
@@ -38,21 +40,29 @@ class EventHub:
 
     def publish(self, addon: str, event: dict, summary: str) -> dict:
         event = {**event, "addon": addon, "ts": round(time.time(), 3), "summary": summary}
+        if self.stats is not None:
+            self.stats.record(event)
+        # Link-layer frames (VDL2 acknowledgements and polls) are most of the traffic and nobody reads them: they are
+        # counted in the statistics but neither kept on disk nor shown beyond the live ring.
+        persist = not (event.get("kind") == "vdl2" and event.get("layer") == "link")
         with self._lock:
             event["id"] = self._next_id
             self._next_id += 1
-            self._ring.append(event)
-        self._append(event)
+            (self._ring if persist else self._link_ring).append(event)
+        if persist:
+            self._append(event)
         return event
 
     def since(self, after_id: int = 0, addon: str = "", limit: int = 500) -> list[dict]:
         with self._lock:
-            rows = [e for e in self._ring if e["id"] > after_id and (not addon or e["addon"] == addon)]
+            rows = [e for e in (*self._ring, *self._link_ring) if e["id"] > after_id and (not addon or e["addon"] == addon)]
+        rows.sort(key=lambda e: e["id"])
         return rows[-limit:]
 
     def clear(self) -> None:
         with self._lock:
             self._ring.clear()
+            self._link_ring.clear()
 
     def _append(self, event: dict) -> None:
         if self._dir is None:

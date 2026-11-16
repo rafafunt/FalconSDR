@@ -910,7 +910,7 @@ catalog loads; wrap them in a function called at point of use
     or link them, never port their code** (rtl_433 is GPL-2.0): they are separate programs, which is what keeps the
     licences apart. Events go to `EventHub` (ring + `CONFIG_DIR/addons/events-DATE.jsonl`, `keep_days`), the UI polls
     `/api/addons/events`. Transcription and digital voice are shown on the Add-ons page: `settingsView(root, hash,
-    'addons')`, `#/settings/transcription|digital` redirect. Messages is always in the nav: with nothing received it explains itself and points to Add-ons. Settings has a signpost card ("Transcription & add-ons") to the moved settings; a deep link (`#/addons/digital`) keeps the target card in view while the cards above load (ResizeObserver until the user scrolls).
+    'addons')`, `#/settings/transcription|digital` redirect. Messages (and the add-on statistics) are in the nav only when `addonsInUse()` (an add-on on, one running, or `capabilities.addon_messages`); the always-visible Add-ons page is the showcase. With nothing received Messages explains itself and points to Add-ons. Settings has a signpost card ("Transcription & add-ons") to the moved settings; a deep link (`#/addons/digital`) keeps the target card in view while the cards above load (ResizeObserver until the user scrolls).
     **Installing** (`addons/install.py`): rtl_433 = the author's release zip for Windows/macOS, dumpvdl2 = pinned source
     built here (libacars + dumpvdl2 into `CONFIG_DIR/addons/bin/vdl2/prefix`, RPATH, `cmake` + dev packages; the
     missing-package command is shown, never run). Both are checked against a SHA-256 of the gunzipped tar / the zip;
@@ -928,6 +928,12 @@ catalog loads; wrap them in a function called at point of use
     receiver off the reader thread; with ONE receiver the scanner cannot start while an add-on holds it. VDL2 messages
     carry `layer` ("acars"/"data"/"link", guessed from dumpvdl2's `avlc` keys): the UI shows only "acars" by default.
     Tested with simulated receivers only.
+    **Statistics** (`addons/stats.py`, `#/stats/addons[/id]`): hourly buckets per add-on (counts, who, channel, labels, a few
+    extremes - never text) in `CONFIG_DIR/addons/stats/stats-DATE.json`, 90 days; the messages themselves only
+    `keep_days`. VDL2 link-layer frames are counted there but neither written to disk nor allowed to push messages out
+    of the live list (`EventHub` has a small ring of their own). The first start counts the days of messages already on
+    disk (`backfill`). Overview = one tile per add-on and a stacked activity chart (the only comparison that means
+    something); one page per add-on for its own figures. Rows link to Messages through `sessionStorage.msgQuery`.
 
 ## Testing without touching the user's real config/recordings
 

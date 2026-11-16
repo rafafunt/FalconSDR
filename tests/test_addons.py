@@ -669,5 +669,80 @@ class OptionsTest(unittest.TestCase):
         self.assertNotIn("; rm -rf /", m.status()[2]["options"])
 
 
+class StatsTest(unittest.TestCase):
+    def _store(self, home=(50.0, 21.0)):
+        from pathlib import Path
+        from falconsdr.addons.stats import StatsStore
+        folder = Path(tempfile.mkdtemp(dir=_HOME))
+        return StatsStore(folder, lambda: home), folder
+
+    def test_counts_who_where_and_the_link_frames_apart(self) -> None:
+        st, _ = self._store()
+        t0 = 1_800_000_000.0
+        for i in range(3):
+            st.record({"addon": "vdl2", "kind": "vdl2", "layer": "acars", "registration": "SP-LWA", "label": "H1", "freq_hz": 136725000, "sig_level": -30.0, "ts": t0 + i})
+        st.record({"addon": "vdl2", "kind": "vdl2", "layer": "acars", "registration": "OH-LXK", "label": "_d", "freq_hz": 136775000, "sig_level": -40.0, "ts": t0 + 4000})
+        for i in range(5):
+            st.record({"addon": "vdl2", "kind": "vdl2", "layer": "link", "freq_hz": 136725000, "ts": t0 + i})
+        v = st.snapshot(0, now=t0 + 8000)["addons"]["vdl2"]
+        self.assertEqual((v["n"], v["link"], v["distinct"]), (4, 5, 2))
+        self.assertEqual(v["who"][0][:2], ["SP-LWA", 3])
+        self.assertEqual(v["freq"][0], [136725000, 3, -30.0])
+        self.assertEqual(dict(v["labels"]), {"H1": 3, "_d": 1})
+        self.assertEqual(len(v["timeline"]), 2)                           # two different hours
+
+    def test_range_aprs_distance_and_sensor_extremes(self) -> None:
+        st, _ = self._store(home=(50.0, 21.0))
+        now = 1_800_000_000.0
+        st.record({"addon": "aprs", "kind": "aprs", "source": "SP9NEAR", "type": "position", "lat": 50.1, "lon": 21.0, "ts": now - 100})
+        st.record({"addon": "aprs", "kind": "aprs", "source": "SP9FAR", "type": "position", "lat": 51.0, "lon": 21.0, "ts": now - 50})
+        st.record({"addon": "aprs", "kind": "aprs", "source": "OLD", "type": "message", "ts": now - 40 * 86400})
+        a = st.snapshot(1, now=now)["addons"]["aprs"]
+        self.assertEqual((a["n"], a["pos"]), (2, 2))                       # the 40-day-old packet is outside 1 day
+        self.assertEqual(a["farthest"]["who"], "SP9FAR")
+        self.assertAlmostEqual(a["farthest"]["km"], 111.2, delta=0.5)
+        for temp, batt in ((20.0, 1), (24.0, 0)):
+            st.record({"addon": "rtl_433", "kind": "sensor", "model": "Nexus-T", "device_id": 7,
+                       "fields": {"temperature_C": temp, "humidity": 50 + temp, "battery_ok": batt}, "ts": now})
+        s = st.snapshot(1, now=now)["addons"]["rtl_433"]["sensors"][0]
+        self.assertEqual((s["device"], s["n"], s["tmin"], s["tmax"], s["tavg"], s["batt"]), ("Nexus-T #7", 2, 20.0, 24.0, 22.0, 0))
+
+    def test_it_survives_a_restart_and_a_hub_keeps_link_frames_off_the_disk(self) -> None:
+        from falconsdr.addons.events import EventHub
+        from falconsdr.addons.stats import StatsStore
+        st, folder = self._store()
+        hub = EventHub(folder / "events", keep_days=7, stats=st)
+        hub.publish("vdl2", {"kind": "vdl2", "layer": "link", "freq_hz": 136975000}, "link")
+        hub.publish("vdl2", {"kind": "vdl2", "layer": "acars", "registration": "SP-LWA", "freq_hz": 136975000}, "msg")
+        st.flush(force=True)
+        again = StatsStore(folder, lambda: (0, 0)).snapshot(0)["addons"]["vdl2"]
+        self.assertEqual((again["n"], again["link"]), (1, 1))
+        lines = [line for f in (folder / "events").glob("events-*.jsonl") for line in f.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(lines), 1)                                   # only the message was written
+        self.assertEqual(len(hub.since(0)), 2)                            # both are in the live list
+
+    def test_the_first_start_counts_the_messages_already_on_disk(self) -> None:
+        import json
+        from pathlib import Path
+        from falconsdr.addons.stats import StatsStore
+        folder = Path(tempfile.mkdtemp(dir=_HOME))
+        (folder / "events-2026-11-10.jsonl").write_text("\n".join(json.dumps(e) for e in (
+            {"addon": "aprs", "kind": "aprs", "source": "SP9ABC", "type": "position", "ts": 1_800_000_000.0},
+            {"addon": "aprs", "kind": "aprs", "source": "SP9ABC", "type": "message", "ts": 1_800_000_100.0})) + "\n", encoding="utf-8")
+        st = StatsStore(folder / "stats")
+        self.assertTrue(st.empty)
+        self.assertEqual(st.backfill(folder), 2)
+        self.assertEqual(st.snapshot(0)["addons"]["aprs"]["n"], 2)
+        self.assertFalse(StatsStore(folder / "stats").empty)             # and it is kept on disk
+
+    def test_a_flood_of_link_frames_does_not_push_messages_out_of_the_list(self) -> None:
+        from falconsdr.addons.events import EventHub
+        hub = EventHub(None, ring=50)
+        hub.publish("vdl2", {"kind": "vdl2", "layer": "acars", "registration": "SP-LWA"}, "msg")
+        for _ in range(2000):
+            hub.publish("vdl2", {"kind": "vdl2", "layer": "link"}, "link")
+        self.assertTrue(any(e.get("registration") == "SP-LWA" for e in hub.since(0, limit=5000)))
+
+
 if __name__ == "__main__":
     unittest.main()

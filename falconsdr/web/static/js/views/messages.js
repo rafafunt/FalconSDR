@@ -154,6 +154,8 @@ export function messagesView(root) {
   }
 
   const pick = (who) => { query = who.toLowerCase(); search.value = who; draw(); };
+  const handed = sessionStorage.getItem('msgQuery');       // from the statistics: "show me this aircraft"
+  if (handed) { sessionStorage.removeItem('msgQuery'); range = 0; query = handed.toLowerCase(); search.value = handed; }
 
   // -- what is shown ---------------------------------------------------------------------------------------
   function selected() {

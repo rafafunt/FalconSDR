@@ -1,6 +1,6 @@
 import { api, errorToast, h, icon, loadLanguage, modal, mount, t, toast } from './core.js';
 import { liveAudio } from './live-audio.js';
-import { S, emit, loadSettings, maybeShowLaunchNotice, on, startPolling } from './state.js';
+import { S, addonsInUse, emit, loadSettings, maybeShowLaunchNotice, on, startPolling } from './state.js';
 import { channelsView } from './views/channels.js';
 import { listenView } from './views/listen.js';
 import { messagesView } from './views/messages.js';
@@ -14,8 +14,9 @@ const app = document.getElementById('app');
 const ROUTES = {
   listen: { label: () => t('Listen'), icon: 'listen', view: listenView },
   recordings: { label: () => t('Recordings'), icon: 'library', view: recordingsView },
-  // What the add-on decoders found; with nothing yet it explains itself and points to Add-ons.
-  messages: { label: () => t('Messages'), icon: 'messages', view: messagesView },
+  // What the add-on decoders found. Shown once add-ons are in use (Add-ons is the always-visible showcase); with
+  // nothing received yet it explains itself and points to Add-ons.
+  messages: { label: () => t('Messages'), icon: 'messages', view: messagesView, show: addonsInUse },
   channels: { label: () => t('Channels'), icon: 'channels', view: channelsView },
   schedule: { label: () => t('Schedule'), icon: 'clock', view: scheduleView },
   stats: { label: () => t('Statistics'), icon: 'stats', view: statsView },

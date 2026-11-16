@@ -151,6 +151,7 @@ class Controller:
 
     def shutdown(self) -> None:
         self.addons.stop_external()
+        self.addons.stats.flush(force=True)
         engines = self._engines
         for engine in engines:
             engine.request_stop()
@@ -510,6 +511,7 @@ class Controller:
             "languages": [{"code": c, "name": i18n.LANGUAGE_NAMES.get(c, c)} for c in i18n.available_languages()],
             "capabilities": {
                 "ffmpeg": ffmpeg_available(),
+                "addon_messages": bool(self.addons.hub.since(0, limit=1)),     # something was decoded: Messages is worth showing
                 "transcription_installed": is_transcription_installed(),
                 "digital": digital_voice.is_digital_installed(),
                 "platform": sys.platform,

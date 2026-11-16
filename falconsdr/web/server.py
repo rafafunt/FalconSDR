@@ -362,6 +362,9 @@ def make_handler(app: App):
             """Add-ons (falconsdr/addons): the catalog and its settings, running an external program that takes
             the receiver, and the decoded messages."""
             action = self.path.split("?")[0].rsplit("/", 1)[-1]
+            if action == "stats":
+                self._json(ctl.addons.stats.snapshot(int((query.get("days") or ["7"])[0])))
+                return
             if action == "events":
                 rows = ctl.addons.hub.since(int((query.get("since") or ["0"])[0]), (query.get("addon") or [""])[0])
                 self._json({"events": rows})
@@ -677,6 +680,7 @@ def make_handler(app: App):
         ("POST", "/api/autostart"): Handler.autostart,
         ("GET", "/api/addons"): Handler.addons,
         ("GET", "/api/addons/events"): Handler.addons,
+        ("GET", "/api/addons/stats"): Handler.addons,
         ("POST", "/api/addons/configure"): Handler.addons,
         ("POST", "/api/addons/run"): Handler.addons,
         ("POST", "/api/addons/stop"): Handler.addons,

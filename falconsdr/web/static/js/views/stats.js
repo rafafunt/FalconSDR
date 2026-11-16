@@ -1,13 +1,26 @@
 // "Statistics": what was heard, when and how well.
-import { api, errorToast, fmtAgo, fmtChannel, fmtDate, fmtDuration, h, mount, prefs, qs, qualityBadge, t, toggle } from '../core.js';
+import { api, errorToast, fmtAgo, fmtChannel, fmtDate, fmtDuration, h, mount, prefs, qs, qualityBadge, seg, t, toggle } from '../core.js';
+import { addonsInUse } from '../state.js';
+import { addonStats } from './stats-addons.js';
 
-export function statsView(root) {
+// Two scopes: what was heard on the air (recordings) and what the add-ons decoded. #/stats is the first,
+// #/stats/addons[/<id>] the second - offered only when add-ons are in use.
+export function statsView(root, hash = '') {
+  const m = hash.match(/^#\/stats\/addons(?:\/(\w+))?/);
+  const hasAddons = addonsInUse();
+  const scope = m && hasAddons ? 'addons' : 'voice';
   const body = h('div.col', { style: { gap: '16px' } }, h('div.empty', t('Loading…')));
   let utc = prefs.utc;
+  let addons = null;
   mount(root, h('div.page',
     h('div.page-head', h('h1', t('Statistics')),
-      toggle(t('UTC'), utc, (v) => { utc = prefs.utc = v; load(); })),
+      hasAddons ? seg([['voice', t('Voice')], ['addons', t('Add-ons')]], scope, (v) => { location.hash = v === 'addons' ? '#/stats/addons' : '#/stats'; }) : null,
+      toggle(t('UTC'), utc, (v) => { utc = prefs.utc = v; if (addons) { addons.destroy(); addons = addonStats({ body, sub: m && m[1], utc }); } else load(); })),
     body));
+  if (scope === 'addons') {
+    addons = addonStats({ body, sub: m[1], utc });
+    return { destroy() { addons.destroy(); } };
+  }
 
   function bars(values, labels, title) {
     const max = Math.max(1, ...values);
