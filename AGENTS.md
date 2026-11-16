@@ -953,7 +953,7 @@ catalog loads; wrap them in a function called at point of use
     (`addons/sensors.py`).** Rules (`NotifyConfig.rules`: source message/recording/transcript/system; addons, text_any,
     who, label, freq_mhz ±4200 Hz, metric/op/value, within_km) go to channels (ntfy, Telegram, webhook, MQTT QoS 0 - stdlib
     only, no dependency). Nothing leaves the machine until the user adds a channel, and the UI says the message text then
-    goes to that service. Cooldown per (rule, who), 20/min per rule, sends run on the notifier's own thread - never on a
+    goes to that service. Cooldown per (rule, who) - at least `MIN_COOLDOWN_S` (30 s, "no limit" does not exist: a busy alert channel or a sensor sending every few seconds would notify on every reception), 6/min per rule; matches swallowed by either are counted and the next notice says "(+N more since the last notice)", sends run on the notifier's own thread - never on a
     decoder, engine or HTTP thread. **Channels hold secrets**: `token`/`password`/`header_value` are masked (`MASK`) on the
     way out and an unchanged mask keeps the stored value on the way in, so `notify` is not patchable through
     `/api/config` or `/api/settings` (own `/api/notify[/save|/test|/recent]`). The Listen/any page learns of a new notice

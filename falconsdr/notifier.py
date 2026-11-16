@@ -22,13 +22,16 @@ from collections import deque
 from typing import Callable
 from urllib.parse import urlparse
 
+from .i18n import tr
+
 MASK = "••••••••"
 SECRET_KEYS = {"token", "password", "header_value"}
 CHANNEL_TYPES = ("ntfy", "telegram", "webhook", "mqtt")
 SOURCES = ("message", "recording", "transcript", "system")
 SYSTEM_EVENTS = ("receiver_lost", "addon_failed")
 FREQ_TOLERANCE_HZ = 4200
-_RATE_PER_MINUTE = 20          # most notifications one rule may send in a minute, whatever its cooldown says
+_RATE_PER_MINUTE = 6           # most notifications one rule may send in a minute, whatever its cooldown says
+MIN_COOLDOWN_S = 30            # a rule can never be 'no limit': a busy channel or sensor would send one message per reception
 _TIMEOUT_S = 10.0
 
 
@@ -95,7 +98,7 @@ def clean_rule(raw: dict, channel_ids: set[str]) -> dict:
     out = {
         "id": _text(raw.get("id"), 20) or secrets.token_hex(4), "name": _text(raw.get("name"), 80) or "Rule", "enabled": bool(raw.get("enabled", True)),
         "source": source, "channels": [c for c in raw.get("channels", []) if c in channel_ids],
-        "cooldown_s": int(min(86400, max(0, _num(raw.get("cooldown_s"), 300)))),
+        "cooldown_s": int(min(86400, max(MIN_COOLDOWN_S, _num(raw.get("cooldown_s"), 300)))),
         "addons": [a for a in raw.get("addons", []) if a in ("acars", "aprs", "vdl2", "rtl_433")],
         "text_any": ", ".join(words), "who": _text(raw.get("who"), 80), "label": _text(raw.get("label"), 10),
         "freq_mhz": max(0.0, _num(raw.get("freq_mhz"))), "metric": _text(raw.get("metric"), 40), "op": op,
@@ -263,6 +266,7 @@ class Notifier:
         self._send = sender
         self._lock = threading.Lock()
         self._cooldown: dict[tuple, float] = {}
+        self._held: dict[tuple, int] = {}      # matches swallowed per (rule, who) since its last notice
         self._rate: dict[str, deque] = {}
         self.recent: deque[dict] = deque(maxlen=100)
         self._seq = 0
@@ -296,34 +300,40 @@ class Notifier:
         try:
             rules = [r for r in cfg.rules if r.get("enabled") and r.get("source") == source]
             for rule in rules:
-                if matches(rule, source, event, self._home()) and self._allowed(rule, event):
-                    self._fire(rule, source, event)
+                if not matches(rule, source, event, self._home()):
+                    continue
+                held = self._allowed(rule, event)
+                if held is not None:
+                    self._fire(rule, source, event, held)
         except Exception:  # noqa: BLE001 - a bad rule must never reach the decoder that called us
             import traceback
             traceback.print_exc()
 
-    def _allowed(self, rule: dict, event: dict) -> bool:
+    def _allowed(self, rule: dict, event: dict) -> int | None:
+        """None = swallowed (counted, mentioned in the next notice); else how many matches were swallowed since the last one."""
         now = time.monotonic()
         with self._lock:
             key = (rule["id"], _who(event) or event.get("event", ""))
-            if rule["cooldown_s"] and now - self._cooldown.get(key, -1e9) < rule["cooldown_s"]:
-                return False
             recent = self._rate.setdefault(rule["id"], deque())
             while recent and now - recent[0] > 60:
                 recent.popleft()
-            if len(recent) >= _RATE_PER_MINUTE:
-                return False
+            if now - self._cooldown.get(key, -1e9) < rule["cooldown_s"] or len(recent) >= _RATE_PER_MINUTE:
+                self._held[key] = self._held.get(key, 0) + 1
+                return None
             recent.append(now)
             self._cooldown[key] = now
             if len(self._cooldown) > 5000:
                 self._cooldown = {k: v for k, v in self._cooldown.items() if now - v < 86400}
-        return True
+                self._held = {k: v for k, v in self._held.items() if k in self._cooldown}
+            return self._held.pop(key, 0)
 
-    def _fire(self, rule: dict, source: str, event: dict) -> None:
+    def _fire(self, rule: dict, source: str, event: dict, held: int = 0) -> None:
         title = rule["name"]
         message = str(event.get("summary") or event.get("text") or "")[:500]
         if source == "message" and event.get("freq_hz") and f"{event['freq_hz'] / 1e6:.3f}" not in message:
             message = f"{message}  ({event['freq_hz'] / 1e6:.4f} MHz)"
+        if held:
+            message = f"{message}  " + tr("(+{n} more since the last notice)").format(n=held)
         with self._lock:
             self._seq += 1
             item = {"id": self._seq, "ts": round(time.time(), 1), "rule": rule["name"], "title": title, "message": message,

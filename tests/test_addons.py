@@ -973,7 +973,25 @@ class NotifyTest(unittest.TestCase):
         cfg, n, sent, done = self._notifier()
         for i in range(60):
             n.on_message({"addon": "rtl_433", "kind": "sensor", "model": "N", "device_id": i, "fields": {"temperature_C": -1}, "summary": f"d{i}"})
-        self.assertLessEqual(len(n.since(0)), 20)                          # at most 20 a minute per rule
+        self.assertLessEqual(len(n.since(0)), 6)                           # at most 6 a minute per rule
+
+    def test_a_burst_on_one_frequency_is_one_notice_and_the_next_one_says_how_many_were_held_back(self) -> None:
+        from falconsdr.config import AppConfig
+        from falconsdr.notifier import MIN_COOLDOWN_S, Notifier
+        cfg = AppConfig()
+        cfg.notify.enabled = True
+        cfg.notify.rules = [self._rule(id="r1", name="Alert", source="recording", freq_mhz=121.5, cooldown_s=0)]   # "no limit" is clamped
+        self.assertEqual(cfg.notify.rules[0]["cooldown_s"], MIN_COOLDOWN_S)
+        n = Notifier(cfg, sender=lambda *a: None)
+        for _ in range(8):                                                  # eight transmissions in a few seconds
+            n.on_recording(121_500_000, "", "/x.wav")
+        self.assertEqual(len(n.since(0)), 1)
+        for key in list(n._cooldown):                                       # the quiet period passes
+            n._cooldown[key] -= MIN_COOLDOWN_S + 1
+        n.on_recording(121_500_000, "", "/x.wav")
+        items = n.since(0)
+        self.assertEqual(len(items), 2)
+        self.assertIn("+7 ", items[1]["message"])             # in whichever language is set
 
     def test_channels_are_checked_and_secrets_stay_masked(self) -> None:
         from falconsdr.notifier import MASK, clean_channel, mask

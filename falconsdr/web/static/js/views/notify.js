@@ -5,18 +5,18 @@ import { cfg } from '../state.js';
 
 const SOURCES = () => [['message', t('A decoded message or sensor reading')], ['recording', t('A recording')], ['transcript', t('A word in a transcript')], ['system', t('Something went wrong')]];
 const ADDONS = () => [['vdl2', 'VDL2'], ['acars', 'ACARS'], ['aprs', 'APRS'], ['rtl_433', t('Sensors')]];
-const COOLDOWNS = () => [['0', t('no limit')], ['60', t('1 minute')], ['300', t('5 minutes')], ['3600', t('1 hour')], ['21600', t('6 hours')], ['86400', t('24 hours')]];
+const COOLDOWNS = () => [['30', t('30 seconds')], ['60', t('1 minute')], ['300', t('5 minutes')], ['3600', t('1 hour')], ['21600', t('6 hours')], ['86400', t('24 hours')]];
 const CHANNEL_TYPES = () => [['ntfy', 'ntfy'], ['telegram', 'Telegram'], ['webhook', t('Webhook')], ['mqtt', 'MQTT']];
 
 // Rules to start from: one click, then adjust.
 const TEMPLATES = () => [
-  [t('Frost: a sensor below 0 °C'), { source: 'message', addons: ['rtl_433'], metric: 'temperature_C', op: '<', value: 0, cooldown_s: 3600 }],
+  [t('A sensor reading crosses a limit (set it below)'), { source: 'message', addons: ['rtl_433'], metric: 'temperature_C', op: '<', value: 0, cooldown_s: 3600 }],
   [t('A sensor battery is low'), { source: 'message', addons: ['rtl_433'], metric: 'battery_ok', op: '<', value: 1, cooldown_s: 86400 }],
-  [t('A particular aircraft (fill in the registration)'), { source: 'message', addons: ['vdl2', 'acars'], who: '', cooldown_s: 3600 }],
+  [t('A particular aircraft, station or device (name it below)'), { source: 'message', addons: ['vdl2', 'acars'], who: '', cooldown_s: 3600 }],
   [t('Words in ACARS / VDL2 messages'), { source: 'message', addons: ['vdl2', 'acars'], text_any: 'MAYDAY, PAN PAN, FUEL', cooldown_s: 300 }],
-  [t('An APRS station within 50 km'), { source: 'message', addons: ['aprs'], within_km: 50, cooldown_s: 3600 }],
-  [t('Activity on 121.5 MHz (emergency)'), { source: 'recording', freq_mhz: 121.5, cooldown_s: 60 }],
-  [t('"Mayday" in a transcript'), { source: 'transcript', text_any: 'mayday, pan pan', cooldown_s: 300 }],
+  [t('An APRS station within a distance (set it below)'), { source: 'message', addons: ['aprs'], within_km: 50, cooldown_s: 3600 }],
+  [t('Activity on a chosen frequency (set it below)'), { source: 'recording', freq_mhz: 121.5, cooldown_s: 60 }],
+  [t('Chosen words in a transcript (set them below)'), { source: 'transcript', text_any: 'mayday, pan pan', cooldown_s: 300 }],
   [t('A receiver loses its connection'), { source: 'system', event: 'receiver_lost', cooldown_s: 600 }],
   [t('An add-on stops by itself'), { source: 'system', event: 'addon_failed', cooldown_s: 600 }],
 ];
@@ -121,7 +121,7 @@ export function notifyCard(box) {
         onchange: (e) => set('channels', e.target.checked ? [...r.channels, c.id] : r.channels.filter((x) => x !== c.id), true) }), h('span.label', c.name))) : [h('span.faint.small', t('no channel yet'))]),
       h('span.faint.small', t('It always appears in the app as well.'))));
     rows.push(h('div.row.wrap', h('b', t('At most once per')), select(COOLDOWNS(), String(r.cooldown_s), (v) => set('cooldown_s', +v, true), { style: { width: 'auto' } }),
-      h('span.faint.small', t('for the same aircraft, station or device'))));
+      h('span.faint.small', t('for the same aircraft, station, device or frequency; more matches in that time are counted in the next notice'))));
     return h('div.notify-box',
       h('div.row.wrap', h('input', { value: r.name, style: { flex: '1 1 200px' }, 'aria-label': t('Name'), onchange: (e) => set('name', e.target.value, true) }),
         select(SOURCES(), r.source, (v) => set('source', v, true), { style: { width: 'auto' } }), h('span.spacer'),

@@ -2620,8 +2620,6 @@ msgstr "Pasma z własnym progiem wyzwalania ignorują ten suwak: {names}."
 msgid "Antenna range (MHz)"
 msgstr "Zakres anteny (MHz)"
 
-msgid "no limit"
-msgstr "bez limitu"
 
 msgid "Optional. This dongle scans only inside this range - for one on an antenna made for a single band, e.g. 144 to 146 for 2 m. Empty = no limit."
 msgstr "Opcjonalnie. Ten dongle skanuje tylko w tym zakresie - dla odbiornika z anteną zrobioną pod jedno pasmo, np. 144 do 146 dla 2 m. Puste = bez limitu."
@@ -3688,8 +3686,6 @@ msgstr "Stacja APRS w promieniu 50 km"
 msgid "Activity on 121.5 MHz (emergency)"
 msgstr "Aktywność na 121,5 MHz (awaryjna)"
 
-msgid ""Mayday" in a transcript"
-msgstr "„Mayday” w transkrypcji"
 
 msgid "A receiver loses its connection"
 msgstr "Odbiornik traci połączenie"
@@ -3861,3 +3857,27 @@ msgstr "Jeszcze nic."
 
 msgid "Receiver {n} lost its connection - reconnecting."
 msgstr "Odbiornik {n} stracił połączenie - łączę ponownie."
+
+msgid "30 seconds"
+msgstr "30 sekund"
+
+msgid "A sensor reading crosses a limit (set it below)"
+msgstr "Odczyt czujnika przekracza wartość (ustaw ją poniżej)"
+
+msgid "A particular aircraft, station or device (name it below)"
+msgstr "Konkretny samolot, stacja lub urządzenie (wpisz nazwę poniżej)"
+
+msgid "An APRS station within a distance (set it below)"
+msgstr "Stacja APRS w zadanej odległości (ustaw ją poniżej)"
+
+msgid "Activity on a chosen frequency (set it below)"
+msgstr "Aktywność na wybranej częstotliwości (ustaw ją poniżej)"
+
+msgid "Chosen words in a transcript (set them below)"
+msgstr "Wybrane słowa w transkrypcji (ustaw je poniżej)"
+
+msgid "for the same aircraft, station, device or frequency; more matches in that time are counted in the next notice"
+msgstr "dla tego samego samolotu, stacji, urządzenia lub częstotliwości; kolejne trafienia w tym czasie są liczone w następnym powiadomieniu"
+
+msgid "(+{n} more since the last notice)"
+msgstr "(+{n} kolejnych od ostatniego powiadomienia)"
