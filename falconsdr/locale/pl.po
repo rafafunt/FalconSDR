@@ -3636,3 +3636,228 @@ msgstr "Rodzaj"
 
 msgid "Main reading: min / average / max"
 msgstr "Główny odczyt: min / średnia / max"
+
+msgid "Notifications"
+msgstr "Powiadomienia"
+
+msgid "A decoded message or sensor reading"
+msgstr "Zdekodowana wiadomość lub odczyt czujnika"
+
+msgid "A recording"
+msgstr "Nagranie"
+
+msgid "A word in a transcript"
+msgstr "Słowo w transkrypcji"
+
+msgid "Something went wrong"
+msgstr "Coś poszło nie tak"
+
+msgid "1 minute"
+msgstr "1 minuta"
+
+msgid "5 minutes"
+msgstr "5 minut"
+
+msgid "1 hour"
+msgstr "1 godzina"
+
+msgid "6 hours"
+msgstr "6 godzin"
+
+msgid "24 hours"
+msgstr "24 godziny"
+
+msgid "Webhook"
+msgstr "Webhook"
+
+msgid "Frost: a sensor below 0 °C"
+msgstr "Mróz: czujnik poniżej 0 °C"
+
+msgid "A sensor battery is low"
+msgstr "Słaba bateria czujnika"
+
+msgid "A particular aircraft (fill in the registration)"
+msgstr "Konkretny samolot (wpisz rejestrację)"
+
+msgid "Words in ACARS / VDL2 messages"
+msgstr "Słowa w wiadomościach ACARS / VDL2"
+
+msgid "An APRS station within 50 km"
+msgstr "Stacja APRS w promieniu 50 km"
+
+msgid "Activity on 121.5 MHz (emergency)"
+msgstr "Aktywność na 121,5 MHz (awaryjna)"
+
+msgid ""Mayday" in a transcript"
+msgstr "„Mayday” w transkrypcji"
+
+msgid "A receiver loses its connection"
+msgstr "Odbiornik traci połączenie"
+
+msgid "An add-on stops by itself"
+msgstr "Dodatek zatrzymuje się sam"
+
+msgid "Server"
+msgstr "Serwer"
+
+msgid "Topic"
+msgstr "Temat"
+
+msgid "Access token (if the topic is protected)"
+msgstr "Token dostępu (jeśli temat jest chroniony)"
+
+msgid "Bot token"
+msgstr "Token bota"
+
+msgid "Chat id"
+msgstr "Id czatu"
+
+msgid "Address"
+msgstr "Adres"
+
+msgid "Header (optional)"
+msgstr "Nagłówek (opcjonalnie)"
+
+msgid "Header value"
+msgstr "Wartość nagłówka"
+
+msgid "Broker"
+msgstr "Broker"
+
+msgid "Port"
+msgstr "Port"
+
+msgid "User name"
+msgstr "Nazwa użytkownika"
+
+msgid "Encrypted connection (TLS)"
+msgstr "Połączenie szyfrowane (TLS)"
+
+msgid "The test failed: {error}"
+msgstr "Test się nie udał: {error}"
+
+msgid "Test sent - did it arrive?"
+msgstr "Wysłano test - doszedł?"
+
+msgid "Send a test"
+msgstr "Wyślij test"
+
+msgid "only in the app"
+msgstr "tylko w aplikacji"
+
+msgid "any add-on"
+msgstr "dowolny dodatek"
+
+msgid "containing {words}"
+msgstr "zawierające {words}"
+
+msgid "about {who}"
+msgstr "dotyczące {who}"
+
+msgid "label {label}"
+msgstr "etykieta {label}"
+
+msgid "within {km} km"
+msgstr "w promieniu {km} km"
+
+msgid "a recording on {f} MHz"
+msgstr "nagranie na {f} MHz"
+
+msgid "any recording"
+msgstr "dowolne nagranie"
+
+msgid "any transcript"
+msgstr "dowolna transkrypcja"
+
+msgid "an add-on stops by itself"
+msgstr "dodatek zatrzymuje się sam"
+
+msgid "a receiver loses its connection"
+msgstr "odbiornik traci połączenie"
+
+msgid "When"
+msgstr "Gdy"
+
+msgid "none selected = any"
+msgstr "nic nie zaznaczono = dowolny"
+
+msgid "Contains any of"
+msgstr "Zawiera którekolwiek z"
+
+msgid "Aircraft, station or device"
+msgstr "Samolot, stacja lub urządzenie"
+
+msgid "ACARS label"
+msgstr "Etykieta ACARS"
+
+msgid "Within (km)"
+msgstr "W promieniu (km)"
+
+msgid "Sensor reading"
+msgstr "Odczyt czujnika"
+
+msgid "(any)"
+msgstr "(dowolny)"
+
+msgid "below"
+msgstr "poniżej"
+
+msgid "above"
+msgstr "powyżej"
+
+msgid "0 = any frequency"
+msgstr "0 = dowolna częstotliwość"
+
+msgid "Event"
+msgstr "Zdarzenie"
+
+msgid "Send to"
+msgstr "Wyślij do"
+
+msgid "no channel yet"
+msgstr "brak kanału"
+
+msgid "It always appears in the app as well."
+msgstr "Zawsze pojawia się też w aplikacji."
+
+msgid "At most once per"
+msgstr "Najwyżej raz na"
+
+msgid "for the same aircraft, station or device"
+msgstr "dla tego samego samolotu, stacji lub urządzenia"
+
+msgid "Add a channel…"
+msgstr "Dodaj kanał…"
+
+msgid "Add a rule…"
+msgstr "Dodaj regułę…"
+
+msgid "Tells you when something is worth knowing: a message that matches, a sensor reading, a recording on a frequency, a word in a transcript, a receiver that fell off. In the app it appears as a notice; the channels below send it to your phone or your home automation."
+msgstr "Daje znać, gdy coś jest warte uwagi: pasująca wiadomość, odczyt czujnika, nagranie na częstotliwości, słowo w transkrypcji, odbiornik, który odpadł. W aplikacji pojawia się jako powiadomienie; kanały poniżej wysyłają je na telefon lub do automatyki domowej."
+
+msgid "Nothing is sent anywhere until you add a channel. The text of a message then goes to that service (ntfy.sh, Telegram...) - use your own server if that matters."
+msgstr "Nic nie jest nigdzie wysyłane, dopóki nie dodasz kanału. Tekst wiadomości trafia wtedy do tej usługi (ntfy.sh, Telegram...) - jeśli to ma znaczenie, użyj własnego serwera."
+
+msgid "Where to send"
+msgstr "Dokąd wysyłać"
+
+msgid "Rules"
+msgstr "Reguły"
+
+msgid "No rules yet. Start from one of the examples."
+msgstr "Jeszcze nie ma reguł. Zacznij od jednego z przykładów."
+
+msgid "Recent notifications"
+msgstr "Ostatnie powiadomienia"
+
+msgid "sent"
+msgstr "wysłano"
+
+msgid "failed"
+msgstr "błąd"
+
+msgid "Nothing yet."
+msgstr "Jeszcze nic."
+
+msgid "Receiver {n} lost its connection - reconnecting."
+msgstr "Odbiornik {n} stracił połączenie - łączę ponownie."

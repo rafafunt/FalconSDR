@@ -481,6 +481,7 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 .kpi.clickable:hover { box-shadow: 0 0 0 2px var(--accent-tint), var(--shadow); }
 .bar-stack { display: flex; flex-direction: column-reverse; min-height: 2px; border-radius: 3px 3px 0 0; overflow: hidden; opacity: .85; }
 .bar-stack:hover { opacity: 1; }
+.notify-box { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border: 1px solid var(--separator); border-radius: var(--radius-s); background: var(--surface); }
 .msg-text { overflow-wrap: anywhere; }
 .msg-line b { font-weight: 600; }
 .sensor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 4px; }

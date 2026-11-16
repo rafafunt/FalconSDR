@@ -5,6 +5,7 @@ import {
 } from '../core.js';
 import { S, cfg, confirmRecording, loadSettings, on, patchConfig } from '../state.js';
 import { decodersCard } from './addons.js';
+import { notifyCard } from './notify.js';
 import { modLabel, modOptions } from './bands.js';
 
 // Transcription and digital voice are add-ons: they live on the Add-ons page (same component, scope 'addons').
@@ -12,6 +13,7 @@ const ADDON_SECTIONS = [
   ['decoders', () => t('Decoders & tools')],
   ['transcription', () => t('Transcription & computers')],
   ['digital', () => t('Digital voice (DMR, C4FM)')],
+  ['notify', () => t('Notifications')],
 ];
 const SECTIONS = [
   ['recording', () => t('Recording')],
@@ -532,6 +534,7 @@ export function settingsView(root, hash, scope = 'settings') {
   }
 
   let stopDecoders = null;
+  let stopNotify = null;
   function renderAddonsSignpost() {
     mount(body('addons'),
       h('p.muted', { style: { margin: 0 } }, t('Transcription, digital voice and the decoders (ACARS, APRS, VDL2, rtl_433) now have their own page.')),
@@ -546,6 +549,7 @@ export function settingsView(root, hash, scope = 'settings') {
     if (scope === 'addons') {
       renderTranscription(); renderDigital();
       if (!stopDecoders) stopDecoders = decodersCard(body('decoders'));
+      if (!stopNotify) stopNotify = notifyCard(body('notify'));
       return;
     }
     renderRecording(); renderAddonsSignpost(); renderStorage(); renderConnect(); renderAccess();
@@ -573,5 +577,5 @@ export function settingsView(root, hash, scope = 'settings') {
     const timeout = setTimeout(stop, 4000);
     stopFollowing = () => { clearTimeout(timeout); stop(); };
   }
-  return { destroy() { timers.forEach(clearInterval); clearTimeout(digitalPoll); offs.forEach((f) => f()); if (stopDecoders) stopDecoders(); stopFollowing(); } };
+  return { destroy() { timers.forEach(clearInterval); clearTimeout(digitalPoll); offs.forEach((f) => f()); if (stopDecoders) stopDecoders(); if (stopNotify) stopNotify(); stopFollowing(); } };
 }

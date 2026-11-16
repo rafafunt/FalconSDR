@@ -949,6 +949,24 @@ catalog loads; wrap them in a function called at point of use
     disk (`backfill`). Overview = one tile per add-on and a stacked activity chart (the only comparison that means
     something); one page per add-on for its own figures. Rows link to Messages through `sessionStorage.msgQuery`.
 
+59. **Notifications (`falconsdr/notifier.py`, last card of the Add-ons page, `views/notify.js`) and the rtl_433 catalog
+    (`addons/sensors.py`).** Rules (`NotifyConfig.rules`: source message/recording/transcript/system; addons, text_any,
+    who, label, freq_mhz ±4200 Hz, metric/op/value, within_km) go to channels (ntfy, Telegram, webhook, MQTT QoS 0 - stdlib
+    only, no dependency). Nothing leaves the machine until the user adds a channel, and the UI says the message text then
+    goes to that service. Cooldown per (rule, who), 20/min per rule, sends run on the notifier's own thread - never on a
+    decoder, engine or HTTP thread. **Channels hold secrets**: `token`/`password`/`header_value` are masked (`MASK`) on the
+    way out and an unchanged mask keeps the stored value on the way in, so `notify` is not patchable through
+    `/api/config` or `/api/settings` (own `/api/notify[/save|/test|/recent]`). The Listen/any page learns of a new notice
+    from `live["notify_seq"]`. A channel still being typed is kept in the browser and not sent (the server refuses an
+    incomplete one). rtl_433: what it reads is far wider than temperature (254 decoders, ~194 fields). `sensors.py`
+    classifies a device (`category`), names and units its readings (`describe_key`) and lists status fields; the events
+    carry `readings`/`status`/`category`/`primary`, so Messages, Statistics (generic min/avg/max of the primary reading,
+    `StatsStore` migrates old temperature-only buckets on load) and the rule editor (`/api/addons/metrics`) need no per-type
+    code. **Remote controls and key fobs are dropped unless `remotes` is on, and their codes (`SECRET`) are never stored
+    either way** - they are somebody's car or garage. Extra decoders: `-R help` of the installed program lists them
+    (`list_rtl433_protocols`); `-R` means "only these", so the defaults are named again. wM-Bus (868.95 MHz) needs
+    `-s 1200k` (set automatically). Unrun on real utility meters/TPMS - tested with synthetic JSON lines only.
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch

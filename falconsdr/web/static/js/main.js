@@ -143,6 +143,16 @@ function shell() {
       }, icon(liveAudio.playing ? 'headphones' : 'mute')));
   };
   on('live', updateStatus);
+  // Notifications: a notice in the app whenever a rule fires (the first poll only sets the starting point).
+  let notifySeq = null;
+  on('live', async (live) => {
+    if (live.notify_seq === undefined) return;
+    if (notifySeq === null) { notifySeq = live.notify_seq; return; }
+    if (live.notify_seq <= notifySeq) return;
+    const since = notifySeq;
+    notifySeq = live.notify_seq;
+    try { (await api.get(`/api/notify/recent?since=${since}`)).items.slice(-3).forEach((i) => toast(`${i.title}: ${i.message}`)); } catch { /* the list shows it */ }
+  });
   liveAudio.onchange = () => { updateStatus(); emit('audio'); };
   updateStatus();
 
