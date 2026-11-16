@@ -1,7 +1,7 @@
 // "Add-ons" page, the decoders and tools card: ACARS and APRS (our own decoders on the scanner's channels)
 // and rtl_433 / VDL2 (external programs that take the receiver for themselves). Transcription and digital
 // voice live on the same page (settings.js, scope 'addons').
-import { api, errorToast, h, icon, t, toast, toggle } from '../core.js';
+import { api, errorToast, h, icon, select, t, toggle } from '../core.js';
 import { S, cfg, loadSettings } from '../state.js';
 
 const mhz = (hz) => (hz / 1e6).toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
@@ -15,6 +15,7 @@ export function decodersCard(box) {
   let rows = [];
   let busy = false;
   let timer = null;
+  let dongle = 0;     // which receiver an external program takes when there are several
 
   async function act(path, body) {
     busy = true;
@@ -30,6 +31,7 @@ export function decodersCard(box) {
   async function load() {
     try { rows = (await api.get('/api/addons')).addons; } catch { return; }
     if (!busy) render();
+    if (rows.some((r) => r.install && r.install.running)) { clearInterval(timer); timer = setInterval(load, 1500); } else { clearInterval(timer); timer = setInterval(load, 3000); }
   }
 
   function frequencyEditor(a) {
@@ -62,20 +64,36 @@ export function decodersCard(box) {
       }
     } else if (!a.installed) {
       parts.push(h('p', { style: { margin: '8px 0' } }, a.install_hint));
+      if (a.can_install) {
+        const st = a.install || {};
+        parts.push(h('div.row.wrap',
+          st.running ? h('span.chip.accent.live', h('span.dot'), t('Installing…'))
+            : h('button.primary', { onclick: () => act('/api/addons/install', { id: a.id }) }, icon('download'), t('Install')),
+          h('span.faint.small', t('It is downloaded or built from the author\'s own release; FalconSDR does not ship it.'))));
+        if (st.log && st.log.length) parts.push(h('pre.msg-detail', st.log.join('\n')));
+        if (st.error) parts.push(h('span', { style: { color: 'var(--red)' } }, t('Installation failed: {error}', { error: st.error })));
+        if (st.hint) parts.push(h('div.col', { style: { gap: '4px' } },
+          h('span.small', t('Install what the build needs first (this needs administrator rights, so FalconSDR does not run it):')), h('code', st.hint)));
+      }
       const input = h('input', { placeholder: t('Path of the program'), value: a.path, style: { width: '320px' } });
       parts.push(setting(t('Program'), t('Where it is installed, if FalconSDR does not find it by itself.'),
         h('div.row.wrap', input, h('button', { onclick: () => act('/api/addons/configure', { id: a.id, path: input.value }) }, t('Save')))));
       if (a.homepage) parts.push(h('a', { href: a.homepage, target: '_blank', rel: 'noopener' }, t('Project page')));
     } else {
       parts.push(h('p.faint.small', { style: { margin: '4px 0' } }, t('Found: {path}', { path: a.program })));
+      if (a.managed && !a.running) parts.push(h('div.row', h('button.ghost.danger', { onclick: () => act('/api/addons/uninstall', { id: a.id }) }, icon('trash'), t('Uninstall'))));
       if (a.frequencies.length) parts.push(setting(t('Channels (MHz)'), '', frequencyEditor(a)));
       const args = h('input', { value: a.extra_args, placeholder: t('Extra options, for example -g 40'), style: { width: '320px' } });
       parts.push(setting(t('Extra options'), t('Added to the command line.'),
         h('div.row.wrap', args, h('button', { onclick: () => act('/api/addons/configure', { id: a.id, extra_args: args.value }) }, t('Save')))));
-      parts.push(h('div.row.wrap',
+      const extras = cfg().device.extra_devices || [];
+      const pick = extras.length && !a.running ? select(
+        [['0', t('Receiver 1 (main)')], ...extras.map((d, i) => [String(i + 1), t('Receiver {n}', { n: i + 2 }) + (d.device_args ? ` (${d.device_args})` : '')])],
+        String(dongle), (v) => { dongle = +v; }, { style: { width: 'auto' }, 'aria-label': t('Receiver to use') }) : null;
+      parts.push(h('div.row.wrap', pick,
         a.running
           ? h('button.primary', { onclick: () => act('/api/addons/stop') }, icon('stop'), t('Stop and resume scanning'))
-          : h('button.primary', { onclick: () => act('/api/addons/run', { id: a.id }) }, icon('play'), t('Start (pauses the scanner)')),
+          : h('button.primary', { onclick: () => act('/api/addons/run', { id: a.id, dongle }) }, icon('play'), t('Start (pauses the scanner)')),
         h('span.faint.small', t('It needs the receiver for itself: the scanner stops while it runs.'))));
       if (a.error) parts.push(h('span', { style: { color: 'var(--red)' } }, a.error));
     }

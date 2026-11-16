@@ -9,6 +9,7 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from ..config import CONFIG_DIR, AppConfig
@@ -18,6 +19,7 @@ from .acars import AcarsDecoder
 from .aprs import AprsDecoder
 from .events import EventHub
 from ..sdr_backend import SoapyBackend
+from . import install as installer
 from .external import BIN_DIR, ExternalRunner, find_program, parse_rtl_433, parse_vdl2
 
 _BUSY_RETRY_S = 3.0               # pause before starting a program again after "receiver busy"
@@ -58,10 +60,12 @@ SPECS = {s.id: s for s in CATALOG}
 
 def _install_hint(spec: AddonSpec) -> str:
     if spec.id == "rtl_433":
-        if sys.platform.startswith("linux"):
-            return tr("Install it from your distribution (for example: sudo apt install rtl-433).")
-        return tr("Download the Windows or macOS build from the project's releases page and put rtl_433 in {folder}, or set its path below.").format(folder=BIN_DIR / "rtl_433")
+        if installer.can_install("rtl_433"):
+            return tr("FalconSDR can download the ready build the author publishes for this system.")
+        return tr("Install it from your distribution (for example: sudo apt install rtl-433), or put the program in {folder} or set its path below.").format(folder=BIN_DIR / "rtl_433")
     if spec.id == "vdl2":
+        if installer.can_install("vdl2"):
+            return tr("FalconSDR can build dumpvdl2 for you from the author's source code (a few minutes).")
         return tr("dumpvdl2 has no ready Windows build: build it from its source (needs libacars) or use Linux, then put it in {folder} or set its path below.").format(folder=BIN_DIR / "vdl2")
     return ""
 
@@ -122,6 +126,8 @@ class AddonManager:
                 "frequencies": list(getattr(cfg, spec.frequencies)) if spec.frequencies else [],
                 "path": str(cfg.paths.get(spec.id, "")), "extra_args": str(cfg.extra_args.get(spec.id, "")),
                 "install_hint": _install_hint(spec) if spec.kind == "external" and program is None else "",
+                "managed": bool(program) and Path(program).is_relative_to(BIN_DIR),
+                "can_install": installer.can_install(spec.id), "install": installer.state(spec.id) if installer.can_install(spec.id) else None,
                 "stats": dict(self._stats[spec.id]),
                 "error": self.last_error if self.last_error.startswith(spec.id + ":") else "",
             })

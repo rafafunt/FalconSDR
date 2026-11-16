@@ -2994,3 +2994,30 @@ msgstr "Odbiornik był jeszcze zajęty - próbuję ponownie."
 
 msgid "No such receiver"
 msgstr "Nie ma takiego odbiornika"
+
+msgid "It is downloaded or built from the author's own release; FalconSDR does not ship it."
+msgstr "Jest pobierany lub budowany z wydania samego autora; FalconSDR go nie dostarcza."
+
+msgid "Install what the build needs first (this needs administrator rights, so FalconSDR does not run it):"
+msgstr "Najpierw zainstaluj to, czego potrzebuje budowanie (wymaga uprawnień administratora, więc FalconSDR tego nie uruchamia):"
+
+msgid "Receiver 1 (main)"
+msgstr "Odbiornik 1 (główny)"
+
+msgid "Receiver {n}"
+msgstr "Odbiornik {n}"
+
+msgid "Receiver to use"
+msgstr "Odbiornik do użycia"
+
+msgid "FalconSDR can build dumpvdl2 for you from the author's source code (a few minutes)."
+msgstr "FalconSDR może zbudować dumpvdl2 ze źródeł autora (kilka minut)."
+
+msgid "FalconSDR can download the ready build the author publishes for this system."
+msgstr "FalconSDR może pobrać gotową wersję, którą autor publikuje dla tego systemu."
+
+msgid "Install it from your distribution (for example: sudo apt install rtl-433), or put the program in {folder} or set its path below."
+msgstr "Zainstaluj go z repozytorium dystrybucji (na przykład: sudo apt install rtl-433) albo umieść program w {folder} lub podaj jego ścieżkę poniżej."
+
+msgid "FalconSDR cannot install this one on this computer: put the program in {folder} or set its path below."
+msgstr "FalconSDR nie może tego zainstalować na tym komputerze: umieść program w {folder} albo podaj jego ścieżkę poniżej."

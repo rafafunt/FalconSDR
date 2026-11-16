@@ -63,6 +63,24 @@ FalconSDR is GPL-3.0-or-later. The rule is **separate programs, fetched by the u
   the user's own CSV or are learned from the user's own reception (an aircraft reporting "over GERVI" with
   a known position).
 
+## Installing external programs (all platforms)
+
+`addons/install.py`, one-click from the Add-ons page, never bundled, always the author's own release, checked
+against a pinned SHA-256 (a changed file fails the install). The app never asks for a password.
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| ACARS, APRS (built in) | yes | yes | yes |
+| rtl_433 | author's ready build (`rtl_433-win-x64`) | author's ready build (arm64 25.12, Intel 25.02) | the distribution's package (`apt install rtl-433`) or any copy on PATH |
+| dumpvdl2 | no build exists: a copy built by the user (path field) | built here from the pinned source (needs `brew install cmake pkg-config glib librtlsdr`) | built here from the pinned source (needs the dev packages; the command is shown) |
+
+dumpvdl2 v2.7.0 with libacars v2.2.1 were built and run (`--version`) by this installer on Linux; the
+Windows and macOS paths of the installer are written but were not run on those systems. Pins: see
+`_VDL2_SOURCES` and `_RTL433_ASSETS`; update the SHA-256 together with the version.
+
+A copy FalconSDR installed (in `CONFIG_DIR/addons/bin/<id>`) is preferred to one on PATH; an explicit path in the
+Add-ons page wins over both.
+
 ## Roadmap
 
 Done: shell (Add-ons page, Messages page), APRS, ACARS (experimental: synthetic tests only; real

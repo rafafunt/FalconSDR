@@ -911,6 +911,14 @@ catalog loads; wrap them in a function called at point of use
     licences apart. Events go to `EventHub` (ring + `CONFIG_DIR/addons/events-DATE.jsonl`, `keep_days`), the UI polls
     `/api/addons/events`. Transcription and digital voice are shown on the Add-ons page: `settingsView(root, hash,
     'addons')`, `#/settings/transcription|digital` redirect. The nav hides Messages until an add-on is on.
+    **Installing** (`addons/install.py`): rtl_433 = the author's release zip for Windows/macOS, dumpvdl2 = pinned source
+    built here (libacars + dumpvdl2 into `CONFIG_DIR/addons/bin/vdl2/prefix`, RPATH, `cmake` + dev packages; the
+    missing-package command is shown, never run). Both are checked against a SHA-256 of the gunzipped tar / the zip;
+    bump version and hash together. **Start a program only after the reopen cooldown** (`SoapyBackend.
+    _wait_for_reopen_cooldown`): the dongle the scanner just closed is busy for ~3 s (`usb_claim_interface -6`), and a
+    program that dies with that error within 10 s is started again (3 tries). With several receivers
+    `Controller.run_addon(id, dongle)` pauses only that engine (`_restart_engine` brings it back); the others scan on.
+    Everything but the Linux build of dumpvdl2 is unrun on Windows/macOS - say so before claiming support.
 
 ## Testing without touching the user's real config/recordings
 

@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
 from .. import autostart, digital_voice, i18n, military_presets
+from ..addons import install as installer
 from ..config import AppConfig
 from ..controller import Controller, channel_dict, channel_from_dict
 from ..military_presets import BandPreset
@@ -373,6 +374,12 @@ def make_handler(app: App):
                     ctl.run_addon(str(body.get("id", "")), int(body.get("dongle", 0) or 0))
                 elif action == "stop":
                     ctl.stop_addon()
+                elif action == "install":
+                    installer.start(str(body.get("id", "")))
+                elif action == "uninstall":
+                    if ctl.addons.running_external == str(body.get("id", "")):
+                        raise ValueError(i18n.tr("Another add-on is running - stop it first."))
+                    installer.uninstall(str(body.get("id", "")))
                 elif action == "clear":
                     ctl.addons.hub.clear()
             self._json({"addons": ctl.addons.status(), "running": ctl.addons.running_external})
@@ -674,6 +681,8 @@ def make_handler(app: App):
         ("POST", "/api/addons/run"): Handler.addons,
         ("POST", "/api/addons/stop"): Handler.addons,
         ("POST", "/api/addons/clear"): Handler.addons,
+        ("POST", "/api/addons/install"): Handler.addons,
+        ("POST", "/api/addons/uninstall"): Handler.addons,
         ("GET", "/api/digital"): Handler.digital,
         ("POST", "/api/digital/install"): Handler.digital,
         ("POST", "/api/digital/uninstall"): Handler.digital,

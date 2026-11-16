@@ -19,17 +19,17 @@ BIN_DIR = CONFIG_DIR / "addons" / "bin"
 
 
 def find_program(names: tuple[str, ...], override: str = "", addon_id: str = "") -> str | None:
-    """The user's explicit path, else the program on PATH, else our own folder for it."""
+    """The user's explicit path, else the copy FalconSDR installed (or the user put in its folder), else the program on PATH."""
     if override:
         return override if Path(override).is_file() else None
+    for name in names:
+        for candidate in (BIN_DIR / addon_id / name, BIN_DIR / addon_id / "prefix" / "bin" / name):
+            if candidate.is_file():
+                return str(candidate)
     for name in names:
         found = shutil.which(name)
         if found:
             return found
-    for name in names:
-        candidate = BIN_DIR / addon_id / name
-        if candidate.is_file():
-            return str(candidate)
     return None
 
 

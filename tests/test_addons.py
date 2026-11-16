@@ -344,6 +344,7 @@ def _script(folder, body: str) -> str:
     return path
 
 
+@unittest.skipIf(os.name == "nt", "the stand-in program is a shebang script")
 class BusyReceiverTest(unittest.TestCase):
     def test_a_receiver_that_is_still_busy_is_retried_and_then_works(self) -> None:
         import time
@@ -395,6 +396,7 @@ time.sleep(30)
         self.assertIn("unknown option", m.last_error)
 
 
+@unittest.skipIf(os.name == "nt", "the stand-in program is a shebang script")
 class TwoReceiversTest(unittest.TestCase):
     """With several receivers an external add-on takes one; the others keep scanning."""
     def test_only_the_chosen_receiver_pauses_and_comes_back(self) -> None:
@@ -457,6 +459,82 @@ class TwoReceiversTest(unittest.TestCase):
         finally:
             ctl.addons.stop_external()
             ctl.shutdown()
+
+
+class InstallerTest(unittest.TestCase):
+    """Installing from the author's release: only the tested file, checked, unpacked into FalconSDR's own folder."""
+
+    def _fake_zip(self) -> bytes:
+        import io
+        import sys
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("rtl_433.exe" if sys.platform == "win32" else "rtl_433", "#!/bin/sh\n")
+        return buf.getvalue()
+
+    def _run(self, data: bytes, sha: str):
+        import contextlib
+        import io
+        import time
+        from pathlib import Path
+        from unittest import mock
+        from falconsdr.addons import install
+        folder = Path(tempfile.mkdtemp(dir=_HOME))
+
+        @contextlib.contextmanager
+        def fake_urlopen(url):
+            yield io.BytesIO(data)
+        with (mock.patch.object(install, "BIN_DIR", folder), mock.patch.object(install, "_urlopen", fake_urlopen),
+              mock.patch.object(install, "_rtl433_asset", lambda: ("https://example.invalid/rtl_433.zip", sha))):
+            install.start("rtl_433")
+            for _ in range(100):
+                if not install.state("rtl_433")["running"]:
+                    break
+                time.sleep(0.05)
+            return install.state("rtl_433"), folder / "rtl_433"
+
+    def test_the_tested_download_is_unpacked_and_made_executable(self) -> None:
+        import hashlib
+        import os
+        import sys
+        data = self._fake_zip()
+        st, where = self._run(data, hashlib.sha256(data).hexdigest())
+        self.assertEqual(st["error"], "", st)
+        exe = where / ("rtl_433.exe" if sys.platform == "win32" else "rtl_433")
+        self.assertTrue(exe.is_file())
+        if sys.platform != "win32":
+            self.assertTrue(os.access(exe, os.X_OK))
+
+    def test_another_file_than_the_tested_one_is_refused(self) -> None:
+        st, where = self._run(self._fake_zip(), "0" * 64)
+        self.assertIn("not the tested version", st["error"])
+        self.assertFalse((where / "rtl_433").exists())
+
+    def test_the_build_asks_for_what_is_missing_instead_of_failing_obscurely(self) -> None:
+        import sys
+        import time
+        from unittest import mock
+        from falconsdr.addons import install
+        if sys.platform == "win32":
+            self.skipTest("dumpvdl2 is built on Linux and macOS")
+        with mock.patch.object(install.shutil, "which", lambda name: None):
+            install.start("vdl2")
+            for _ in range(100):
+                if not install.state("vdl2")["running"]:
+                    break
+                time.sleep(0.05)
+        st = install.state("vdl2")
+        self.assertIn("Missing for the build", st["error"])
+        self.assertTrue(st["hint"])
+        install.uninstall("vdl2")
+
+    def test_the_pinned_sources_are_the_ones_named_in_the_docs(self) -> None:
+        from falconsdr.addons import install
+        for name, url, sha in install._VDL2_SOURCES:
+            self.assertIn("/tags/v", url)
+            self.assertEqual(len(sha), 64)
+        self.assertFalse(install.can_install("acars"))
 
 
 if __name__ == "__main__":
