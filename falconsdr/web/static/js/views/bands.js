@@ -17,7 +17,7 @@ export function modOptions() {
 
 function offerDigital() {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));  // closes the form dialog it was picked in
-  location.hash = '#/settings/digital';
+  location.hash = '#/addons/digital';
 }
 export const OVERRIDES = ['trigger_level_dbfs', 'tuning_time_ms', 'linger_time_ms', 'gain_mode', 'gain_db', 'noise_reduction_enabled', 'noise_reduction_strength', 'squelch_enabled', 'squelch_offset_db'];
 export const hasOverrides = (b) => OVERRIDES.some((k) => b[k] !== null && b[k] !== undefined);

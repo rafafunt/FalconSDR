@@ -3,6 +3,7 @@ import { liveAudio } from './live-audio.js';
 import { S, emit, loadSettings, maybeShowLaunchNotice, on, startPolling } from './state.js';
 import { channelsView } from './views/channels.js';
 import { listenView } from './views/listen.js';
+import { messagesView } from './views/messages.js';
 import { recordingsView } from './views/recordings.js';
 import { scheduleView } from './views/schedule.js';
 import { settingsView } from './views/settings.js';
@@ -13,9 +14,16 @@ const app = document.getElementById('app');
 const ROUTES = {
   listen: { label: () => t('Listen'), icon: 'listen', view: listenView },
   recordings: { label: () => t('Recordings'), icon: 'library', view: recordingsView },
+  // What the add-on decoders found: only offered while one is switched on or running.
+  messages: {
+    label: () => t('Messages'), icon: 'messages', view: messagesView,
+    show: () => S.settings.config.addons.enabled.length > 0 || !!(S.live && S.live.addon),
+  },
   channels: { label: () => t('Channels'), icon: 'channels', view: channelsView },
   schedule: { label: () => t('Schedule'), icon: 'clock', view: scheduleView },
   stats: { label: () => t('Statistics'), icon: 'stats', view: statsView },
+  // Decoders and tools, plus transcription and digital voice (the same page component as Settings).
+  addons: { label: () => t('Add-ons'), icon: 'addons', view: (root, hash) => settingsView(root, hash, 'addons') },
   settings: { label: () => t('Settings'), icon: 'settings', view: settingsView },
 };
 
@@ -107,17 +115,30 @@ function shell() {
       h('a.brand', { href: '#/listen' }, h('img', { src: 'icon.svg', alt: '' }), 'FalconSDR', h('small', S.settings.mode === 'server' ? t('server') : '')),
       nav, status),
     content));
-  for (const [key, r] of Object.entries(ROUTES)) {
-    nav.append(h('a', { href: `#/${key}`, 'data-route': key }, icon(r.icon), h('span', r.label())));
-  }
+  const markActive = () => {
+    const key = (location.hash.match(/^#\/(\w+)/) || [])[1] || 'listen';
+    nav.querySelectorAll('a').forEach((a) => {
+      a.classList.toggle('active', a.dataset.route === key);
+      if (a.dataset.route === key) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+  };
+  const renderNav = () => {
+    nav.replaceChildren(...Object.entries(ROUTES).filter(([, r]) => !r.show || r.show())
+      .map(([key, r]) => h('a', { href: `#/${key}`, 'data-route': key }, icon(r.icon), h('span', r.label()))));
+    markActive();
+  };
+  renderNav();
+  on('settings', renderNav);
   const updateStatus = () => {
     const live = S.live;
     const running = live && live.running;
     const signal = live && (live.state === 'SIGNAL_DETECTED' || live.state === 'LINGER');
     mount(status,
       live && live.recording ? h('span.chip.bad.live', { title: t('Recording') }, h('span.dot'), 'REC') : null,
-      h('span.chip', { class: running ? (signal ? 'good live' : 'accent') : '' }, h('span.dot'),
-        running ? (live.stopping ? t('Stopping…') : signal ? t('Signal') : t('Scanning')) : t('Stopped')),
+      live && live.addon
+        ? h('span.chip.good.live', h('span.dot'), t('Add-on running'))
+        : h('span.chip', { class: running ? (signal ? 'good live' : 'accent') : '' }, h('span.dot'),
+          running ? (live.stopping ? t('Stopping…') : signal ? t('Signal') : t('Scanning')) : t('Stopped')),
       h('button.icon', {
         class: liveAudio.playing ? 'on' : '', title: liveAudio.playing ? t('Stop listening') : t('Listen live'),
         onclick: () => liveAudio.toggle().catch(errorToast),
@@ -130,10 +151,7 @@ function shell() {
   const route = () => {
     const key = (location.hash.match(/^#\/(\w+)/) || [])[1] || 'listen';
     const r = ROUTES[key] || ROUTES.listen;
-    nav.querySelectorAll('a').forEach((a) => {
-      a.classList.toggle('active', a.dataset.route === key);
-      if (a.dataset.route === key) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
-    });
+    markActive();
     if (current && current.destroy) current.destroy();
     content.scrollTop = 0;
     current = r.view(content, location.hash);

@@ -1,16 +1,20 @@
-// "Settings": recording, transcription & helper computers,
-// band presets, location, language/listening, disk & retention, server
+// "Settings": recording, band presets, location, language/listening, disk & retention, server
 // connection, access password and advanced options.
 import {
   api, confirmDialog, errorToast, fmtAgo, fmtBytes, fmtDate, fmtDuration, fmtMHz, formDialog, h, icon, lang, modal, mount, qs, select, t, toast, toggle,
 } from '../core.js';
 import { S, cfg, confirmRecording, loadSettings, on, patchConfig } from '../state.js';
+import { decodersCard } from './addons.js';
 import { modLabel, modOptions } from './bands.js';
 
-const SECTIONS = [
-  ['recording', () => t('Recording')],
+// Transcription and digital voice are add-ons: they live on the Add-ons page (same component, scope 'addons').
+const ADDON_SECTIONS = [
+  ['decoders', () => t('Decoders & tools')],
   ['transcription', () => t('Transcription & computers')],
   ['digital', () => t('Digital voice (DMR, C4FM)')],
+];
+const SECTIONS = [
+  ['recording', () => t('Recording')],
   ['presets', () => t('Band presets')],
   ['location', () => t('Location')],
   ['appearance', () => t('Language & listening')],
@@ -64,19 +68,25 @@ function numberInput(value, onchange, attrs = {}) {
   return h('input', { type: 'number', value, step: 'any', style: { width: '110px' }, ...attrs, onchange: (e) => onchange(+e.target.value) });
 }
 
-export function settingsView(root, hash) {
+export function settingsView(root, hash, scope = 'settings') {
+  const moved = (hash.match(/^#\/settings\/(transcription|digital)/) || [])[1];
+  if (scope === 'settings' && moved) {   // old links (a greyed-out modulation, bookmarks)
+    location.replace(`#/addons/${moved}`);
+    return { destroy() {} };
+  }
   const offs = [];
   const timers = [];
   const cards = {};
-  const visible = SECTIONS.filter(([k]) => k !== 'connect' || S.settings.mode === 'local');
-  const nav = h('nav', visible.map(([k, label]) => h('a', { href: `#/settings/${k}`, onclick: (e) => { e.preventDefault(); cards[k].scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, label())));
+  const visible = (scope === 'addons' ? ADDON_SECTIONS : SECTIONS).filter(([k]) => k !== 'connect' || S.settings.mode === 'local');
+  const nav = h('nav', visible.map(([k, label]) => h('a', { href: `#/${scope}/${k}`, onclick: (e) => { e.preventDefault(); cards[k].scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, label())));
   const content = h('div.col', { style: { gap: '16px' } });
-  mount(root, h('div.page', h('div.page-head', h('h1', t('Settings'))), h('div.settings', nav, content)));
+  mount(root, h('div.page', h('div.page-head', h('h1', scope === 'addons' ? t('Add-ons') : t('Settings'))), h('div.settings', nav, content)));
   for (const [k, label] of visible) {
     cards[k] = h('section.card', { id: `s-${k}` }, h('div.card-head', h('h2', label())), h('div.col'));
     content.append(cards[k]);
   }
-  const body = (k) => cards[k].lastChild;
+  // The render functions below are shared by both pages; a section this page does not show renders into nothing.
+  const body = (k) => (cards[k] ? cards[k].lastChild : document.createElement('div'));
 
   // ---------------------------------------------------------- recording
   function renderRecording() {
@@ -519,18 +529,24 @@ export function settingsView(root, hash) {
       h('p.faint.small', { style: { margin: 0 } }, `FalconSDR ${S.settings.version} · ${S.settings.mode} · ${lang}`));
   }
 
+  let stopDecoders = null;
   function renderAll() {
-    renderRecording(); renderStorage(); renderTranscription(); renderDigital(); renderConnect(); renderAccess();
+    if (scope === 'addons') {
+      renderTranscription(); renderDigital();
+      if (!stopDecoders) stopDecoders = decodersCard(body('decoders'));
+      return;
+    }
+    renderRecording(); renderStorage(); renderConnect(); renderAccess();
     renderLocation(); renderPresets(); renderAppearance(); renderAdvanced();
   }
   renderAll();
   // Every second while something is going on with a computer (so a click shows its effect), else every 3 s.
   let pollTick = 0;
-  timers.push(setInterval(() => { pollTick += 1; if (fastPoll || pollTick % 3 === 0) loadWorkers(); }, 1000));
-  const sub = (hash.match(/^#\/settings\/(\w+)/) || [])[1];
+  if (scope === 'addons') timers.push(setInterval(() => { pollTick += 1; if (fastPoll || pollTick % 3 === 0) loadWorkers(); }, 1000));
+  const sub = (hash.match(/^#\/(?:settings|addons)\/(\w+)/) || [])[1];
   if (sub && cards[sub]) {
     setTimeout(() => cards[sub].scrollIntoView({ block: 'start' }), 50);
     cards[sub].classList.add('spotlight');  // arrived from a link (e.g. a greyed-out modulation) - show where
   }
-  return { destroy() { timers.forEach(clearInterval); clearTimeout(digitalPoll); offs.forEach((f) => f()); } };
+  return { destroy() { timers.forEach(clearInterval); clearTimeout(digitalPoll); offs.forEach((f) => f()); if (stopDecoders) stopDecoders(); } };
 }

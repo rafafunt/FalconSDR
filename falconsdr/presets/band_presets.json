@@ -9,6 +9,15 @@
     "modulation": "AM"
   },
   {
+    "id": "acars_eu",
+    "label": "ACARS (Europe, 131.525-131.825 MHz)",
+    "tooltip": "Aircraft text messages (ACARS). Turn the ACARS add-on on to decode them instead of recording their buzz.",
+    "start_hz": 131525000,
+    "stop_hz": 131825000,
+    "step_hz": 100000,
+    "modulation": "AM"
+  },
+  {
     "id": "mil_vhf",
     "label": "Military VHF (137-144 MHz)",
     "tooltip": "Military VHF band adjacent to civil aviation.",
@@ -50,6 +59,15 @@
     "tooltip": "70cm amateur radio band (UHF, NFM): repeaters and simplex.",
     "start_hz": 430000000,
     "stop_hz": 440000000,
+    "step_hz": 12500,
+    "modulation": "NFM"
+  },
+  {
+    "id": "aprs_144800",
+    "label": "APRS (144.800 MHz)",
+    "tooltip": "The European APRS channel: position reports, weather and messages. Turn the APRS add-on on to decode them.",
+    "start_hz": 144800000,
+    "stop_hz": 144800000,
     "step_hz": 12500,
     "modulation": "NFM"
   },

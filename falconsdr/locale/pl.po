@@ -2808,3 +2808,165 @@ msgstr "rtl_tcp nie przysłał danych przez {s:g} s - połączenie utracone albo
 
 msgid "An RTL-SDR captures 0.23-0.30 or 0.90-3.20 MHz; {rate:g} MHz is not possible - change the capture width."
 msgstr "RTL-SDR przechwytuje 0,23-0,30 albo 0,90-3,20 MHz; {rate:g} MHz nie jest możliwe - zmień szerokość przechwytu."
+
+msgid "Add-ons"
+msgstr "Dodatki"
+
+msgid "Messages"
+msgstr "Wiadomości"
+
+msgid "Add-on running"
+msgstr "Dodatek działa"
+
+msgid "Decoders & tools"
+msgstr "Dekodery i narzędzia"
+
+msgid "Channels (MHz)"
+msgstr "Kanały (MHz)"
+
+msgid "separate program"
+msgstr "osobny program"
+
+msgid "built in"
+msgstr "wbudowany"
+
+msgid "experimental"
+msgstr "eksperymentalny"
+
+msgid "running"
+msgstr "działa"
+
+msgid "not installed"
+msgstr "nie zainstalowano"
+
+msgid "Licence: {license}"
+msgstr "Licencja: {license}"
+
+msgid "Read these channels"
+msgstr "Czytaj te kanały"
+
+msgid "While scanning, a transmission on one of these channels is decoded here instead of being played or recorded. Scan a band that contains them."
+msgstr "Podczas skanowania transmisja na jednym z tych kanałów jest tu dekodowana zamiast odtwarzana i nagrywana. Skanuj pasmo, które je zawiera."
+
+msgid "Channels heard: {slots} · messages decoded: {events}"
+msgstr "Usłyszane kanały: {slots} · odczytane wiadomości: {events}"
+
+msgid "Only tested on synthetic signals so far. If channels are heard but nothing is decoded, please report it."
+msgstr "Na razie testowane tylko na sygnałach syntetycznych. Jeśli kanały są słyszane, a nic się nie dekoduje, zgłoś to."
+
+msgid "Path of the program"
+msgstr "Ścieżka programu"
+
+msgid "Program"
+msgstr "Program"
+
+msgid "Where it is installed, if FalconSDR does not find it by itself."
+msgstr "Gdzie jest zainstalowany, jeśli FalconSDR sam go nie znajduje."
+
+msgid "Project page"
+msgstr "Strona projektu"
+
+msgid "Found: {path}"
+msgstr "Znaleziono: {path}"
+
+msgid "Extra options, for example -g 40"
+msgstr "Dodatkowe opcje, na przykład -g 40"
+
+msgid "Extra options"
+msgstr "Dodatkowe opcje"
+
+msgid "Added to the command line."
+msgstr "Dodawane do wiersza poleceń."
+
+msgid "Stop and resume scanning"
+msgstr "Zatrzymaj i wznów skanowanie"
+
+msgid "Start (pauses the scanner)"
+msgstr "Uruchom (wstrzymuje skaner)"
+
+msgid "It needs the receiver for itself: the scanner stops while it runs."
+msgstr "Potrzebuje odbiornika tylko dla siebie: skaner zatrzymuje się na czas jego pracy."
+
+msgid "Optional decoders. The built-in ones read the channels your scanner stops on; the separate programs are installed by you and use the receiver on their own - FalconSDR only starts and stops them and shows what they decode in Messages."
+msgstr "Opcjonalne dekodery. Wbudowane czytają kanały, na których zatrzymuje się skaner; osobne programy instalujesz sam i używają odbiornika na własną rękę - FalconSDR tylko je uruchamia i zatrzymuje oraz pokazuje w Wiadomościach, co zdekodowały."
+
+msgid "Hear and record data channels too"
+msgstr "Słuchaj i nagrywaj też kanały danych"
+
+msgid "Normally ACARS and APRS channels are only decoded - their buzz is not played or recorded."
+msgstr "Zwykle kanały ACARS i APRS są tylko dekodowane - ich brzęczenie nie jest odtwarzane ani nagrywane."
+
+msgid "Sensors"
+msgstr "Czujniki"
+
+msgid "Search…"
+msgstr "Szukaj…"
+
+msgid "Pause"
+msgstr "Pauza"
+
+msgid "Resume"
+msgstr "Wznów"
+
+msgid "Map"
+msgstr "Mapa"
+
+msgid "Nothing decoded yet. Turn an add-on on in Add-ons and scan a band that contains its channels."
+msgstr "Nic jeszcze nie zdekodowano. Włącz dodatek w Dodatkach i skanuj pasmo, które zawiera jego kanały."
+
+msgid "{name} is using the receiver"
+msgstr "{name} używa odbiornika"
+
+msgid "Stop it in Add-ons"
+msgstr "Zatrzymaj w Dodatkach"
+
+msgid "Reads aircraft text messages (ACARS, 131.5-131.9 MHz) from the channels the scanner stops on, instead of recording their buzz."
+msgstr "Czyta tekstowe wiadomości samolotów (ACARS, 131,5-131,9 MHz) z kanałów, na których zatrzymuje się skaner, zamiast nagrywać ich brzęczenie."
+
+msgid "Reads amateur-radio position reports, weather and messages (APRS, 144.800 MHz) from the channels the scanner stops on."
+msgstr "Czyta krótkofalarskie raporty pozycji, pogodę i wiadomości (APRS, 144,800 MHz) z kanałów, na których zatrzymuje się skaner."
+
+msgid "Weather stations, thermometers and other 433/868 MHz sensors, decoded by rtl_433. Needs the receiver for itself while it runs."
+msgstr "Stacje pogodowe, termometry i inne czujniki 433/868 MHz, dekodowane przez rtl_433. Na czas pracy potrzebuje odbiornika tylko dla siebie."
+
+msgid "Reads VDL Mode 2 aircraft data link (136.7-137 MHz) with dumpvdl2. Needs the receiver for itself while it runs."
+msgstr "Czyta łącze danych samolotów VDL Mode 2 (136,7-137 MHz) przez dumpvdl2. Na czas pracy potrzebuje odbiornika tylko dla siebie."
+
+msgid "Install it from your distribution (for example: sudo apt install rtl-433)."
+msgstr "Zainstaluj go z repozytorium swojej dystrybucji (na przykład: sudo apt install rtl-433)."
+
+msgid "Download the Windows or macOS build from the project's releases page and put rtl_433 in {folder}, or set its path below."
+msgstr "Pobierz wersję dla Windows lub macOS ze strony wydań projektu i umieść rtl_433 w {folder} albo podaj jego ścieżkę poniżej."
+
+msgid "dumpvdl2 has no ready Windows build: build it from its source (needs libacars) or use Linux, then put it in {folder} or set its path below."
+msgstr "dumpvdl2 nie ma gotowej wersji dla Windows: zbuduj go ze źródeł (wymaga libacars) albo użyj Linuksa, potem umieść go w {folder} albo podaj ścieżkę poniżej."
+
+msgid "An add-on is using the receiver - stop it first."
+msgstr "Dodatek używa odbiornika - najpierw go zatrzymaj."
+
+msgid "Another add-on is running - stop it first."
+msgstr "Działa inny dodatek - najpierw go zatrzymaj."
+
+msgid "{name} is not installed."
+msgstr "{name} nie jest zainstalowany."
+
+msgid "{name} works with RTL-SDR receivers only."
+msgstr "{name} działa tylko z odbiornikami RTL-SDR."
+
+msgid "{name} stopped by itself (exit {code}) {tail}"
+msgstr "{name} sam się zatrzymał (kod {code}) {tail}"
+
+msgid "{name} started - the scanner is paused while it runs."
+msgstr "Uruchomiono {name} - skaner jest wstrzymany na czas jego pracy."
+
+msgid "APRS (144.800 MHz)"
+msgstr "APRS (144,800 MHz)"
+
+msgid "The European APRS channel: position reports, weather and messages. Turn the APRS add-on on to decode them."
+msgstr "Europejski kanał APRS: raporty pozycji, pogoda i wiadomości. Włącz dodatek APRS, żeby je dekodować."
+
+msgid "ACARS (Europe, 131.525-131.825 MHz)"
+msgstr "ACARS (Europa, 131,525-131,825 MHz)"
+
+msgid "Aircraft text messages (ACARS). Turn the ACARS add-on on to decode them instead of recording their buzz."
+msgstr "Tekstowe wiadomości samolotów (ACARS). Włącz dodatek ACARS, żeby je dekodować zamiast nagrywać ich brzęczenie."

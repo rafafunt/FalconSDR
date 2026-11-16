@@ -89,6 +89,8 @@ p { margin: 0; }
 }
 .nav a:hover { color: var(--label); background: var(--fill); }
 .nav a.active { color: var(--accent); background: var(--accent-tint); }
+/* Eight tabs (with Messages and Add-ons) no longer fit with icons on a mid-size desktop window: labels only. */
+@media (min-width: 861px) and (max-width: 1500px) { .nav a { padding: 6px 9px; } .nav a svg.ic { display: none; } }
 .topbar .status { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 main { overflow: auto; padding: 24px 24px 40px; }
 .page { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
@@ -431,6 +433,12 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 .login img { width: 64px; height: 64px; margin: 0 auto; border-radius: 14px; }
 
 /* touch screens: 44 pt targets (last, so it wins over the component rules above) */
+/* Messages (add-on decoders) */
+.msg-list { display: flex; flex-direction: column; margin-top: 12px; }
+.msg { padding: 8px 4px; border-top: 1px solid var(--separator); cursor: pointer; }
+.msg:hover { background: var(--accent-tint); }
+.msg .grow { min-width: 0; overflow-wrap: anywhere; }
+.msg-detail { margin: 8px 0 0; padding: 8px 10px; background: var(--fill); border-radius: var(--radius-s); font: 12px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
 @media (pointer: coarse) {
   button, .btn, input, select { min-height: 44px; }
   button.icon { min-width: 44px; }
