@@ -323,9 +323,9 @@ catalog loads; wrap them in a function called at point of use
     squelch level. The feed drops consecutive duplicate lines
     (`Controller.log`) - the per-rebuild "wideband scanning" line once
     flooded every real event out of its 100-entry buffer.
-25. **`Demodulator`'s output-level AGC (`dsp.py`, `_apply_agc`) is a
-    persistent attack-fast/release-slow envelope follower across `demod()`
-    calls** (state in `self._agc_envelope`, cleared by `reset()`) — never a
+25. **`Demodulator`'s output leveler (`dsp.py`, `_apply_agc`, gotcha 57) is a
+    persistent attack-fast/release-slow follower of the voice RMS across `demod()`
+    calls** (state in `self._agc_level`, cleared by `reset()`) — never a
     per-chunk peak normalization computed from that chunk alone. The old
     per-chunk version dragged noise-only chunks up to the same loudness as
     voice chunks whenever their own peak cleared the floor, destroying real
@@ -345,7 +345,7 @@ catalog loads; wrap them in a function called at point of use
     step stalls the dongle ~100 ms = an audible gap in live audio (measured
     on a steady WFM station: ~16 gaps/min -> ~7/min). Only a peak >= 0.97 of
     full scale (clipping) is acted on unsmoothed, and the smoothed level moves
-    with each step. Each step pre-scales every slot's output AGC
+    with each step. Each step pre-scales every slot's carrier estimate / SSB level
     (`Demodulator.notify_rf_gain_change`) and clears its `level_history` —
     a gain step moves all channels' dB levels together, which
     `_detect_reflections()` would otherwise read as correlation and discard
@@ -849,6 +849,38 @@ catalog loads; wrap them in a function called at point of use
     The online demo lists it too (`demo/site/sw.js` `DEVICES`, simulated like the others; its `args` carries the typed address
     while chosen, as `Controller.devices()` does) - a UI change needs `demo/build.py` + `demo/deploy.sh`, see gotcha 46.
     Tests: `RtlTcpTest` (fake server, no hardware).
+
+57. **Loudness is levelled in three places; keep them apart.** Measured on 788
+    recordings of the receiver (2026-11-16): airband speech median −42 dBFS
+    (p5…p95 −50…−23, 27 dB just from distance), 148 MHz NFM −18 dBFS - a strong
+    NFM burst after quiet airband was 24 dB louder, and a phone's maximum volume
+    was not enough for the quietest. (1) **AM is divided by its carrier**
+    (`_track_carrier`, rise 0.1 s / fall 0.6 s): the audio is the modulation
+    depth, independent of RF level (synthetic: ±0.3 dB over a 45 dB range).
+    `Demodulator.carrier_floor` is set by the engine every tick to the trigger
+    level −6 dB (`_service_active_slots`): below it there is no carrier, only
+    noise, and noise must not be scaled up to voice loudness. (2) **`_apply_agc`
+    levels the voice RMS to `_AGC_TARGET_RMS` (0.12 ≈ −18 dBFS)** within
+    `_AGC_MIN_GAIN`…`_AGC_MAX_GAIN` (-20…+21 dB), then soft-limits above 0.8.
+    A block below `_AGC_PAUSE_RATIO` of the tracked level is a pause: the level is
+    held (tau 8 s), so the noise between words isn't pumped up - this replaces the
+    old fixed envelope floor (0.35), which made the "AGC" a constant ×2.3 for every
+    weak signal. NFM/WFM need no per-modulation calibration: the leveler brings
+    them to the same target. `notify_rf_gain_change` scales the AM carrier and
+    SSB's level only (FM doesn't depend on the RF level). Tests: `LevelingTest`.
+    (3) **Browser**: `live-audio.js` runs source → boost (0/6/12/18 dB, Listen
+    page, `localStorage.boostDb`) → `DynamicsCompressorNode` → volume (a phone
+    has no louder setting; the compressor keeps a burst from reaching the ears;
+    note its automatic make-up gain, ~+2 dB for a tone); the Recordings player
+    routes its `<audio>` through the same chain (`makeLoudnessChain`) plus a
+    per-file gain from `item["level"]` (the library's signal level in dBFS) to
+    −18 dBFS, limited to −12…+30 dB (switch "Even out volume",
+    `localStorage.evenOut`). Files are never modified, so the quality and
+    transcription caches stay valid. Old recordings (quiet) only get louder
+    through (3). If the target changes, the recordings' level is a different
+    scale from before - no cache needs invalidating (signal_level is measured
+    from the file). A `createMediaElementSource` audio element is silent while
+    its `AudioContext` is suspended: the player resumes it on `play`.
 
 ## Testing without touching the user's real config/recordings
 
