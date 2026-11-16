@@ -450,6 +450,7 @@ class Controller:
                 "log": [e for e in self._log if e["id"] > since_log],
                 "audio_rate": AUDIO_RATE,
                 "addon": self.addons.running_external,
+                "addon_since": self.addons.started_at,
             }
 
     def _uncovered(self) -> list[dict]:

@@ -125,7 +125,11 @@ def parse_vdl2(line: str) -> tuple[dict, str] | None:
     src = (avlc.get("src") or {}).get("addr", "")
     dst = (avlc.get("dst") or {}).get("addr", "")
     acars = avlc.get("acars") or {}
-    event = {"kind": "vdl2", "freq_hz": v.get("freq"), "src": src, "dst": dst, "frame_type": avlc.get("frame_type"),
+    # "layer" lets the UI hide the link-layer chatter (acknowledgements, polls) that is most of what VDL2 carries:
+    # an ACARS block, or any application payload next to the control fields, is "data"; the rest is "link".
+    control = {"src", "dst", "cr", "frame_type", "cmd", "rseq", "sseq", "poll", "pf", "retransmission", "sig_level"}
+    layer = "acars" if acars else ("data" if any(k not in control for k in avlc) else "link")
+    event = {"kind": "vdl2", "layer": layer, "freq_hz": v.get("freq"), "src": src, "dst": dst, "frame_type": avlc.get("frame_type"),
              "sig_level": v.get("sig_level"), "fields": {k: acars[k] for k in acars}}
     if acars:
         event.update(registration=acars.get("reg", "").lstrip("."), label=acars.get("label"), flight=acars.get("flight"),

@@ -3021,3 +3021,66 @@ msgstr "Zainstaluj go z repozytorium dystrybucji (na przykład: sudo apt install
 
 msgid "FalconSDR cannot install this one on this computer: put the program in {folder} or set its path below."
 msgstr "FalconSDR nie może tego zainstalować na tym komputerze: umieść program w {folder} albo podaj jego ścieżkę poniżej."
+
+msgid "Starting…"
+msgstr "Uruchamianie…"
+
+msgid "Starting… the scanner stops first and the receiver needs a moment."
+msgstr "Uruchamianie… najpierw zatrzymuje się skaner, a odbiornik potrzebuje chwili."
+
+msgid "The scanner is paused: this program has the receiver. What it decodes appears here and in Messages. There is no spectrum while it runs."
+msgstr "Skaner jest wstrzymany: ten program ma odbiornik. To, co dekoduje, widać tu i w Wiadomościach. Na czas jego pracy nie ma widma."
+
+msgid "Open Messages"
+msgstr "Otwórz Wiadomości"
+
+msgid "running for {time}"
+msgstr "działa od {time}"
+
+msgid "{n} messages decoded"
+msgstr "odczytano wiadomości: {n}"
+
+msgid "Waiting for the first message…"
+msgstr "Czekam na pierwszą wiadomość…"
+
+msgid "gusts"
+msgstr "porywy"
+
+msgid "battery OK"
+msgstr "bateria OK"
+
+msgid "battery low"
+msgstr "bateria słaba"
+
+msgid "ch"
+msgstr "kan."
+
+msgid "last {time} · {n} readings"
+msgstr "ostatnio {time} · odczytów: {n}"
+
+msgid "Received {n} times:"
+msgstr "Odebrano {n} razy:"
+
+msgid "Hide link-layer frames (acknowledgements, polls)"
+msgstr "Ukryj ramki łącza (potwierdzenia, zapytania)"
+
+msgid "Fold repeats"
+msgstr "Zwijaj powtórzenia"
+
+msgid "Transcription, digital voice and decoders moved to"
+msgstr "Transkrypcja, głos cyfrowy i dekodery są teraz w zakładce"
+
+msgid "Decode these channels"
+msgstr "Dekoduj te kanały"
+
+msgid "The scanner does not visit {list} MHz yet, so nothing can be decoded."
+msgstr "Skaner jeszcze nie odwiedza {list} MHz, więc nic nie da się zdekodować."
+
+msgid "Add to scanned bands"
+msgstr "Dodaj do skanowanych pasm"
+
+msgid "Plays quiet recordings louder and loud ones softer, so they all sound alike. The files are not changed."
+msgstr "Cichym nagraniom podkręca głośność, głośne ściszą, żeby brzmiały podobnie. Pliki nie są zmieniane."
+
+msgid "FalconSDR, GPL-3.0-or-later"
+msgstr "FalconSDR, GPL-3.0 lub nowsza"

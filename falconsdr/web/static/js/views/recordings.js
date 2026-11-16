@@ -396,7 +396,7 @@ export function recordingsView(root) {
         h('button.icon', { title: t('Next'), 'aria-label': t('Next'), onclick: () => step(1) }, icon('next')),
         timeText,
         h('span.spacer'),
-        toggle(t('Even out volume'), evenOut(), (v) => { localStorage.setItem('evenOut', v ? '1' : '0'); applyGain(current); }),
+        h('span', { title: t('Plays quiet recordings louder and loud ones softer, so they all sound alike. The files are not changed.') }, toggle(t('Even out volume'), evenOut(), (v) => { localStorage.setItem('evenOut', v ? '1' : '0'); applyGain(current); })),
         it.manual ? null : act(icon('plus'), t('Save frequency'), () => saveFrequency(it), t('Add this frequency to the Memory List')),
         // Plain names, no logos: both are trademarks (Flightradar24 terms 10.3; ADS-B Exchange forbids using
         // its icon without the wordmark). The name stays visible on phones too - two same icons would be indistinguishable.

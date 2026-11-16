@@ -1,11 +1,24 @@
 // "Add-ons" page, the decoders and tools card: ACARS and APRS (our own decoders on the scanner's channels)
 // and rtl_433 / VDL2 (external programs that take the receiver for themselves). Transcription and digital
 // voice live on the same page (settings.js, scope 'addons').
-import { api, errorToast, h, icon, select, t, toggle } from '../core.js';
-import { S, cfg, loadSettings } from '../state.js';
+import { api, errorToast, h, icon, select, t, toast, toggle } from '../core.js';
+import { S, cfg, loadSettings, patchConfig } from '../state.js';
+import { newBand } from './bands.js';
 
 const mhz = (hz) => (hz / 1e6).toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
 const parseMhz = (text) => text.split(/[\s,;]+/).filter(Boolean).map((v) => Math.round(parseFloat(v.replace(',', '.')) * 1e6)).filter((v) => v > 0);
+
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+// Is this frequency inside a scanned band or a Memory List channel? (A schedule may still switch it off.)
+const scanned = (hz) => cfg().bands.some((b) => b.enabled !== false && hz >= b.start_hz - 5000 && hz <= b.stop_hz + 5000)
+  || (S.settings.channels || []).some((c) => c.enabled !== false && Math.abs(c.freq_hz - hz) <= 5000);
+
+function addToScan(a) {
+  const f = [...a.frequencies].sort((x, y) => x - y);
+  const step = f.length > 1 ? f.slice(1).reduce((g, v, i) => gcd(g, v - f[i]), 0) : 12500;
+  const band = newBand({ start_hz: f[0], stop_hz: f[f.length - 1], step_hz: step, modulation: a.id === 'acars' ? 'AM' : 'NFM', label: a.name });
+  return patchConfig({ bands: [...cfg().bands, band] });
+}
 
 function setting(title, desc, control) {
   return h('div.setting', h('div', h('b', title), desc ? h('p', desc) : null), control);
@@ -14,17 +27,24 @@ function setting(title, desc, control) {
 export function decodersCard(box) {
   let rows = [];
   let busy = false;
+  let starting = '';   // the add-on being started: stopping the scanner and waiting for the receiver takes seconds
   let timer = null;
   let dongle = 0;     // which receiver an external program takes when there are several
 
   async function act(path, body) {
     busy = true;
+    if (path === '/api/addons/run') {
+      starting = body.id;
+      toast(t('Starting… the scanner stops first and the receiver needs a moment.'));
+      render();
+    }
     try {
       const r = await api.post(path, body);
       rows = r.addons;
       await loadSettings();     // the navigation shows "Messages" as soon as something is on
     } catch (e) { errorToast(e); }
     busy = false;
+    starting = '';
     render();
   }
 
@@ -54,12 +74,19 @@ export function decodersCard(box) {
       h('p.faint.small', { style: { margin: '2px 0 0' } }, t('Licence: {license}', { license: a.license })),
     ];
     if (!external) {
-      parts.push(setting(t('Read these channels'), t('While scanning, a transmission on one of these channels is decoded here instead of being played or recorded. Scan a band that contains them.'),
+      parts.push(setting(t('Decode these channels'), t('While scanning, a transmission on one of these channels is decoded here instead of being played or recorded. Scan a band that contains them.'),
         toggle('', a.enabled, (v) => act('/api/addons/configure', { id: a.id, enabled: v }))));
       if (a.enabled) {
+        const missing = a.frequencies.filter((f) => !scanned(f));
+        if (missing.length) {
+          parts.push(h('div.notice', { role: 'status' }, icon('ban'),
+            h('span', { style: { flex: '1 1 260px' } }, t('The scanner does not visit {list} MHz yet, so nothing can be decoded.', { list: missing.map(mhz).join(', ') })),
+            h('button', { onclick: async () => { await addToScan(a); await loadSettings(); render(); } }, t('Add to scanned bands'))));
+        }
         parts.push(setting(t('Channels (MHz)'), '', frequencyEditor(a)));
         parts.push(h('p.faint.small', { style: { margin: 0 } },
           t('Channels heard: {slots} · messages decoded: {events}', { slots: a.stats.slots, events: a.stats.events })));
+        parts.push(h('a', { href: '#/messages' }, t('Open Messages')));
         if (a.experimental) parts.push(h('p.faint.small', { style: { margin: 0 } }, t('Only tested on synthetic signals so far. If channels are heard but nothing is decoded, please report it.')));
       }
     } else if (!a.installed) {
@@ -91,9 +118,11 @@ export function decodersCard(box) {
         [['0', t('Receiver 1 (main)')], ...extras.map((d, i) => [String(i + 1), t('Receiver {n}', { n: i + 2 }) + (d.device_args ? ` (${d.device_args})` : '')])],
         String(dongle), (v) => { dongle = +v; }, { style: { width: 'auto' }, 'aria-label': t('Receiver to use') }) : null;
       parts.push(h('div.row.wrap', pick,
-        a.running
-          ? h('button.primary', { onclick: () => act('/api/addons/stop') }, icon('stop'), t('Stop and resume scanning'))
-          : h('button.primary', { onclick: () => act('/api/addons/run', { id: a.id, dongle }) }, icon('play'), t('Start (pauses the scanner)')),
+        starting === a.id
+          ? h('button.primary', { disabled: true }, h('span.spinner'), t('Starting…'))
+          : a.running
+            ? h('button.primary', { onclick: () => act('/api/addons/stop') }, icon('stop'), t('Stop and resume scanning'))
+            : h('button.primary', { disabled: !!starting, onclick: () => act('/api/addons/run', { id: a.id, dongle }) }, icon('play'), t('Start (pauses the scanner)')),
         h('span.faint.small', t('It needs the receiver for itself: the scanner stops while it runs.'))));
       if (a.error) parts.push(h('span', { style: { color: 'var(--red)' } }, a.error));
     }
@@ -104,9 +133,10 @@ export function decodersCard(box) {
     const listen = cfg().addons.listen_to_data;
     box.replaceChildren(
       h('p.muted', { style: { margin: 0 } }, t('Optional decoders. The built-in ones read the channels your scanner stops on; the separate programs are installed by you and use the receiver on their own - FalconSDR only starts and stops them and shows what they decode in Messages.')),
-      ...rows.map(card),
+      ...rows.filter((a) => a.kind === 'builtin').map(card),
       setting(t('Hear and record data channels too'), t('Normally ACARS and APRS channels are only decoded - their buzz is not played or recorded.'),
-        toggle('', listen, async (v) => { await act('/api/addons/configure', { id: 'acars', listen_to_data: v }); })));
+        toggle('', listen, async (v) => { await act('/api/addons/configure', { id: 'acars', listen_to_data: v }); })),
+      ...rows.filter((a) => a.kind === 'external').map(card));
   }
 
   load();

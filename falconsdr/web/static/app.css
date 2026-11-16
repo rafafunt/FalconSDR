@@ -438,6 +438,17 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 .msg { padding: 8px 4px; border-top: 1px solid var(--separator); cursor: pointer; }
 .msg:hover { background: var(--accent-tint); }
 .msg .grow { min-width: 0; overflow-wrap: anywhere; }
+.spinner { display: inline-block; width: 14px; height: 14px; margin-right: 8px; vertical-align: -2px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+.msg-text { overflow-wrap: anywhere; }
+.msg-line b { font-weight: 600; }
+.sensor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 4px; }
+.sensor { background: var(--fill); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; cursor: pointer; }
+.sensor .big { font-size: 28px; font-weight: 600; letter-spacing: -.01em; }
+.sensor-history { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--separator); display: flex; flex-direction: column; gap: 2px; }
+.addon-panel .msg-line { padding: 5px 0; border-top: 1px solid var(--separator); }
+.switch.small { font-size: 13px; }
 .msg-detail { margin: 8px 0 0; padding: 8px 10px; background: var(--fill); border-radius: var(--radius-s); font: 12px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
 @media (pointer: coarse) {
   button, .btn, input, select { min-height: 44px; }

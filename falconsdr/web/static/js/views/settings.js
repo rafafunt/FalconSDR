@@ -80,7 +80,9 @@ export function settingsView(root, hash, scope = 'settings') {
   const visible = (scope === 'addons' ? ADDON_SECTIONS : SECTIONS).filter(([k]) => k !== 'connect' || S.settings.mode === 'local');
   const nav = h('nav', visible.map(([k, label]) => h('a', { href: `#/${scope}/${k}`, onclick: (e) => { e.preventDefault(); cards[k].scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, label())));
   const content = h('div.col', { style: { gap: '16px' } });
-  mount(root, h('div.page', h('div.page-head', h('h1', scope === 'addons' ? t('Add-ons') : t('Settings'))), h('div.settings', nav, content)));
+  mount(root, h('div.page', h('div.page-head', h('h1', scope === 'addons' ? t('Add-ons') : t('Settings'))),
+    scope === 'settings' ? h('p.muted', { style: { margin: 0 } }, t('Transcription, digital voice and decoders moved to'), ' ', h('a', { href: '#/addons' }, t('Add-ons')), '.') : null,
+    h('div.settings', nav, content)));
   for (const [k, label] of visible) {
     cards[k] = h('section.card', { id: `s-${k}` }, h('div.card-head', h('h2', label())), h('div.col'));
     content.append(cards[k]);

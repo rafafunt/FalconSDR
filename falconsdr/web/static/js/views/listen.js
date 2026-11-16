@@ -3,6 +3,7 @@
 import { api, confirmDialog, errorToast, fmtChannel, fmtMHz, h, icon, modal, mount, select, seg, slider, t, toast, toggle } from '../core.js';
 import { BOOST_STEPS_DB, liveAudio } from '../live-audio.js';
 import { S, cfg, confirmRecording, on, patchConfig, setFastPolling } from '../state.js';
+import { NAMES, eventLine } from './messages.js';
 import { askCustomRange, askSingleFrequency, bandEditor, bandRange, clearOverrides, hasOverrides, presetPicker } from './bands.js';
 
 // Windows needs the WinUSB driver on the dongle (SDR++, SDR# and friends need the
@@ -96,6 +97,59 @@ export function listenView(root) {
     h('div.controls', startBtn, h('div.row', listenBtn, h('div.volume', icon('volume'), volume)), skipBtn, blBtn, holdBtn, recBtn),
     h('div.row.wrap', autoRec, h('span.spacer'), h('span.faint.small', t('Boost')), boost, iqBtn));
 
+  // ---------------------------------------------------------- an external add-on (rtl_433, VDL2) holds the receiver
+  // The scanner is paused then, and there is no spectrum (the program owns the dongle): show that, what the
+  // program decodes right now, and the way back.
+  const addonRecent = h('div.col');
+  const addonTitle = h('div.row.wrap');
+  const addonPanel = h('section.card.addon-panel.hidden',
+    addonTitle,
+    h('p.muted', { style: { margin: '4px 0 8px' } }, t('The scanner is paused: this program has the receiver. What it decodes appears here and in Messages. There is no spectrum while it runs.')),
+    h('div.row.wrap', h('button.primary.big', { onclick: async () => { try { await api.post('/api/addons/stop', {}); } catch (e) { errorToast(e); } } }, icon('stop'), t('Stop and resume scanning')),
+      h('a.btn.ghost', { href: '#/messages' }, t('Open Messages'))),
+    addonRecent);
+  let addonPoll = null;
+  let addonLastId = 0;
+  let addonSeen = [];
+  let addonName = '';
+
+  async function pollAddon() {
+    const id = S.live && S.live.addon;
+    if (!id) return;
+    try {
+      const r = await api.get(`/api/addons/events?addon=${id}&since=${addonLastId}`);
+      if (r.events.length) {
+        addonLastId = r.events[r.events.length - 1].id;
+        addonSeen = addonSeen.concat(r.events).slice(-200);
+      }
+    } catch { return; }
+    drawAddon();
+  }
+
+  function drawAddon() {
+    const live = S.live;
+    if (!live || !live.addon) return;
+    const names = NAMES();
+    const since = live.addon_since ? Math.max(0, Math.round(Date.now() / 1000 - live.addon_since)) : 0;
+    const clock = `${Math.floor(since / 60)}:${String(since % 60).padStart(2, '0')}`;
+    const shown = addonSeen.filter((e) => e.layer !== 'link');
+    mount(addonTitle, h('span.chip.good.live', h('span.dot'), t('{name} is using the receiver', { name: names[live.addon] || live.addon })),
+      h('span.faint.small', t('running for {time}', { time: clock })), h('span.spacer'),
+      h('span.faint.small', t('{n} messages decoded', { n: addonSeen.length })));
+    mount(addonRecent, ...(shown.length ? shown.slice(-8).reverse().map((e) => eventLine(e))
+      : [h('div.empty', t('Waiting for the first message…'))]));
+  }
+
+  function syncAddonPanel() {
+    const id = S.live && S.live.addon;
+    hero.classList.toggle('hidden', !!id);
+    spectrumCard.classList.toggle('hidden', !!id);
+    addonPanel.classList.toggle('hidden', !id);
+    if (id && !addonPoll) { addonLastId = 0; addonSeen = []; addonName = id; pollAddon(); addonPoll = setInterval(pollAddon, 2000); }
+    if (!id && addonPoll) { clearInterval(addonPoll); addonPoll = null; }
+    if (id) drawAddon();
+  }
+
   // ---------------------------------------------------------- spectrum
   const canvas = h('canvas', { height: 260, role: 'img', 'aria-label': t('Live spectrum and waterfall of the scanned band. The frequency and state are shown in text above.') });
   const axis = h('div.spectrum-axis');
@@ -116,7 +170,7 @@ export function listenView(root) {
   const feedCard = h('section.card', h('div.card-head', h('h2', t('Activity'))), feed);
 
   mount(page, h('div.page-head', h('h1', t('Listen'))), h('div.grid.listen',
-    h('div.col', { style: { gap: '16px' } }, hero, spectrumCard, bandsCard),
+    h('div.col', { style: { gap: '16px' } }, addonPanel, hero, spectrumCard, bandsCard),
     h('div.col', { style: { gap: '16px' } }, quick, device, feedCard)));
 
   // ---------------------------------------------------------- behaviour
@@ -164,6 +218,7 @@ export function listenView(root) {
   function renderLive() {
     const live = S.live;
     if (!live) return;
+    syncAddonPanel();
     stateChip.className = 'chip state ' + stateClass(live);
     driverHint.classList.toggle('hidden', !(live.state === 'RECONNECTING' && isWindows()));
     const here = S.settings.devices.find((d) => d.driver === S.settings.config.device.driver && d.args === S.settings.config.device.device_args);
@@ -499,7 +554,7 @@ export function listenView(root) {
   offs.push(on('live', renderLive), on('audio', renderAudio), on('settings', () => { renderQuick(); renderDevice(); renderBands(); }));
   let lastSolo = S.live && S.live.solo_band;
   offs.push(on('live', (live) => { if (live.solo_band !== lastSolo) { lastSolo = live.solo_band; renderBands(); } }));
-  return { destroy() { offs.forEach((f) => f()); setFastPolling(false); spectrum.destroy(); } };
+  return { destroy() { offs.forEach((f) => f()); setFastPolling(false); spectrum.destroy(); clearInterval(addonPoll); } };
 }
 
 // Spectrum line + scrolling waterfall of the current capture window.

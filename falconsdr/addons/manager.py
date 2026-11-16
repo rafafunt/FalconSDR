@@ -43,16 +43,16 @@ class AddonSpec:
 CATALOG: tuple[AddonSpec, ...] = (
     AddonSpec("acars", "ACARS", "builtin",
               "Reads aircraft text messages (ACARS, 131.5-131.9 MHz) from the channels the scanner stops on, instead of recording their buzz.",
-              "FalconSDR (GPL-3.0-or-later)", modulation=Modulation.AM, frequencies="acars_frequencies_hz", experimental=True),
+              "FalconSDR, GPL-3.0-or-later", modulation=Modulation.AM, frequencies="acars_frequencies_hz", experimental=True),
     AddonSpec("aprs", "APRS", "builtin",
               "Reads amateur-radio position reports, weather and messages (APRS, 144.800 MHz) from the channels the scanner stops on.",
-              "FalconSDR (GPL-3.0-or-later)", modulation=Modulation.NFM, frequencies="aprs_frequencies_hz"),
+              "FalconSDR, GPL-3.0-or-later", modulation=Modulation.NFM, frequencies="aprs_frequencies_hz"),
     AddonSpec("rtl_433", "rtl_433 sensors", "external",
               "Weather stations, thermometers and other 433/868 MHz sensors, decoded by rtl_433. Needs the receiver for itself while it runs.",
-              "rtl_433: GPL-2.0 (separate program)", homepage="https://github.com/merbanan/rtl_433", exe=("rtl_433", "rtl_433.exe")),
+              "rtl_433: GPL-2.0", homepage="https://github.com/merbanan/rtl_433", exe=("rtl_433", "rtl_433.exe")),
     AddonSpec("vdl2", "VDL2", "external",
               "Reads VDL Mode 2 aircraft data link (136.7-137 MHz) with dumpvdl2. Needs the receiver for itself while it runs.",
-              "dumpvdl2: GPL-3.0, libacars: MIT (separate programs)", homepage="https://github.com/szpajder/dumpvdl2",
+              "dumpvdl2: GPL-3.0, libacars: MIT", homepage="https://github.com/szpajder/dumpvdl2",
               frequencies="vdl2_frequencies_hz", exe=("dumpvdl2", "dumpvdl2.exe")),
 )
 SPECS = {s.id: s for s in CATALOG}
@@ -100,6 +100,7 @@ class AddonManager:
         self.running_external = ""
         self.last_error = ""
         self._cancelled = False
+        self.started_at = 0.0       # when the running external program started (0 = none)
 
     # -- state ----------------------------------------------------------------------------------
     def enabled(self, addon_id: str) -> bool:
@@ -119,7 +120,7 @@ class AddonManager:
         for spec in CATALOG:
             program = self.program(spec.id) if spec.exe else None
             out.append({
-                "id": spec.id, "name": spec.name, "kind": spec.kind, "summary": tr(spec.summary), "license": spec.license,
+                "id": spec.id, "name": spec.name, "kind": spec.kind, "summary": tr(spec.summary), "license": tr(spec.license),
                 "homepage": spec.homepage, "enabled": self.enabled(spec.id), "experimental": spec.experimental,
                 "installed": spec.kind == "builtin" or program is not None, "program": program or "",
                 "running": self.running_external == spec.id,
@@ -204,6 +205,7 @@ class AddonManager:
                 raise RuntimeError(tr("Another add-on is running - stop it first."))
             self.last_error, self._cancelled = "", False
             self.running_external = addon_id
+            self.started_at = time.time()
         # The dongle that the scanner just closed is not free for a moment (usb_claim_interface -6): the same
         # cooldown the backends keep between a close and the next open.
         SoapyBackend._wait_for_reopen_cooldown()
@@ -211,7 +213,7 @@ class AddonManager:
             self._launch(addon_id, argv, parse, tries=3)
         except OSError as exc:      # the program could not even be started
             with self._lock:
-                self._runner, self.running_external = None, ""
+                self._runner, self.running_external, self.started_at = None, "", 0.0
             raise RuntimeError(f"{spec.name}: {exc}") from exc
         self._log(tr("{name} started - the scanner is paused while it runs.").format(name=spec.name))
 
@@ -238,7 +240,7 @@ class AddonManager:
                 threading.Timer(_BUSY_RETRY_S, lambda: None if self._cancelled else self._launch(addon_id, argv, parse, tries - 1)).start()
                 return
             with self._lock:
-                self._runner, self.running_external = None, ""
+                self._runner, self.running_external, self.started_at = None, "", 0.0
                 if code:
                     shown = " ".join(tail[-3:])
                     self.last_error = f"{addon_id}: exit {code} {shown}".strip()
@@ -257,5 +259,5 @@ class AddonManager:
             runner.stop()
         with self._lock:
             if not (self._runner is not None and self._runner.alive):
-                self._runner, self.running_external = None, ""
+                self._runner, self.running_external, self.started_at = None, "", 0.0
         SoapyBackend._record_close_time()
