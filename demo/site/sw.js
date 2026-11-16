@@ -6,7 +6,7 @@
 
 const RATE = 12500;
 const STATE_KEY = '/demo/state.json';
-const STATE_VERSION = 4;  // bump when saved state stops matching the code (clip ids, defaults)
+const STATE_VERSION = 5;  // bump when saved state stops matching the code (clip ids, defaults)
 // Two virtual receivers; picking one sets its capture width (demo.js).
 const DEVICES = [
   { driver: 'demo-rtl', label: 'Demo RTL-SDR (simulated, 2.4 MHz)', rate: 2.4e6, gain: [0, 49.6] },
@@ -115,6 +115,7 @@ function init() {
     st = saved ? await saved.json() : null;
     if (!st || st.version !== `${FX.version}/${STATE_VERSION}`) st = freshState(st);
     addLog(tr('Ready.'));
+    axSeed();
     setInterval(tick, 50);
     if (st.running) startScanner();
   })();
@@ -508,6 +509,7 @@ function simState() {
 
 function startScanner() {
   if (sim.running) return;
+  if (ax.running) throw new Error(tr('An add-on is using the receiver - stop it first.'));
   sim.running = true;
   sim.firstStart ??= nowS();
   rebuild(true);
@@ -626,6 +628,7 @@ function tick() {
   advanceSources(t);
   scheduleCheck(t);
   if (sim.running) step(t);
+  axTick(Date.now() / 1000);
   pumpAudio(t);
   finishTranscripts();
 }
@@ -876,6 +879,7 @@ function live(since = Infinity) {
     solo_band: sim.solo, schedule_active: activeIndices(st.config), uncovered: uncovered(), clock: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
     spectrum: spectrum(), log: log.filter((e) => e.id > since), audio_rate: RATE,
     demo_birdie: !!(primary && primary.src.birdie),
+    addon: ax.running || '', addons: ax.running ? [{ id: ax.running, receiver: 0 }] : [], addon_since: ax.since, notify_seq: ax.seq, schedule_now: axScheduleNow(),
   };
 }
 
@@ -886,7 +890,7 @@ function settings() {
     // Like Controller.devices(): the network entry carries the typed address while it is the chosen one, or the UI loses it.
     devices: DEVICES.map((d) => ({ driver: d.driver, args: d.driver === 'rtl_tcp' && st.config.device.driver === 'rtl_tcp' ? st.config.device.device_args || '' : '', label: tr(d.label), rate: d.rate })),
     languages: FX.languages,
-    capabilities: { ffmpeg: true, transcription_installed: true, digital: false, platform: 'linux', autostart: null },
+    capabilities: { addon_messages: true, ffmpeg: true, transcription_installed: true, digital: false, platform: 'linux', autostart: null },
     curated: FX.curated, mode: 'local', password_set: false,
   };
 }
@@ -907,6 +911,376 @@ function presetId(label) {
 }
 
 const notInDemo = () => { throw new Error(tr('Not available in the online demo - download FalconSDR to use it.')); };
+
+// ------------------------------------------------------------------ add-ons (simulated)
+// Fictional traffic in the shapes the real decoders produce (build.py runs the program's own parsers for rtl_433 and APRS;
+// the aircraft messages are written here the way acars.py / external.parse_vdl2 return them). A seeded history fills
+// Messages and Statistics; new messages appear while an add-on is on. Nothing is received and nothing is sent anywhere.
+const AX_FIELD = { acars: 'acars_frequencies_hz', aprs: 'aprs_frequencies_hz', vdl2: 'vdl2_frequencies_hz' };
+const AX_FLEET = [['SP-XQA', 'FS', 1204], ['SP-XQC', 'FS', 78], ['D-AXQB', 'QD', 4412], ['G-XQAB', 'QD', 213], ['OE-XQA', 'QD', 8801], ['PH-XQA', 'FS', 602],
+  ['HA-XQA', 'XW', 3320], ['OK-XQA', 'XW', 115], ['LN-XQA', 'XW', 940], ['SE-XQA', 'FS', 2750], ['OO-XQA', 'QD', 1066], ['F-GXQA', 'FS', 1830], ['EI-XQA', 'XW', 77], ['TF-XQA', 'QD', 335]];
+const AX_AIRPORTS = ['EPWA', 'EPKK', 'EPRZ', 'EPGD', 'EPWR', 'EPPO', 'EGLL', 'EDDF', 'LOWW', 'LFPG', 'EHAM', 'LKPR', 'LHBP', 'EKCH'];
+const AX_WAYPOINTS = ['TEMDI', 'GOBAS', 'SOLAN', 'RIDAV', 'BEKLA', 'LAPSU', 'NOVEM', 'DOKAD', 'MIRKO', 'PEPIK'];
+const AX_ACARS_HZ = [131725000, 131825000, 131525000];
+const AX_VDL2_HZ = [136725000, 136775000, 136875000, 136975000];
+const AX_PROTOCOLS = [
+  { id: 1, name: 'Silvercrest Remote Control', default: true }, { id: 2, name: 'Rubicson, TFA 30.3197 or InFactory PT-310 Temperature Sensor', default: true },
+  { id: 3, name: 'Prologue, FreeTec NC-7104, NC-7159-675 temperature sensor', default: true }, { id: 19, name: 'Nexus, FreeTec NC-7345, NX-3980, Solight TE82S, TFA 30.3209 temperature/humidity sensor', default: true },
+  { id: 129, name: 'Eurochron temperature and humidity sensor', default: false }, { id: 133, name: 'Rubicson 48659 Thermometer', default: true },
+  { id: 141, name: 'Auriol HG02832, HG05124A-DCF, Rubicson 48957 temperature/humidity sensor', default: true }, { id: 152, name: 'Eurochron EFTH-800 temperature and humidity sensor', default: true },
+  { id: 222, name: 'Rubicson Pool Thermometer 48942', default: true }, { id: 242, name: 'Baldr / RainPoint rain gauge.', default: false },
+];
+
+const ax = { ring: [], link: [], nextId: Date.now(), hours: new Map(), running: null, since: 0, byTimer: false, resume: false, genAt: 0, next: [], counts: {}, notices: [], seq: Date.now(), cool: new Map(), sensors: null };
+
+function axRng(seed) {   // mulberry32: the same history every time the worker starts
+  let a = seed >>> 0;
+  return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+const axPick = (r, list) => list[Math.floor(r() * list.length)];
+const axPad = (n, w = 2) => String(Math.floor(n)).padStart(w, '0');
+
+// -- messages -----------------------------------------------------------------------------------------------------------
+function axAcarsFields(r, now) {
+  const [reg, airline, base] = axPick(r, AX_FLEET);
+  const flight = `${airline}${axPad(base + Math.floor(r() * 4), 4)}`;
+  const dep = axPick(r, AX_AIRPORTS);
+  let arr = axPick(r, AX_AIRPORTS);
+  if (arr === dep) arr = 'EPWA';
+  const d = new Date(now * 1000);
+  const c = {
+    reg, flight, dep, arr, wp: axPick(r, AX_WAYPOINTS), wp2: axPick(r, AX_WAYPOINTS), wp3: axPick(r, AX_WAYPOINTS),
+    lat: `${axPad(48 + r() * 4)}${axPad(r() * 99)}${axPad(r() * 99)}`, lon: `${axPad(r() * 3, 3)}${axPad(r() * 99)}${axPad(r() * 99)}`,
+    hms: `${axPad(d.getUTCHours())}${axPad(d.getUTCMinutes())}${axPad(d.getUTCSeconds())}`, hm: `${axPad(d.getUTCHours())}${axPad(d.getUTCMinutes())}`,
+    hms2: `${axPad(d.getUTCHours() + (d.getUTCMinutes() > 40 ? 1 : 0))}${axPad((d.getUTCMinutes() + 9) % 60)}00`,
+    fl: `${axPad(300 + Math.floor(r() * 12) * 10, 3)}`, temp: axPad(40 + r() * 20), wind: `${axPad(r() * 359, 3)}${axPad(5 + r() * 30, 3)}`,
+    day: axPad(d.getUTCDate()), mon: axPad(d.getUTCMonth() + 1), rwy: axPick(r, ['9', '27', '33', '15']), atis: axPick(r, ['A', 'B', 'C', 'D', 'E', 'F']),
+    qnh: 1000 + Math.floor(r() * 30), vdl: axPick(r, ['725', '775', '875', '975']),
+  };
+  // [label, downlink (aircraft sends), text]
+  const T = [
+    ['H1', true, `#M1BPOSN${c.lat}E${c.lon},${c.wp},${c.hms},${c.fl},${c.wp2},${c.hms2},${c.wp3},M${c.temp},${c.wind}`],
+    ['80', true, `3N01 POSRPT ${c.day}${c.mon}/${c.dep}/${c.arr} .${c.reg}\n/POS N${c.lat.slice(0, 5)}E${c.lon.slice(0, 6)}\n/ALT ${c.fl}  /SPD 0.${78 + Math.floor(r() * 4)}`],
+    ['14', true, `OFF${c.dep}${c.arr}${c.hm}`], ['14', true, `ON${c.dep}${c.arr}${c.hm}`],
+    ['10', false, `PDC ${flight}\n${c.dep} TO ${c.arr}\nCLEARED TO ${c.arr} VIA ${c.wp}1A\nRWY ${c.rwy} QNH ${c.qnh}`],
+    ['15', false, `${c.arr} ATIS ${c.atis} ${c.hm}Z\nRWY ${c.rwy} QNH ${c.qnh} WIND ${c.wind.slice(0, 3)}/${c.wind.slice(3).replace(/^0/, '')}KT`],
+    ['5Z', true, `/${c.dep}YA.TI2/${c.arr}${c.hm}${c.reg}`], ['SA', true, `0EV136${c.vdl}`], ['Q0', true, ''], ['Q0', false, ''],
+    ['B9', false, `FREE TEXT\nEXPECT ${c.wp} ARRIVAL ${c.hm}Z`],
+  ];
+  const [label, down, text] = axPick(r, T);
+  const f = { mode: '2', registration: reg, ack: down ? String.fromCharCode(65 + Math.floor(r() * 26)) : '!', label, block_id: down ? String(1 + Math.floor(r() * 9)) : String.fromCharCode(65 + Math.floor(r() * 8)), text };
+  if (down && text) { f.msg_no = `M${axPad(r() * 90)}${String.fromCharCode(65 + Math.floor(r() * 26))}`; f.flight = flight; }
+  return f;
+}
+const axAcarsSummary = (e) => `${[e.registration, e.flight, `[${e.label}]`].filter(Boolean).join(' ')} ${e.text || ''}`.replace(/\n/g, ' ').trim();
+
+function axAcars(r, now) {
+  const f = axAcarsFields(r, now);
+  const ev = { kind: 'acars', ...f, crc_ok: true, mapping: 'normal', freq_hz: axPick(r, AX_ACARS_HZ) };
+  return [ev, axAcarsSummary(ev)];
+}
+
+function axVdl2(r, now, layer) {
+  const addr = () => axPad(r() * 0xFFFFFF, 6).replace(/./g, () => '0123456789ABCDEF'[Math.floor(r() * 16)]);
+  const ev = { kind: 'vdl2', layer, freq_hz: axPick(r, AX_VDL2_HZ), src: addr(), dst: addr(), sig_level: Math.round((-38 + r() * 24) * 10) / 10 };
+  if (layer === 'acars') {
+    const f = axAcarsFields(r, now);
+    const reg = f.registration;
+    Object.assign(ev, { frame_type: 'I', fields: { reg: `.${reg}`, label: f.label, msg_text: f.text, mode: f.mode, ack: f.ack, blk_id: f.block_id, ...(f.flight ? { flight: f.flight } : {}) },
+      registration: reg, label: f.label, flight: f.flight, text: f.text });
+    return [ev, axAcarsSummary(ev)];
+  }
+  ev.frame_type = layer === 'data' ? 'I' : axPick(r, ['RR', 'RR', 'RR', 'XID', 'UA', 'SABM', 'RNR']);
+  ev.fields = {};
+  return [ev, `${ev.src} → ${ev.dst} ${ev.frame_type}`];
+}
+
+function axAprs(r) {
+  const s = axPick(r, FX.addons.aprs);
+  return [{ ...clone(s.event), freq_hz: 144800000 }, s.summary];
+}
+
+function axSensors() {
+  ax.sensors ||= FX.addons.sensors.map((d) => ({ ...d, every: d.every }));
+  return ax.sensors;
+}
+// The value of one field at time `now` (a daily swing plus noise), or one of a list of choices.
+function axValue(spec, r, now) {
+  if (spec.length > 4 || typeof spec[0] === 'string') return axPick(r, spec);
+  const [base, swing, noise, dec] = spec;
+  const h = (now / 3600) % 24;      // warmest in the afternoon (UTC)
+  const v = base + swing * Math.sin(((h - 9) / 24) * 2 * Math.PI) + (r() - 0.5) * 2 * noise;
+  return +v.toFixed(dec);
+}
+function axSensor(dev, r, now) {
+  const ev = clone(dev.event);
+  for (const [key, spec] of Object.entries(dev.gen)) {
+    const v = axValue(spec, r, now);
+    if (key in ev.fields) ev.fields[key] = v;
+    const reading = ev.readings.find((x) => x.key === key);
+    if (reading) reading.value = v;
+    const status = ev.status.find((x) => x.key === key);
+    if (status) status.value = v;
+  }
+  const who = `${ev.model}${ev.device_id !== undefined && ev.device_id !== null ? ` #${ev.device_id}` : ''}`;
+  let shown = ev.readings.slice(0, 3).map((x) => `${x.label.split(' ')[0] === 'Temperature' || x.label.split(' ')[0] === 'Humidity' ? '' : `${x.label} `}${x.value}${x.unit ? ` ${x.unit}` : ''}`).join(', ');
+  if (!shown && ev.status.length) shown = ev.status.slice(0, 3).map((x) => `${x.key} ${x.value}`).join(', ');
+  return [ev, shown ? `${who}: ${shown}` : who];
+}
+
+// -- statistics: the same hourly buckets as addons/stats.py ----------------------------------------------------------------
+function axBucket(hour, addon) {
+  let h = ax.hours.get(hour);
+  if (!h) ax.hours.set(hour, h = {});
+  return h[addon] ||= { n: 0, link: 0, last: 0, freq: {}, lvl: {}, who: {}, labels: {}, types: {}, pos: 0, sensors: {} };
+}
+function axRecord(e) {
+  const b = axBucket(Math.floor(e.ts / 3600) * 3600, e.addon);
+  b.last = Math.max(b.last, e.ts);
+  if (e.kind === 'vdl2' && e.layer === 'link') { b.link += 1; return; }
+  b.n += 1;
+  if (e.freq_hz) {
+    const k = String(Math.round(e.freq_hz));
+    b.freq[k] = (b.freq[k] || 0) + 1;
+    if (typeof e.sig_level === 'number') { const s = (b.lvl[k] ||= [0, 0]); s[0] += e.sig_level; s[1] += 1; }
+  }
+  const who = e.kind === 'sensor' ? `${e.model || '?'} #${e.device_id}` : String(e.registration || e.source || '');
+  if (who && (who in b.who || Object.keys(b.who).length < 300)) { const w = (b.who[who] ||= [0, 0]); w[0] += 1; w[1] = Math.max(w[1], e.ts); }
+  if (e.label) b.labels[e.label] = (b.labels[e.label] || 0) + 1;
+  if (e.kind === 'aprs') {
+    const k = String(e.type || '?');
+    b.types[k] = (b.types[k] || 0) + 1;
+    if ('lat' in e && 'lon' in e) b.pos += 1;
+  }
+  if (e.kind === 'sensor') {
+    const s = (b.sensors[who] ||= { n: 0, last: 0, vn: 0, vsum: 0 });
+    s.n += 1; s.last = Math.max(s.last, e.ts); s.cat = e.category || 'other';
+    const main = (e.readings || []).find((x) => x.key === e.primary);
+    if (main) {
+      s.pl = main.label; s.pu = main.unit;
+      s.vmin = Math.min(s.vmin ?? main.value, main.value); s.vmax = Math.max(s.vmax ?? main.value, main.value);
+      s.vn += 1; s.vsum += main.value;
+    }
+    const batt = (e.fields || {}).battery_ok;
+    if (batt !== undefined && batt !== null) s.batt = batt ? 1 : 0;
+  }
+}
+function axSnapshot(days) {
+  const now = Date.now() / 1000, since = days ? now - days * 86400 : 0;
+  const out = {};
+  const dayOf = (h) => new Date(h * 1000).toISOString().slice(0, 10);
+  const available = new Set();
+  for (const hour of [...ax.hours.keys()].sort((a, b) => a - b)) {
+    available.add(dayOf(hour));
+    if (hour + 3600 <= since) continue;
+    for (const [addon, b] of Object.entries(ax.hours.get(hour))) {
+      const a = (out[addon] ||= { n: 0, link: 0, last: 0, timeline: [], who: {}, freq: {}, lvl: {}, labels: {}, types: {}, pos: 0, farthest: null, sensors: {} });
+      a.n += b.n; a.link += b.link; a.last = Math.max(a.last, b.last); a.pos += b.pos;
+      a.timeline.push([hour, b.n, b.link]);
+      for (const [name, [n, last]] of Object.entries(b.who)) { const w = (a.who[name] ||= [0, 0]); w[0] += n; w[1] = Math.max(w[1], last); }
+      for (const key of ['freq', 'labels', 'types']) for (const [k, n] of Object.entries(b[key])) a[key][k] = (a[key][k] || 0) + n;
+      for (const [k, [s, n]] of Object.entries(b.lvl)) { const t = (a.lvl[k] ||= [0, 0]); t[0] += s; t[1] += n; }
+      for (const [name, s] of Object.entries(b.sensors)) {
+        const t = (a.sensors[name] ||= { n: 0, vn: 0, vsum: 0, last: 0 });
+        t.n += s.n; t.vn += s.vn; t.vsum += s.vsum; t.last = Math.max(t.last, s.last);
+        if (s.last >= (t.seenAt || 0)) { t.seenAt = s.last; for (const k of ['cat', 'pl', 'pu']) if (k in s) t[k] = s[k]; }
+        if ('vmin' in s) { t.vmin = Math.min(t.vmin ?? s.vmin, s.vmin); t.vmax = Math.max(t.vmax ?? s.vmax, s.vmax); }
+        if ('batt' in s && s.last >= (t.battAt || 0)) { t.batt = s.batt; t.battAt = s.last; }
+      }
+    }
+  }
+  for (const a of Object.values(out)) {
+    a.who = Object.entries(a.who).sort((x, y) => y[1][0] - x[1][0]).slice(0, 60).map(([n, [c, last]]) => [n, c, last]);
+    a.distinct = a.who.length;
+    a.freq = Object.entries(a.freq).sort((x, y) => y[1] - x[1]).map(([f, n]) => [+f, n, a.lvl[f] ? Math.round((a.lvl[f][0] / a.lvl[f][1]) * 10) / 10 : null]);
+    delete a.lvl;
+    a.labels = Object.entries(a.labels).sort((x, y) => y[1] - x[1]).slice(0, 20);
+    a.types = Object.entries(a.types).sort((x, y) => y[1] - x[1]);
+    a.sensors = Object.entries(a.sensors).sort((x, y) => y[1].n - x[1].n).map(([device, s]) => ({
+      device, n: s.n, last: s.last, category: s.cat || 'other', label: s.pl || '', unit: s.pu || '', vmin: s.vmin ?? null, vmax: s.vmax ?? null,
+      vavg: s.vn ? Math.round((s.vsum / s.vn) * 100) / 100 : null, batt: s.batt ?? null }));
+  }
+  return { days, days_available: available.size, addons: out };
+}
+
+// -- publishing, history ------------------------------------------------------------------------------------------------------
+function axPublish(addon, pair, ts) {
+  const [ev, summary] = pair;
+  const e = { ...ev, addon, ts: Math.round(ts * 1000) / 1000, summary, id: ax.nextId++ };
+  axRecord(e);
+  const ring = e.kind === 'vdl2' && e.layer === 'link' ? ax.link : ax.ring;
+  ring.push(e);
+  if (ring.length > (ring === ax.ring ? 3000 : 600)) ring.shift();
+  (ax.counts[addon] ||= { slots: 0, events: 0 }).events += 1;
+  if (e.kind === 'aprs' || e.kind === 'acars') ax.counts[addon].slots = Math.max(ax.counts[addon].slots, Math.ceil(ax.counts[addon].events / 3));
+  axNotify(e);
+  return e;
+}
+
+// A week of past traffic and the last hours as messages, so Messages and Statistics have something to show from the first visit.
+function axSeed() {
+  const now = Date.now() / 1000, r = axRng(20261116);
+  const traffic = (hour) => { const h = (hour / 3600) % 24; return 0.3 + 0.7 * Math.max(0, Math.sin((Math.PI * (h - 4)) / 16)); };
+  const keepFrom = now - 3 * 3600;
+  const add = (addon, pair, ts) => {     // history goes straight to the statistics; only the last hours become messages
+    const e = { ...pair[0], addon, ts, summary: pair[1], id: 0 };
+    axRecord(e);
+    if (ts >= keepFrom && !(e.kind === 'vdl2' && e.layer === 'link')) { e.id = ax.nextId++; ax.ring.push(e); }
+  };
+  for (let t = Math.floor(now / 3600) * 3600 - AX_HISTORY_DAYS * 86400; t < now; t += 3600) {
+    const f = traffic(t), end = Math.min(t + 3600, now);
+    const times = (perHour) => Array.from({ length: Math.round(perHour * f * (0.7 + r() * 0.6)) }, () => t + r() * (end - t)).sort((a, b) => a - b);
+    times(16).forEach((ts) => add('acars', axAcars(r, ts), ts));
+    times(22).forEach((ts) => add('aprs', axAprs(r), ts));
+    times(50).forEach((ts) => add('vdl2', axVdl2(r, ts, 'acars'), ts));
+    times(30).forEach((ts) => add('vdl2', axVdl2(r, ts, 'data'), ts));
+    axBucket(t, 'vdl2').link += Math.round(260 * f * (0.7 + r() * 0.6));
+    axBucket(t, 'vdl2').last = Math.max(axBucket(t, 'vdl2').last, end - 30);
+    // rtl_433 ran at night (an hour of daylight on the first and last day as well, so the last run is recent)
+    const hourOfDay = (t / 3600) % 24;
+    const night = hourOfDay >= 22 || hourOfDay < 2, lastRun = t > now - 3 * 3600 && t < now - 1.2 * 3600;
+    const limit = Math.min(end, now - 1.2 * 3600);       // the last run ended a while ago
+    if (night || lastRun) for (const dev of axSensors()) for (let ts = t + r() * dev.every; ts < limit; ts += dev.every * (0.85 + r() * 0.3)) add('rtl_433', axSensor(dev, r, ts), ts);
+  }
+  ax.ring.sort((a, b) => a.ts - b.ts);
+  ax.ring.forEach((e) => { e.id = ax.nextId++; });
+  ax.link = [];
+}
+const AX_HISTORY_DAYS = 7;
+
+// -- running, new messages while on --------------------------------------------------------------------------------------------------
+const axOn = (id) => st.config.addons.enabled.includes(id);
+function axTick(now) {
+  if (!ax.genAt) { ax.genAt = now; return; }
+  const dt = Math.min(now - ax.genAt, 60);
+  ax.genAt = now;
+  if (dt <= 0) return;
+  axSchedule();
+  const r = Math.random;
+  if (sim.running) {      // the built-in decoders hear only what the scanner stops on
+    if (axOn('acars') && r() < dt / 40) axPublish('acars', axAcars(r, now), now);
+    if (axOn('aprs') && r() < dt / 30) axPublish('aprs', axAprs(r), now);
+  }
+  if (ax.running === 'vdl2') {
+    if (r() < dt / 14) axPublish('vdl2', axVdl2(r, now, 'acars'), now);
+    if (r() < dt / 9) axPublish('vdl2', axVdl2(r, now, 'data'), now);
+    if (r() < dt / 0.9) axPublish('vdl2', axVdl2(r, now, 'link'), now);
+  }
+  if (ax.running === 'rtl_433') {
+    axSensors().forEach((dev, i) => {
+      if (ax.next[i] === undefined) ax.next[i] = now + r() * Math.min(dev.every, 12);
+      if (now >= ax.next[i]) { axPublish('rtl_433', axSensor(dev, r, now), now); ax.next[i] = now + dev.every * (0.85 + r() * 0.3); }
+    });
+  }
+}
+
+function axRun(id, byTimer = false) {
+  const spec = FX.addons.status.find((s) => s.id === id);
+  if (!spec || spec.kind !== 'external') throw new Error('No such add-on');
+  if (ax.running) throw new Error(tr('Another add-on is running - stop it first.'));
+  ax.resume = sim.running;
+  if (sim.running) stopScanner();
+  ax.running = id; ax.since = Date.now() / 1000; ax.next = []; ax.byTimer = byTimer;
+  addLog(tr('{name} started - the scanner is paused while it runs.', { name: spec.name }));
+}
+function axStop() {
+  if (!ax.running) return;
+  ax.running = null; ax.since = 0; ax.byTimer = false;
+  if (ax.resume) { ax.resume = false; startScanner(); }
+}
+// A schedule entry can run an add-on instead of scanning.
+function axSchedule() {
+  const c = st.config;
+  const wanted = c.schedule.enabled ? (activeIndices(c).map((i) => c.schedule.entries[i]).find((e) => e.addon) || {}).addon || '' : '';
+  if (wanted && !ax.running && !ax.suppressed) { try { axRun(wanted, true); } catch { ax.suppressed = true; } }
+  if (!wanted) ax.suppressed = false;
+  if (ax.running && ax.byTimer && ax.running !== wanted) axStop();
+}
+
+function axStatus() {
+  const a = st.config.addons;
+  return FX.addons.status.map((s) => {
+    const ext = s.kind === 'external';
+    return { ...s, summary: tr(s.summary), license: tr(s.license), enabled: a.enabled.includes(s.id), installed: true, program: ext ? `/usr/bin/${s.id === 'vdl2' ? 'dumpvdl2' : 'rtl_433'}` : '',
+      running: ax.running === s.id, frequencies: AX_FIELD[s.id] ? [...a[AX_FIELD[s.id]]] : [], receiver: a.receivers[s.id] ?? (ext ? 0 : -1),
+      options: { ...s.options, ...(a.options[s.id] || {}) }, path: a.paths[s.id] || '', extra_args: a.extra_args[s.id] || '', install_hint: '', managed: false,
+      can_install: false, install: null, stats: { slots: 0, events: 0, ...(ax.counts[s.id] || {}) }, error: '' };
+  });
+}
+const axResponse = () => ({ addons: axStatus(), running: ax.running || '' });
+
+function axConfigure(id, patch) {
+  const spec = FX.addons.status.find((s) => s.id === id);
+  if (!spec) throw new Error('No such add-on');
+  const a = st.config.addons;
+  if ('enabled' in patch) a.enabled = [...a.enabled.filter((x) => x !== id), ...(patch.enabled ? [id] : [])];
+  if ('frequencies' in patch && AX_FIELD[id]) a[AX_FIELD[id]] = [...new Set(patch.frequencies.map(Math.round).filter((f) => f >= 1e6 && f <= 6e9))].sort((x, y) => x - y);
+  if ('options' in patch && spec.options && Object.keys(spec.options).length) {
+    const known = Object.keys(spec.options), out = { ...(a.options[id] || {}) };
+    for (const [k, v] of Object.entries(patch.options)) if (known.includes(k)) out[k] = v;
+    a.options = { ...a.options, [id]: out };
+  }
+  if ('receiver' in patch) a.receivers = { ...a.receivers, [id]: +patch.receiver };
+  if ('path' in patch) a.paths = { ...a.paths, [id]: String(patch.path).trim() };
+  if ('extra_args' in patch) a.extra_args = { ...a.extra_args, [id]: String(patch.extra_args).trim() };
+  if ('listen_to_data' in patch) a.listen_to_data = !!patch.listen_to_data;
+  save();
+}
+
+function axSince(after, addon) {
+  return [...ax.ring, ...ax.link].filter((e) => e.id > after && (!addon || e.addon === addon)).sort((a, b) => a.id - b.id).slice(-500);
+}
+
+// -- notifications: rules are checked against the simulated messages, but nothing is ever sent -----------------------------------
+const AX_MASK = '••••••••', AX_SECRETS = ['token', 'password', 'header_value'];
+const axNotifyMasked = (channels) => channels.map((c) => ({ ...c, settings: Object.fromEntries(Object.entries(c.settings).map(([k, v]) => [k, AX_SECRETS.includes(k) && v ? AX_MASK : v])) }));
+const axNotifyState = () => ({ enabled: st.config.notify.enabled, channels: axNotifyMasked(st.config.notify.channels), rules: st.config.notify.rules, recent: ax.notices.slice(-30) });
+function axNotifySave(body) {
+  const n = st.config.notify, old = Object.fromEntries(n.channels.map((c) => [c.id, c]));
+  const rnd = () => Math.random().toString(16).slice(2, 10);
+  n.channels = (body.channels || []).slice(0, 20).map((c) => ({ ...c, id: c.id || rnd(), settings: Object.fromEntries(Object.entries(c.settings || {}).map(([k, v]) => [k, v === AX_MASK && old[c.id] ? old[c.id].settings[k] : v])) }));
+  const ids = new Set(n.channels.map((c) => c.id));
+  n.rules = (body.rules || []).slice(0, 50).map((r) => ({ ...r, id: r.id || rnd(), channels: (r.channels || []).filter((id) => ids.has(id)), cooldown_s: Math.min(86400, Math.max(30, +r.cooldown_s || 300)) }));
+  n.enabled = !!body.enabled;
+  save();
+  return axNotifyState();
+}
+function axNotify(e) {
+  const n = st.config.notify;
+  if (!n.enabled) return;
+  const text = [e.summary, e.text, e.registration, e.flight, e.source, e.model, e.label, e.src, e.dst].filter(Boolean).join(' ').toLowerCase();
+  for (const rule of n.rules) {
+    if (!rule.enabled || rule.source !== 'message' || (rule.addons.length && !rule.addons.includes(e.addon))) continue;
+    const words = (rule.text_any || '').toLowerCase().split(',').map((w) => w.trim()).filter(Boolean);
+    if (words.length && !words.some((w) => text.includes(w))) continue;
+    if (rule.who && !`${e.registration || ''} ${e.flight || ''} ${e.source || ''} ${e.model || ''} #${e.device_id} ${e.src || ''}`.toLowerCase().includes(rule.who.toLowerCase())) continue;
+    if (rule.label && e.label !== rule.label) continue;
+    if (rule.freq_mhz && Math.abs((e.freq_hz || 0) - rule.freq_mhz * 1e6) > 4200) continue;
+    if (rule.metric) {
+      const v = e.kind === 'sensor' ? (e.fields || {})[rule.metric] : undefined;
+      if (typeof v !== 'number' || !(rule.op === '<' ? v < rule.value : v > rule.value)) continue;
+    }
+    const key = `${rule.id}|${e.registration || e.source || e.model || e.freq_hz}`;
+    if ((ax.cool.get(key) || 0) + rule.cooldown_s * 1000 > Date.now()) continue;
+    ax.cool.set(key, Date.now());
+    const results = Object.fromEntries(n.channels.filter((c) => rule.channels.includes(c.id) && c.enabled).map((c) => [c.name, `error: ${tr('Not available in the online demo - download FalconSDR to use it.')}`]));
+    ax.notices.push({ id: ++ax.seq, ts: Math.round(Date.now()) / 1000, rule: rule.name, title: rule.name, message: e.summary.slice(0, 200), source: 'message', results });
+    if (ax.notices.length > 100) ax.notices.shift();
+  }
+}
+
+// What every receiver does now, for the Schedule page.
+function axScheduleNow() {
+  const c = st.config;
+  if (!c.schedule.enabled) return [];
+  const devs = 1 + (c.device.extra_devices || []).length;
+  const idx = activeIndices(c);
+  const names = idx.map((i) => c.schedule.entries[i].name || `${c.schedule.entries[i].start}–${c.schedule.entries[i].end}`);
+  return Array.from({ length: devs }, (_, k) => {
+    const addon = ax.running && k === 0 ? ax.running : '';
+    return { receiver: k, addon, by_schedule: !!(addon && ax.byTimer), scanning: !addon, memory: !addon && !!c.memory_list_enabled, bands: addon ? [] : c.bands.filter((b) => b.enabled).map((b) => b.label), entries: names };
+  });
+}
 
 // ------------------------------------------------------------------ routes
 async function body(req) { try { return await req.json(); } catch { return {}; } }
@@ -960,6 +1334,20 @@ const ROUTES = {
     if (sim.running) rebuild(false);
     return live();
   },
+  'GET /api/addons': () => axResponse(),
+  'GET /api/addons/events': (req, q) => ({ events: axSince(+(q.get('since') || 0), q.get('addon') || '') }),
+  'GET /api/addons/stats': (req, q) => axSnapshot(+(q.get('days') || 7)),
+  'GET /api/addons/protocols': () => ({ protocols: AX_PROTOCOLS }),
+  'GET /api/addons/metrics': () => ({ metrics: FX.addons.metrics }),
+  'POST /api/addons/configure': async (req) => { const b = await body(req); axConfigure(String(b.id || ''), b); return axResponse(); },
+  'POST /api/addons/run': async (req) => { axRun(String((await body(req)).id || '')); return axResponse(); },
+  'POST /api/addons/stop': () => { axStop(); return axResponse(); },
+  'POST /api/addons/install': notInDemo,
+  'POST /api/addons/uninstall': notInDemo,
+  'GET /api/notify': () => axNotifyState(),
+  'GET /api/notify/recent': (req, q) => ({ items: ax.notices.filter((n) => n.id > +(q.get('since') || 0)) }),
+  'POST /api/notify/save': async (req) => axNotifySave(await body(req)),
+  'POST /api/notify/test': () => ({ error: tr('Not available in the online demo - download FalconSDR to use it.') }),
   'GET /api/settings': () => settings(),
   'POST /api/config': async (req) => {
     const patch = await body(req);
@@ -1074,6 +1462,7 @@ async function handle(req, url) {
   await init();
   if (url.pathname === '/api/recording') return recording(req, url.searchParams);
   if (url.pathname === '/api/demo/reset') {
+    axStop();
     stopScanner();
     st = freshState(null);
     log.length = 0;

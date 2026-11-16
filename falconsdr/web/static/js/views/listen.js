@@ -124,7 +124,7 @@ export function listenView(root) {
       const r = await api.get(`/api/addons/events?since=${addonLastId}`);
       if (r.events.length) {
         addonLastId = r.events[r.events.length - 1].id;
-        addonSeen = addonSeen.concat(r.events.filter((e) => ids.includes(e.addon))).slice(-200);
+        addonSeen = addonSeen.concat(r.events.filter((e) => ids.includes(e.addon) && e.ts >= (S.live.addon_since || 0))).slice(-200);     // not what an earlier run left in the list
       }
     } catch { return; }
     drawAddon();
