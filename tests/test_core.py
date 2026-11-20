@@ -2910,5 +2910,249 @@ class LevelingTest(unittest.TestCase):
         self.assertLess(abs(self._speech_db(out, 0, 1) - self._speech_db(out, 2, 3)), 2.0)
 
 
+class AuditRegressionsTest(unittest.TestCase):
+    def test_rtlsdr_stuck_stream_skips_device_close_and_libusb_error_is_not_stream_fault(self) -> None:
+        import threading
+        from unittest import mock
+        from falconsdr.sdr_backend import RtlSdrBackend, StreamFault
+
+        be = object.__new__(RtlSdrBackend)
+        be._async = True
+        be._streaming = True
+        be._stream_fault = None
+        be._stream_cb = lambda *a: None
+        be._stream_chunks = []
+        be._stream_bytes = 0
+        be._stream_cond = threading.Condition()
+        be._closed = False
+        be._bias_tee = False
+        be._gain_mode = "manual"
+        be._gain_db = 20.0
+        be._freq_hz = 120_000_000
+        be._sample_rate_hz = 2_400_000
+        dev = mock.MagicMock()
+        be.device = dev
+
+        # 1. A stuck async thread must keep _stream_thread set so close() skips device.close() (no UAF).
+        release = threading.Event()
+        stuck = threading.Thread(target=release.wait, args=(5.0,), daemon=True)
+        stuck.start()
+        be._stream_thread = stuck
+        try:
+            orig_join = stuck.join
+            with mock.patch.object(stuck, "join", lambda timeout=None: orig_join(0.01)):
+                be.close()
+            self.assertFalse(dev.close.called)
+        finally:
+            release.set()
+            stuck.join(timeout=2.0)
+
+        # 2. Only exact OSError (Windows ctypes access violation) during an active async stream becomes StreamFault.
+        class FakeLibUSBError(OSError):
+            pass
+
+        be2 = object.__new__(RtlSdrBackend)
+        be2._async = True
+        be2._streaming = True
+        be2._stream_fault = None
+        be2._stream_cb = None
+        be2._stream_chunks = []
+        be2._stream_bytes = 0
+        be2._stream_cond = threading.Condition()
+        be2.bias_tee = False
+        be2.device = mock.MagicMock()
+
+        def fake_thread():
+            t = mock.MagicMock()
+            t.is_alive.return_value = False
+            return t
+
+        be2._stream_thread = fake_thread()
+        be2._stop_stream = lambda: None
+        type(be2.device).center_freq = mock.PropertyMock(side_effect=FakeLibUSBError("usb busy"))
+        with self.assertRaises(FakeLibUSBError):
+            be2.set_frequency(121_500_000)
+
+        be2._stream_thread = fake_thread()
+        type(be2.device).center_freq = mock.PropertyMock(side_effect=OSError("access violation"))
+        with self.assertRaises(StreamFault):
+            be2.set_frequency(121_500_000)
+
+    def test_rtltcp_odd_byte_drain_preserves_iq_alignment(self) -> None:
+        import socket
+        from falconsdr.sdr_backend import RtlTcpBackend
+
+        a, b = socket.socketpair()
+        try:
+            be = object.__new__(RtlTcpBackend)
+            be._sock = a
+            be._discard_until = 0.0
+            be._discard_odd = False
+            be._closed = False
+            # Send 3 stale bytes (odd) then aligned (I=200, Q=50) pairs.
+            b.sendall(b"\x01\x02\x03")
+            be._drain()
+            self.assertTrue(be._discard_odd)
+            # One stray byte to finish the stale pair, then 4 aligned IQ pairs (200, 50).
+            b.sendall(b"\x99" + bytes([200, 50] * 4))
+            iq = be.read(4)
+            self.assertEqual(len(iq), 4)
+            self.assertAlmostEqual(float(iq[0].real), (200 - 127.4) / 128.0, places=4)
+            self.assertAlmostEqual(float(iq[0].imag), (50 - 127.4) / 128.0, places=4)
+            self.assertFalse(be._discard_odd)
+        finally:
+            a.close()
+            b.close()
+
+    def test_demodulator_reset_and_empty_carrier_block(self) -> None:
+        import numpy as np
+        from falconsdr.dsp import Demodulator
+        from falconsdr.models import Modulation
+
+        d = Demodulator(sample_rate=2_400_000, audio_rate=12_500)
+        iq = np.zeros(8192, dtype=np.complex64)
+        for mod in (Modulation.AM, Modulation.NFM, Modulation.USB, Modulation.LSB):
+            d.reset()
+            out = d.demod(iq, mod, 5000.0)
+            self.assertTrue(np.all(np.isfinite(out)))
+        self.assertTrue(np.isfinite(d._track_carrier(np.array([], dtype=np.float32))))
+        self.assertTrue(d._carrier is None or np.isfinite(d._carrier))
+
+    def test_edge_compensation_ignores_dc_spike_and_boundary_window_respects_nyquist(self) -> None:
+        from unittest import mock
+        from falconsdr import edge_compensation as ec
+        from falconsdr.channelizer import extend_boundary_window, plan_windows
+
+        # 5 buckets: center DC spike at -52 dBFS (+8 dB above real passband -60 dBFS).
+        fake_curve = {"sw_auto": {-400_000: -60.0, -200_000: -60.0, 0: -52.0, 200_000: -60.0, 400_000: -60.0}}
+        with mock.patch.object(ec, "_load_floor_curve", lambda: fake_curve):
+            comp = ec.EdgeCompensation(gain_mode="sw_auto")
+        # 2nd-highest bucket (-60 dBFS) is the reference, so passband buckets stay at 0 dB (not +8 dB).
+        self.assertAlmostEqual(comp.correction_db(200_000), 0.0, delta=0.5)
+
+        # Malformed JSONL line in LOG_PATH must not crash _load_floor_curve().
+        tmp = Path(tempfile.mkdtemp())
+        bad_log = tmp / "detect.jsonl"
+        bad_log.write_text("{not valid json\n", encoding="utf-8")
+        with mock.patch.object(ec, "LOG_PATH", bad_log), mock.patch.object(ec, "_CACHE_PATH", tmp / "cache.json"):
+            self.assertEqual(ec._load_floor_curve(), {})
+
+        win = plan_windows([118_000_000], 1_000_000, 25_000)[0]
+        ext = extend_boundary_window(win, 1_000_000, 25_000, "below")
+        self.assertTrue(all(abs(f - win.center_hz) < 500_000 for f in ext))
+        self.assertTrue(all(f > 0 for f in ext))
+
+    def test_recorder_drops_leading_silence_and_caps_pending_silence(self) -> None:
+        import numpy as np
+        from falconsdr.config import RecordingConfig
+        from falconsdr.recorder import Recorder
+
+        tmp = tempfile.mkdtemp()
+        rec = Recorder(RecordingConfig(enabled=True, output_dir=tmp), audio_rate=1000)
+        rec.begin_transmission(121_500_000)
+        try:
+            silence = np.zeros(1000, dtype=np.float32)
+            rec.write_audio(silence, real=False)
+            self.assertEqual(len(rec._pending_silence), 0)
+            rec.write_audio(np.full(100, 0.1, dtype=np.float32), real=True)
+            for _ in range(70):
+                rec.write_audio(silence, real=False)
+            self.assertLessEqual(rec._pending_silence_samples, 60 * 1000)
+        finally:
+            rec.end_transmission()
+
+    def test_parse_filename_invalid_calendar_date_and_short_waveform_peaks(self) -> None:
+        import numpy as np
+        import wave
+        from falconsdr.playback.audio_analysis import compute_waveform_peaks
+        from falconsdr.playback.organizer import parse_filename
+
+        self.assertIsNone(parse_filename("2026-02-30_12-00-00_121500.wav"))
+        self.assertIsNotNone(parse_filename("2026-02-28_12-00-00_121500.wav"))
+
+        tmp = Path(tempfile.mkdtemp()) / "short.wav"
+        samples = np.zeros(150, dtype=np.int16)
+        samples[-1] = 20000
+        with wave.open(str(tmp), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(12500)
+            wf.writeframes(samples.tobytes())
+        peaks = compute_waveform_peaks(tmp, n_buckets=100)
+        self.assertIsNotNone(peaks)
+        self.assertEqual(len(peaks), 100)
+        self.assertGreater(float(peaks[-1]), 0.5)
+
+    def test_delete_models_rejects_traversal_and_empty_candidate_languages(self) -> None:
+        from unittest import mock
+        from falconsdr.playback import transcription_engine as te
+        from falconsdr.playback import transcription_install as ti
+
+        tmp = Path(tempfile.mkdtemp())
+        cache = tmp / "hub"
+        cache.mkdir()
+        outside = tmp / "models--evil--escape"
+        outside.mkdir()
+        with mock.patch.object(ti, "_hf_cache_dir", lambda: cache):
+            ti.delete_models(["..\\models--evil--escape", "../models--evil--escape"], lambda _: None)
+        self.assertTrue(outside.exists())
+
+        lang, prob = te._resolve_language("en", 0.9, [("en", 0.9)], [])
+        self.assertEqual(lang, "en")
+        self.assertAlmostEqual(prob, 0.9)
+
+    def test_worker_import_local_metadata_accepts_relative_keys(self) -> None:
+        from unittest import mock
+        from falconsdr import worker as worker_mod
+        from falconsdr.playback import favorites_store, quality_cache, transcription_cache
+
+        tmp = Path(tempfile.mkdtemp())
+        rec_dir = tmp / "recordings"
+        sub = rec_dir / "2026-01-01"
+        sub.mkdir(parents=True)
+        wav = sub / "2026-01-01_12-00-00_121500.wav"
+        wav.write_bytes(b"RIFF" + b"\x00" * 40)
+        st = wav.stat()
+        rel = "2026-01-01/2026-01-01_12-00-00_121500.wav"
+        cache_key = f"{rel}|{st.st_size}|{st.st_mtime_ns}"
+
+        w = worker_mod.Worker("http://127.0.0.1:8765", token="", local_root=rec_dir)
+        sent = []
+        w.api.get = lambda path, **kw: [{"id": rel, "size": st.st_size}]
+        w.api.post = lambda path, data=None, **kw: sent.append((path, data)) or {"imported": 1}
+
+        fake_tc = mock.MagicMock(_data={cache_key: {"text": "cleared to land", "language": "en", "status": "ok"}})
+        fake_qc = mock.MagicMock(_data={cache_key: {"duration": 2.0, "snr": 15.0, "quality": 82.0}})
+        fake_fav = mock.MagicMock(_keys={cache_key})
+        with mock.patch.object(transcription_cache, "TranscriptionCache", lambda: fake_tc), \
+             mock.patch.object(quality_cache, "QualityCache", lambda: fake_qc), \
+             mock.patch.object(favorites_store, "FavoritesStore", lambda: fake_fav), \
+             mock.patch.object(worker_mod, "_load_state", lambda: {}), \
+             mock.patch.object(worker_mod, "_save_state", lambda _s: None):
+            w._import_local_metadata(force=True)
+        self.assertEqual(len(sent), 1)
+        items = sent[0][1]["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], rel)
+        self.assertEqual(items[0]["transcript"]["text"], "cleared to land")
+        self.assertTrue(items[0]["favorite"])
+
+    def test_http_ipv6_host_i18n_traversal_and_pl_po_no_duplicates(self) -> None:
+        import re
+        from collections import Counter
+        from falconsdr.i18n import catalog_for
+        from falconsdr.web.server import _host_without_port
+
+        self.assertEqual(_host_without_port("[::1]:8765"), "[::1]")
+        self.assertEqual(_host_without_port("[::1]"), "[::1]")
+        self.assertEqual(_host_without_port("LocalHost:8765"), "localhost")
+        self.assertEqual(catalog_for("../../etc/passwd"), {})
+
+        po = (Path(__file__).resolve().parent.parent / "falconsdr" / "locale" / "pl.po").read_text(encoding="utf-8")
+        msgids = [m for m in re.findall(r'^msgid "(.*)"$', po, re.M) if m]
+        dups = {k: v for k, v in Counter(msgids).items() if v > 1}
+        self.assertEqual(dups, {})
+
+
 if __name__ == "__main__":
     unittest.main()

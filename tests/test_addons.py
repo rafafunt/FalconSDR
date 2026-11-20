@@ -1292,5 +1292,84 @@ class DongleChoiceTest(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr[-1500:])
 
 
+class AuditAddonsRegressionsTest(unittest.TestCase):
+    def test_clean_options_validates_stored_current_values(self) -> None:
+        from falconsdr.addons.manager import clean_options
+
+        cleaned = clean_options("rtl_433", {"gain": "; rm -rf /", "sample_rate": "99999k", "hop_s": -5}, {"band": "433"})
+        self.assertEqual(cleaned["gain"], "")
+        self.assertEqual(cleaned["sample_rate"], "")
+        self.assertGreaterEqual(cleaned["hop_s"], 1)
+
+    def test_stats_store_distinct_counts_past_60(self) -> None:
+        import time
+        from falconsdr.addons.stats import StatsStore
+
+        store = StatsStore(Path(tempfile.mkdtemp(dir=_HOME)) / "stats.json")
+        now = time.time()
+        for i in range(75):
+            store.record({"addon": "acars", "kind": "acars", "ts": now, "registration": f"SP-{i:03d}"})
+        snap = store.snapshot(days=1)["addons"]["acars"]
+        self.assertEqual(len(snap["who"]), 60)
+        self.assertEqual(snap["distinct"], 75)
+
+    def test_aprs_rejects_bad_base91_and_out_of_range_coords(self) -> None:
+        from falconsdr.addons.aprs import _position
+
+        # Invalid base-91 compressed characters (< 33) must return None instead of bogus coordinates.
+        self.assertIsNone(_position("!\x01\x01\x01\x01\x01\x01\x01\x01/000"))
+        # Out-of-range uncompressed latitude (95 deg N).
+        self.assertIsNone(_position("!9500.00N/02100.00E-"))
+
+    def test_schedule_dedups_external_addons_across_receivers(self) -> None:
+        from datetime import datetime
+        from falconsdr.config import AppConfig, ScheduleConfig, ScheduleEntry
+        from falconsdr.schedule import assignments
+
+        cfg = AppConfig()
+        cfg.schedule = ScheduleConfig(
+            enabled=True,
+            entries=[
+                ScheduleEntry(start="00:00", end="23:59", days=[0, 1, 2, 3, 4, 5, 6], addon="rtl_433", receivers=[0]),
+                ScheduleEntry(start="00:00", end="23:59", days=[0, 1, 2, 3, 4, 5, 6], addon="rtl_433", receivers=[1]),
+            ],
+        )
+        got = assignments(cfg, count=2, now=datetime(2026, 1, 5, 12, 0), addon_receiver=lambda _: 0, addon_ok=lambda _: True)
+        addons = [r.addon for r in got if r.addon]
+        self.assertEqual(addons, ["rtl_433"])
+
+    def test_addon_manager_log_runs_outside_lock(self) -> None:
+        from unittest import mock
+        from falconsdr.addons import manager as mgr_mod
+        from falconsdr.config import AppConfig
+
+        seen_unlocked = []
+        captured_exit = []
+        mgr = None
+
+        def check_log(_msg: str) -> None:
+            # Must be able to acquire mgr._lock without deadlocking (non-reentrant Lock).
+            acquired = mgr._lock.acquire(blocking=False)
+            if acquired:
+                mgr._lock.release()
+            seen_unlocked.append(acquired)
+
+        class FakeRunner:
+            def __init__(self, argv, on_line, on_exit):
+                captured_exit.append(on_exit)
+            def stderr_lines(self): return ["fatal error"]
+            def start(self): pass
+            def stop(self): pass
+
+        mgr = mgr_mod.AddonManager(AppConfig(), log=check_log)
+        with mock.patch.object(mgr, "program", lambda _id: "/usr/bin/rtl_433"), \
+             mock.patch.object(mgr_mod, "ExternalRunner", FakeRunner), \
+             mock.patch.object(mgr_mod.SoapyBackend, "_wait_for_reopen_cooldown", lambda: None):
+            mgr.start_external("rtl_433", {"driver": "auto", "device_args": ""})
+            captured_exit[0](1)
+        self.assertGreaterEqual(len(seen_unlocked), 2)
+        self.assertTrue(all(seen_unlocked))
+
+
 if __name__ == "__main__":
     unittest.main()
