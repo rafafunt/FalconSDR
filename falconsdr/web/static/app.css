@@ -23,7 +23,7 @@
   --instrument: #0b0d10;    /* always dark: the radio display and spectrum */
   --instrument-line: #23272e;
   --amber: #ffb340;
-  --purple: #af52de;
+  --purple: #8944ab;
   --amber-dim: #8a6a33;
   --shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 4px 16px rgba(0, 0, 0, .05);
   --radius: 12px;
@@ -347,9 +347,9 @@ button.day.on { color: var(--on-accent); background: var(--accent-fill); }
 .rec .dur { font: 13px var(--mono); color: var(--secondary); text-align: right; }
 .star { color: var(--tertiary); background: none; padding: 4px; min-width: 32px; }
 .star:hover { background: var(--fill); }
-.star.on { color: #ff9f0a; }
+.star.on { color: var(--orange); }
 .star.on svg.ic { fill: currentColor; }
-.bulk .fav.on { color: #ff9f0a; }
+.bulk .fav.on { color: var(--orange); }
 .bulk .fav.on svg.ic { fill: currentColor; }
 @media (max-width: 680px) {
   .rec { grid-template-columns: 22px minmax(0, 1fr) auto; grid-template-areas: "c w q" "c t t"; gap: 4px 10px; padding: 12px 4px; }
@@ -496,4 +496,6 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
   button.icon { min-width: 44px; }
   th button.sort { min-height: 44px; }  /* `all: unset` on the header button would drop the 44pt target */
   .seg button { min-height: 40px; }  /* + the 2px track padding = 44 */
+  .slider input[type="range"], .volume input, .switch, .facet, details summary { min-height: 44px; }
+  .star { min-width: 44px; min-height: 44px; }
 }

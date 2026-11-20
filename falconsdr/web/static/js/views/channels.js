@@ -50,7 +50,9 @@ export function channelsView(root) {
   mount(root, page);
   const renderTabs = () => mount(tabsBox, tabs([['memory', t('Memory List'), S.settings.channels.length], ['blacklist', t('Blacklist'), S.settings.blacklist.length]], tab,
     (v) => { tab = v; sel.clear(); render(); }));
-  const collapsed = new Set(JSON.parse(localStorage.getItem('collapsedFolders') || '[]'));
+  let savedCollapsed = [];
+  try { savedCollapsed = JSON.parse(localStorage.getItem('collapsedFolders') || '[]'); } catch { savedCollapsed = []; }
+  const collapsed = new Set(Array.isArray(savedCollapsed) ? savedCollapsed : []);
   let query = '';
 
   // Row selection like Recordings: click, Ctrl/⌘+click, Shift+click; Delete

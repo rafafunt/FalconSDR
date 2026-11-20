@@ -32,7 +32,7 @@ export function notifyCard(box) {
   let state = { enabled: false, channels: [], rules: [], recent: [] };
   let metrics = [];
   let timer = null;
-  let saving = null;
+  let dead = false;
   const recentBox = h('div.col', { style: { gap: '4px' } });
 
   // A channel that is still being filled in is kept here and not sent (the server refuses an incomplete one).
@@ -40,21 +40,20 @@ export function notifyCard(box) {
   const ready = (c) => c.id || REQUIRED[c.type].every((k) => String(c.settings[k] || '').trim());
 
   async function save(rerender = false) {
-    clearTimeout(saving);
     const drafts = state.channels.filter((c) => !ready(c));
     try {
       const r = await api.post('/api/notify/save', { enabled: state.enabled, channels: state.channels.filter(ready), rules: state.rules });
       state = { ...r, channels: [...r.channels, ...drafts], recent: state.recent };
     } catch (e) { errorToast(e); return; }
-    if (rerender) render();
+    if (rerender && !dead) render();
   }
 
   // -- channels ---------------------------------------------------------------------------------------------
   function channelCard(c) {
     const fields = FIELDS[c.type].map(([key, label, ph, type]) => h('label.field', t(label),
       h('input', { type, value: c.settings[key] ?? '', placeholder: ph, autocomplete: 'off',
-        onchange: (e) => { c.settings[key] = type === 'number' ? +e.target.value : e.target.value; save(true); } })));
-    const extras = c.type === 'mqtt' ? [h('label.switch', h('input', { type: 'checkbox', checked: !!c.settings.tls, onchange: (e) => { c.settings.tls = e.target.checked; save(true); } }), h('span.label', t('Encrypted connection (TLS)')))] : [];
+        onchange: (e) => { const hadId = !!c.id; c.settings[key] = type === 'number' ? +e.target.value : e.target.value; save(!hadId && ready(c)); } })));
+    const extras = c.type === 'mqtt' ? [h('label.switch', h('input', { type: 'checkbox', checked: !!c.settings.tls, onchange: (e) => { c.settings.tls = e.target.checked; save(false); } }), h('span.label', t('Encrypted connection (TLS)')))] : [];
     const testBtn = h('button', { onclick: async () => {
       testBtn.disabled = true;
       try {
@@ -64,9 +63,9 @@ export function notifyCard(box) {
       testBtn.disabled = false;
     } }, t('Send a test'));
     return h('div.notify-box',
-      h('div.row.wrap', h('input', { value: c.name, style: { flex: '1 1 160px' }, 'aria-label': t('Name'), onchange: (e) => { c.name = e.target.value; save(true); } }),
+      h('div.row.wrap', h('input', { value: c.name, style: { flex: '1 1 160px' }, 'aria-label': t('Name'), onchange: (e) => { c.name = e.target.value; save(false); } }),
         h('span.chip', CHANNEL_TYPES().find(([v]) => v === c.type)[1]), h('span.spacer'),
-        toggle(t('On'), c.enabled, (v) => { c.enabled = v; save(true); }),
+        toggle(t('On'), c.enabled, (v) => { c.enabled = v; save(false); }),
         testBtn, h('button.ghost.danger', { onclick: () => { state.channels = state.channels.filter((x) => x !== c); state.rules.forEach((r) => { r.channels = r.channels.filter((id) => id !== c.id); }); save(true); } }, t('Remove'))),
       h('div.grid.two', ...fields), ...extras);
   }
@@ -85,7 +84,7 @@ export function notifyCard(box) {
     const what = {
       message: () => [r.addons.length ? r.addons.map((a) => (ADDONS().find(([v]) => v === a) || [0, a])[1]).join(', ') : t('any add-on'),
         r.text_any && t('containing {words}', { words: r.text_any }), r.who && t('about {who}', { who: r.who }), r.label && t('label {label}', { label: r.label }),
-        r.freq_mhz && `${r.freq_mhz} MHz`, r.metric && `${(metrics.find((m) => m.key === r.metric) || { label: r.metric }).label} ${r.op} ${r.value}`,
+        r.freq_mhz && `${r.freq_mhz} MHz`, r.metric && `${t((metrics.find((m) => m.key === r.metric) || { label: r.metric }).label)} ${r.op} ${r.value}`,
         r.within_km && t('within {km} km', { km: r.within_km })].filter(Boolean).join(' · '),
       recording: () => r.freq_mhz ? t('a recording on {f} MHz', { f: r.freq_mhz }) : t('any recording'),
       transcript: () => [r.freq_mhz && `${r.freq_mhz} MHz`, r.text_any && t('containing {words}', { words: r.text_any })].filter(Boolean).join(' · ') || t('any transcript'),
@@ -95,9 +94,10 @@ export function notifyCard(box) {
   }
 
   function ruleCard(r) {
-    const set = (key, value, rerender = false) => { r[key] = value; save(rerender); };
-    const text = (key, label, ph = '', width = '220px') => h('label.field', label, h('input', { value: r[key] ?? '', placeholder: ph, style: { width }, onchange: (e) => set(key, e.target.value, true) }));
-    const num = (key, label) => h('label.field', label, h('input', { type: 'number', min: 0, step: 'any', value: r[key] || '', style: { width: '110px' }, onchange: (e) => set(key, +e.target.value || 0, true) }));
+    const summaryEl = h('p.small.muted', { style: { margin: 0 } }, sentence(r));
+    const set = (key, value, rerender = false) => { r[key] = value; summaryEl.textContent = sentence(r); save(rerender); };
+    const text = (key, label, ph = '', width = '220px') => h('label.field', label, h('input', { value: r[key] ?? '', placeholder: ph, style: { width }, onchange: (e) => set(key, e.target.value, false) }));
+    const num = (key, label) => h('label.field', label, h('input', { type: 'number', min: 0, step: 'any', value: r[key] || '', style: { width: '110px' }, onchange: (e) => set(key, +e.target.value || 0, false) }));
     const rows = [];
     if (r.source === 'message') {
       rows.push(h('div.row.wrap', { style: { gap: '6px' } }, h('b', t('From')), ...ADDONS().map(([id, name]) => h('button.small.day', { class: r.addons.includes(id) ? 'on' : '', 'aria-pressed': String(r.addons.includes(id)),
@@ -106,27 +106,27 @@ export function notifyCard(box) {
         text('label', t('ACARS label'), 'H1', '80px'), num('freq_mhz', t('Frequency (MHz)')), num('within_km', t('Within (km)'))));
       rows.push(h('div.row.wrap', { style: { gap: '8px', alignItems: 'center' } }, h('b', t('Sensor reading')),
         select([['', t('(any)')], ...metrics.map((m) => [m.key, `${t(m.label)}${m.unit ? ' (' + m.unit + ')' : ''}`])], r.metric, (v) => set('metric', v, true), { style: { width: 'auto' } }),
-        r.metric ? select([['<', t('below')], ['>', t('above')]], r.op, (v) => set('op', v, true), { style: { width: 'auto' } }) : null,
-        r.metric ? h('input', { type: 'number', step: 'any', value: r.value, style: { width: '110px' }, onchange: (e) => set('value', +e.target.value, true) }) : null));
+        r.metric ? select([['<', t('below')], ['>', t('above')]], r.op, (v) => set('op', v, false), { style: { width: 'auto' } }) : null,
+        r.metric ? h('input', { type: 'number', step: 'any', value: r.value, style: { width: '110px' }, onchange: (e) => set('value', +e.target.value, false) }) : null));
     } else if (r.source === 'recording') {
       rows.push(h('div.row.wrap', { style: { gap: '12px', alignItems: 'end' } }, num('freq_mhz', t('Frequency (MHz)')), h('span.faint.small', t('0 = any frequency'))));
     } else if (r.source === 'transcript') {
       rows.push(h('div.row.wrap', { style: { gap: '12px', alignItems: 'end' } }, text('text_any', t('Contains any of'), 'mayday, pan pan'), num('freq_mhz', t('Frequency (MHz)'))));
     } else {
-      rows.push(h('div.row.wrap', h('b', t('Event')), select([['receiver_lost', t('A receiver loses its connection')], ['addon_failed', t('An add-on stops by itself')]], r.event, (v) => set('event', v, true), { style: { width: 'auto' } })));
+      rows.push(h('div.row.wrap', h('b', t('Event')), select([['receiver_lost', t('A receiver loses its connection')], ['addon_failed', t('An add-on stops by itself')]], r.event, (v) => set('event', v, false), { style: { width: 'auto' } })));
     }
     rows.push(h('div.row.wrap', { style: { gap: '10px' } }, h('b', t('Send to')),
       ...(state.channels.length ? state.channels.map((c) => h('label.switch', h('input', { type: 'checkbox', checked: r.channels.includes(c.id), disabled: !c.id,
-        onchange: (e) => set('channels', e.target.checked ? [...r.channels, c.id] : r.channels.filter((x) => x !== c.id), true) }), h('span.label', c.name))) : [h('span.faint.small', t('no channel yet'))]),
+        onchange: (e) => set('channels', e.target.checked ? [...r.channels, c.id] : r.channels.filter((x) => x !== c.id), false) }), h('span.label', c.name))) : [h('span.faint.small', t('no channel yet'))]),
       h('span.faint.small', t('It always appears in the app as well.'))));
-    rows.push(h('div.row.wrap', h('b', t('At most once per')), select(COOLDOWNS(), String(r.cooldown_s), (v) => set('cooldown_s', +v, true), { style: { width: 'auto' } }),
+    rows.push(h('div.row.wrap', h('b', t('At most once per')), select(COOLDOWNS(), String(r.cooldown_s), (v) => set('cooldown_s', +v, false), { style: { width: 'auto' } }),
       h('span.faint.small', t('for the same aircraft, station, device or frequency; more matches in that time are counted in the next notice'))));
     return h('div.notify-box',
-      h('div.row.wrap', h('input', { value: r.name, style: { flex: '1 1 200px' }, 'aria-label': t('Name'), onchange: (e) => set('name', e.target.value, true) }),
+      h('div.row.wrap', h('input', { value: r.name, style: { flex: '1 1 200px' }, 'aria-label': t('Name'), onchange: (e) => set('name', e.target.value, false) }),
         select(SOURCES(), r.source, (v) => set('source', v, true), { style: { width: 'auto' } }), h('span.spacer'),
-        toggle(t('On'), r.enabled, (v) => set('enabled', v, true)),
+        toggle(t('On'), r.enabled, (v) => set('enabled', v, false)),
         h('button.ghost.danger', { onclick: () => { state.rules = state.rules.filter((x) => x !== r); save(true); } }, t('Remove'))),
-      ...rows, h('p.small.muted', { style: { margin: 0 } }, sentence(r)));
+      ...rows, summaryEl);
   }
 
   function addRule(index) {
@@ -169,13 +169,14 @@ export function notifyCard(box) {
       if (first) {
         first = false;
         metrics = (await api.get('/api/addons/metrics')).metrics;
+        if (dead) return;
         state = r;
         render();
-      } else { state.recent = r.recent; renderRecent(); }       // the settings change only here: just the list of recent notices moves
+      } else if (!dead) { state.recent = r.recent; renderRecent(); }       // the settings change only here: just the list of recent notices moves
     } catch { /* the next poll tries again */ }
   }
 
   load();
   timer = setInterval(load, 5000);
-  return () => clearInterval(timer);
+  return () => { dead = true; clearInterval(timer); };
 }

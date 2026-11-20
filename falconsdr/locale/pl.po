@@ -624,23 +624,11 @@ msgstr "Powrót do tego okna: {seconds:.2f}s temu"
 msgid "Channel"
 msgstr "Kanał"
 
-msgid "Frequency:"
-msgstr "Częstotliwość:"
-
-msgid "Name:"
-msgstr "Nazwa:"
-
 msgid "Modulation:"
 msgstr "Modulacja:"
 
 msgid "Folder in the Memory List (for organizing/bulk enable-disable).\nPick an existing one or type a new name to create it right away."
 msgstr "Folder w Liście pamięci (do organizacji/grupowego włączania-wyłączania).\nWybierz istniejący albo wpisz nową nazwę, żeby go od razu utworzyć."
-
-msgid "(no folder)"
-msgstr "(brak folderu)"
-
-msgid "Folder:"
-msgstr "Folder:"
 
 msgid "Scan priority weight (0 = default, no special treatment). You can\nalso set/preview it more conveniently in the Scanner tab, in the\nexpandable Memory List next to each channel."
 msgstr "Waga priorytetu skanowania (0 = domyślna, bez wyróżnienia). Można ją\nteż ustawić/podejrzeć wygodniej w zakładce Skaner, w rozwijanej\nLiście pamięci obok każdego kanału."
@@ -663,17 +651,11 @@ msgstr "Szukaj (częstotliwość, nazwa, modulacja, folder)... [Ctrl+F]"
 msgid "Enabled"
 msgstr "Włączony"
 
-msgid "Add"
-msgstr "Dodaj"
-
 msgid "Edit"
 msgstr "Edytuj"
 
 msgid "Edit the selected channel, or rename the selected folder."
 msgstr "Edytuj zaznaczony kanał, albo zmień nazwę zaznaczonego folderu."
-
-msgid "Delete"
-msgstr "Usuń"
 
 msgid "New folder"
 msgstr "Nowy folder"
@@ -755,9 +737,6 @@ msgstr "Sortuj: język"
 
 msgid "Search languages..."
 msgstr "Szukaj języka..."
-
-msgid "All"
-msgstr "Wszystkie"
 
 msgid "★ Favorites"
 msgstr "★ Ulubione"
@@ -861,9 +840,6 @@ msgstr "Data"
 msgid "Time"
 msgstr "Godzina"
 
-msgid "Frequency"
-msgstr "Częstotliwość"
-
 msgid "Duration"
 msgstr "Czas trwania"
 
@@ -875,9 +851,6 @@ msgstr "Jakość"
 
 msgid "Size"
 msgstr "Rozmiar"
-
-msgid "Transcript"
-msgstr "Transkrypcja"
 
 msgid "⏳ queued"
 msgstr "⏳ w kolejce"
@@ -3890,3 +3863,12 @@ msgstr "Ten odbiornik jest już używany przez dodatkowy dongiel."
 
 msgid "This receiver is already used above - it can only be opened once."
 msgstr "Ten odbiornik jest już użyty wyżej - można go otworzyć tylko raz."
+
+msgid "no limit"
+msgstr "bez limitu"
+
+msgid "Changing a program's path or options needs an access password (Settings) or this computer."
+msgstr "Zmiana ścieżki programu lub opcji wymaga hasła dostępu (Ustawienia) albo tego komputera."
+
+msgid "Installation is in progress - wait for it to finish."
+msgstr "Trwa instalacja - poczekaj, aż się zakończy."

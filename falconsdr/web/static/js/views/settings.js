@@ -3,7 +3,7 @@
 import {
   api, confirmDialog, errorToast, fmtAgo, fmtBytes, fmtDate, fmtDuration, fmtMHz, formDialog, h, icon, lang, modal, mount, qs, select, t, toast, toggle,
 } from '../core.js';
-import { S, cfg, confirmRecording, loadSettings, on, patchConfig } from '../state.js';
+import { S, cfg, confirmRecording, loadSettings, on, patchConfig, patchConfigNow } from '../state.js';
 import { decodersCard } from './addons.js';
 import { notifyCard } from './notify.js';
 import { modLabel, modOptions } from './bands.js';
@@ -28,6 +28,10 @@ const SECTIONS = [
 ];
 
 function setting(title, desc, control) {
+  if (control && control.querySelector) {
+    const field = control.matches('input, select') ? control : control.querySelector('input, select');
+    if (field && !field.getAttribute('aria-label')) field.setAttribute('aria-label', title);
+  }
   return h('div.setting', h('div', h('b', title), desc ? h('p', desc) : null), control);
 }
 
@@ -79,6 +83,7 @@ export function settingsView(root, hash, scope = 'settings') {
   }
   const offs = [];
   const timers = [];
+  let dead = false;
   const cards = {};
   const visible = (scope === 'addons' ? ADDON_SECTIONS : SECTIONS).filter(([k]) => k !== 'connect' || S.settings.mode === 'local');
   const nav = h('nav', visible.map(([k, label]) => h('a', { href: `#/${scope}/${k}`, onclick: (e) => { e.preventDefault(); cards[k].scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, label())));
@@ -147,18 +152,20 @@ export function settingsView(root, hash, scope = 'settings') {
         h('button.danger', {
           onclick: async () => {
             if (!(await confirmDialog(t('Clean up now'), t('Delete {n} recordings now?', { n: s.retention_pending.toLocaleString() }), t('Delete'), true))) return;
-            const res = await api.post('/api/library/retention');
-            toast(t('Deleted {n}', { n: res.deleted }), 'good');
-            renderStorage();
+            try {
+              const res = await api.post('/api/library/retention');
+              toast(t('Deleted {n}', { n: res.deleted }), 'good');
+              renderStorage();
+            } catch (e) { errorToast(e); }
           },
         }, t('Clean up now')))
       : h('span.faint.small', r.retention_days || r.retention_max_gb ? t('Nothing to clean up right now.') : t('Automatic clean-up is off - recordings are kept forever.')));
-    const refresh = async () => { try { drawPreview(await api.get('/api/library/storage')); } catch { /* ignore */ } };
-    const later = () => setTimeout(refresh, 600);
+    const refresh = async () => { try { const next = await api.get('/api/library/storage'); if (!dead) drawPreview(next); } catch { /* ignore */ } };
+    const saveAndRefresh = async (patch) => { await patchConfigNow(patch); if (!dead) await refresh(); };
     drawPreview(st);
     mount(body('storage'),
       h('div.col', { style: { gap: '6px' } },
-        h('div.usage', h('span', { style: { width: `${rec * 100}%`, background: 'var(--accent)' } }), h('span', { style: { width: `${Math.max(0, used - rec) * 100}%`, background: 'var(--line-2)' } })),
+        h('div.usage', h('span', { style: { width: `${rec * 100}%`, background: 'var(--accent)' } }), h('span', { style: { width: `${Math.max(0, used - rec) * 100}%`, background: 'var(--fill-strong)' } })),
         h('div.row.wrap.small.muted',
           h('span', h('b', { style: { color: 'var(--accent)' } }, '■ '), t('Recordings: {size}', { size: fmtBytes(st.bytes) })),
           h('span', t('Free: {size} of {total}', { size: fmtBytes(st.free), total: fmtBytes(st.total) })),
@@ -169,12 +176,12 @@ export function settingsView(root, hash, scope = 'settings') {
       h('div.divider'),
       h('h3', t('Automatic clean-up')),
       setting(t('Delete recordings older than'), t('Days. 0 = never.'),
-        h('div.row', numberInput(r.retention_days, (v) => { patchConfig({ recording: { retention_days: Math.max(0, Math.round(v)) } }); later(); }, { min: 0 }), h('span.muted', t('days')))),
+        h('div.row', numberInput(r.retention_days, (v) => saveAndRefresh({ recording: { retention_days: Math.max(0, Math.round(v)) } }), { min: 0 }), h('span.muted', t('days')))),
       setting(t('Keep the library under'), t('When it grows bigger, the oldest recordings go first. 0 = no limit.'),
-        h('div.row', numberInput(r.retention_max_gb, (v) => { patchConfig({ recording: { retention_max_gb: Math.max(0, v) } }); later(); }, { min: 0 }), h('span.muted', 'GB'))),
-      setting(t('Never delete favorites'), '', toggle('', r.retention_keep_favorites, (v) => { patchConfig({ recording: { retention_keep_favorites: v } }); later(); })),
+        h('div.row', numberInput(r.retention_max_gb, (v) => saveAndRefresh({ recording: { retention_max_gb: Math.max(0, v) } }), { min: 0 }), h('span.muted', 'GB'))),
+      setting(t('Never delete favorites'), '', toggle('', r.retention_keep_favorites, (v) => saveAndRefresh({ recording: { retention_keep_favorites: v } }))),
       setting(t('Only delete what another computer has copied'), t('Safe mode for hybrid setups: a recording is only removed from here once a connected computer holds a verified copy.'),
-        toggle('', r.retention_require_mirrored, (v) => { patchConfig({ recording: { retention_require_mirrored: v } }); later(); })),
+        toggle('', r.retention_require_mirrored, (v) => saveAndRefresh({ recording: { retention_require_mirrored: v } }))),
       preview,
       h('p.faint.small', { style: { margin: 0 } }, t('Clean-up runs every 10 minutes. You can also delete any selection by hand on the Recordings page.')));
   }
@@ -262,7 +269,7 @@ export function settingsView(root, hash, scope = 'settings') {
     // What is going on right now, for the operations that take a while.
     const forS = info.status_for_s ? ` (${fmtDuration(info.status_for_s)})` : '';
     const progress = wt && !BUSY.includes(info.status)
-      ? h('div.small', { style: { color: Date.now() - wt.since > 40000 ? 'var(--warn)' : 'var(--secondary)' } },
+      ? h('div.small', { style: { color: Date.now() - wt.since > 40000 ? 'var(--orange)' : 'var(--secondary)' } },
         Date.now() - wt.since > 40000
           ? t('{name} hasn\'t answered yet ({s}) - is FalconSDR running there and connected?', { name: w.name, s: fmtDuration((Date.now() - wt.since) / 1000) })
           : t('Sent to {name} - waiting for it to pick the command up (a few seconds)…', { name: w.name }))
@@ -288,12 +295,12 @@ export function settingsView(root, hash, scope = 'settings') {
         h('span.chip', { class: (w.online ? 'good' : '') + (w.online && busy ? ' live' : '') }, h('span.dot'), w.online ? (wt && !BUSY.includes(info.status) ? t('command sent…') : status) : t('offline')),
         info.gpu ? h('span.chip.accent', info.gpu) : null,
         h('span.spacer'),
-        !w.online && !info.embedded ? h('button.ghost.small', { onclick: () => api.post('/api/workers/forget', { name: w.name }).then(loadWorkers) }, t('Forget')) : null),
+        !w.online && !info.embedded ? h('button.ghost.small', { onclick: () => api.post('/api/workers/forget', { name: w.name }).then(loadWorkers).catch(errorToast) }, t('Forget')) : null),
       info.last_seen && !w.online ? h('span.faint.small', t('Last seen {ago}', { ago: fmtAgo(new Date(info.last_seen * 1000).toISOString()) })) : null,
       progress,
-      setting(t('Transcribe here'), info.removal_pending ? h('span', { style: { color: 'var(--warn)' } }, t('Transcription is uninstalled - restart FalconSDR on this computer to remove its files.'))
+      setting(t('Transcribe here'), info.removal_pending ? h('span', { style: { color: 'var(--orange)' } }, t('Transcription is uninstalled - restart FalconSDR on this computer to remove its files.'))
         : info.installed === false ?t('Whisper isn\'t installed on this computer yet.')
-        : s.transcribe && !cfg().transcription.enabled ? h('span', { style: { color: 'var(--warn)' } }, t('Automatic transcription is off above - this computer only gets recordings you queue by hand.'))
+        : s.transcribe && !cfg().transcription.enabled ? h('span', { style: { color: 'var(--orange)' } }, t('Automatic transcription is off above - this computer only gets recordings you queue by hand.'))
           : (s.transcribe && pending ? t('{n} recordings waiting', { n: pending.toLocaleString() }) : ''),
         h('div.row.wrap',
           info.removal_pending && w.online ? h('button.primary', { disabled: busy, onclick: () => command('restart') }, icon('refresh'), t('Restart now')) : null,
@@ -328,6 +335,7 @@ export function settingsView(root, hash, scope = 'settings') {
   async function renderDigital() {
     let st;
     try { st = await api.get('/api/digital'); } catch (e) { errorToast(e); return; }
+    if (dead) return;
     const windows = S.settings.capabilities.platform === 'win32';
     const install = async () => {
       // Shown once, here, at the moment of choosing it - not as a banner elsewhere.
@@ -345,12 +353,13 @@ export function settingsView(root, hash, scope = 'settings') {
     const uninstall = async () => {
       if (!(await confirmDialog(t('Uninstall digital voice'), t('Removes the dsd-fme decoder. DMR and C4FM channels then play as plain NFM.'), t('Uninstall'), true))) return;
       try { await api.post('/api/digital/uninstall'); } catch (e) { errorToast(e); return; }
-      await loadSettings(); renderDigital();
+      await loadSettings(); if (!dead) renderDigital();
     };
     clearTimeout(digitalPoll);
-    if (st.running) digitalPoll = setTimeout(renderDigital, 1500);
+    if (st.running) { if (!dead) digitalPoll = setTimeout(renderDigital, 1500); }
     else if (st.installed !== S.settings.capabilities.digital) {
       await loadSettings();  // the modulation pickers follow
+      if (dead) return;
       if (st.installed) toast(t('Digital voice installed - pick DMR or C4FM as a band\'s or channel\'s modulation.'), 'good');
     }
     mount(body('digital'),
@@ -400,19 +409,23 @@ export function settingsView(root, hash, scope = 'settings') {
         h('button.primary', {
           onclick: async () => {
             if (!pass.value.trim()) return;
-            await api.post('/api/access', { token: pass.value.trim() });
-            toast(t('Password set. Helper computers need it too - reconnect them.'), 'good');
-            await loadSettings(); renderAccess();
+            try {
+              await api.post('/api/access', { token: pass.value.trim() });
+              toast(t('Password set. Helper computers need it too - reconnect them.'), 'good');
+              await loadSettings(); renderAccess();
+            } catch (e) { errorToast(e); }
           },
         }, S.settings.password_set ? t('Change password') : t('Set password')),
         S.settings.password_set ? h('button.ghost', {
           onclick: async () => {
             if (!(await confirmDialog(t('Remove password'), t('Anyone on the network will be able to use the receiver again.'), t('Remove'), true))) return;
-            await api.post('/api/access', { token: '' });
-            await loadSettings(); renderAccess();
+            try {
+              await api.post('/api/access', { token: '' });
+              await loadSettings(); renderAccess();
+            } catch (e) { errorToast(e); }
           },
         }, t('Remove password')) : null,
-        S.settings.password_set ? h('button.ghost', { onclick: async () => { await api.post('/api/logout'); location.reload(); } }, icon('logout'), t('Log out')) : null));
+        S.settings.password_set ? h('button.ghost', { onclick: async () => { try { await api.post('/api/logout'); location.reload(); } catch (e) { errorToast(e); } } }, icon('logout'), t('Log out')) : null));
   }
 
   // ---------------------------------------------------------- location
@@ -476,7 +489,9 @@ export function settingsView(root, hash, scope = 'settings') {
           h('button.icon.ghost', {
             title: t('Delete'), onclick: async () => {
               if (!(await confirmDialog(t('Delete preset'), t('Delete preset “{label}”?', { label: t(p.label) }), t('Delete'), true))) return;
-              await api.post('/api/presets/delete', { id: p.id }); await loadSettings(); renderPresets();
+              try {
+                await api.post('/api/presets/delete', { id: p.id }); await loadSettings(); renderPresets();
+              } catch (e) { errorToast(e); }
             },
           }, icon('trash'))))))))),
       h('div.row.wrap',
@@ -490,9 +505,9 @@ export function settingsView(root, hash, scope = 'settings') {
   function renderAppearance() {
     mount(body('appearance'),
       setting(t('Language'), t('“Automatic” follows each browser\'s language.'),
-        select([['auto', t('Automatic')], ...S.settings.languages.map((l) => [l.code, l.name])], cfg().language, (v) => {
-          patchConfig({ language: v });
-          setTimeout(() => location.reload(), 600);
+        select([['auto', t('Automatic')], ...S.settings.languages.map((l) => [l.code, l.name])], cfg().language, async (v) => {
+          await patchConfigNow({ language: v });
+          location.reload();
         })),
       setting(t('Start listening when the scanner starts'), t('Stored in this browser.'),
         toggle('', localStorage.getItem('autolisten') !== '0', (v) => localStorage.setItem('autolisten', v ? '1' : '0'))));
@@ -502,17 +517,19 @@ export function settingsView(root, hash, scope = 'settings') {
   function renderAdvanced() {
     mount(body('advanced'),
       setting(t('Debug mode'), t('Adds a “Simulation (no hardware)” device for testing without a receiver.'),
-        toggle('', cfg().debug_mode, async (v) => { patchConfig({ debug_mode: v }); setTimeout(loadSettings, 700); })),
+        toggle('', cfg().debug_mode, async (v) => { await patchConfigNow({ debug_mode: v }); if (!dead) await loadSettings(); })),
       setting(t('Continuous RTL-SDR reading'), t('While the scanner stays on a frequency, an RTL-SDR read through librtlsdr (Windows, macOS and the receiver) is read as a continuous stream, which removes the buzz caused by lost samples. If it crashes the driver on your receiver, FalconSDR switches it off by itself and says so in the Activity list; the buzz may come back. Takes effect the next time scanning starts.'),
         toggle('', cfg().device.async_read, (v) => patchConfig({ device: { async_read: v } }))),
       setting(t('Reset to defaults'), t('Settings, Memory List, blacklist and custom presets back to a fresh install. Recordings, the password and connected computers are kept.'),
         h('button.danger', {
           onclick: async () => {
             if (!(await confirmDialog(t('Reset to defaults'), t('Reset all settings, the Memory List and the blacklist?'), t('Reset'), true))) return;
-            await api.post('/api/reset');
-            await loadSettings();
-            toast(t('Done'), 'good');
-            renderAll();
+            try {
+              await api.post('/api/reset');
+              await loadSettings();
+              toast(t('Done'), 'good');
+              if (!dead) renderAll();
+            } catch (e) { errorToast(e); }
           },
         }, t('Reset…'))),
       S.settings.mode === 'local' && S.settings.capabilities.autostart !== null ? setting(t('Start with the system'), t('Starts FalconSDR in the background when you log in to this computer, without opening the browser.'),
@@ -526,8 +543,10 @@ export function settingsView(root, hash, scope = 'settings') {
         h('button', {
           onclick: async () => {
             if (!(await confirmDialog(t('Quit FalconSDR'), t('Stop scanning and close the program?'), t('Quit'), true))) return;
-            await api.post('/api/quit');
-            document.body.replaceChildren(h('div.center-page', h('div.card.login', h('h2', 'FalconSDR'), h('p.muted', t('Closed. You can close this tab.')))));
+            try {
+              await api.post('/api/quit');
+              document.body.replaceChildren(h('div.center-page', h('div.card.login', h('h2', 'FalconSDR'), h('p.muted', t('Closed. You can close this tab.')))));
+            } catch (e) { errorToast(e); }
           },
         }, icon('logout'), t('Quit'))) : null,
       h('p.faint.small', { style: { margin: 0 } }, `FalconSDR ${S.settings.version} · ${S.settings.mode} · ${lang}`));
@@ -577,5 +596,5 @@ export function settingsView(root, hash, scope = 'settings') {
     const timeout = setTimeout(stop, 4000);
     stopFollowing = () => { clearTimeout(timeout); stop(); };
   }
-  return { destroy() { timers.forEach(clearInterval); clearTimeout(digitalPoll); offs.forEach((f) => f()); if (stopDecoders) stopDecoders(); if (stopNotify) stopNotify(); stopFollowing(); } };
+  return { destroy() { dead = true; timers.forEach(clearInterval); clearTimeout(digitalPoll); offs.forEach((f) => f()); if (stopDecoders) stopDecoders(); if (stopNotify) stopNotify(); stopFollowing(); } };
 }

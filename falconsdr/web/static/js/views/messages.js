@@ -158,7 +158,7 @@ export function messagesView(root) {
 
   const pick = (who) => { query = who.toLowerCase(); search.value = who; draw(); };
   const handed = sessionStorage.getItem('msgQuery');       // from the statistics: "show me this aircraft"
-  if (handed) { sessionStorage.removeItem('msgQuery'); range = 0; query = handed.toLowerCase(); search.value = handed; }
+  if (handed) { sessionStorage.removeItem('msgQuery'); range = 0; rangeSel.value = '0'; query = handed.toLowerCase(); search.value = handed; }
 
   // -- what is shown ---------------------------------------------------------------------------------------
   function selected() {
@@ -211,7 +211,9 @@ export function messagesView(root) {
       const main = readings.find((r) => r.key === e.primary) || readings[0];
       const rest = readings.filter((r) => r !== main).slice(0, 4);
       const id = `s${e.model}${e.device_id}${e.channel}`;
-      return h('div.sensor', { tabindex: 0, role: 'button', onclick: () => { if (open.has(id)) open.delete(id); else open.add(id); draw(); } },
+      const toggleSensor = () => { if (open.has(id)) open.delete(id); else open.add(id); draw(); };
+      return h('div.sensor', { tabindex: 0, role: 'button', onclick: toggleSensor,
+        onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggleSensor(); } } },
         h('div.row', h('b', deviceName(e)), h('span.spacer'), batteryChip(e)),
         h('div.faint.small', CATEGORY()[e.category || 'other'] || ''),
         main ? h('div.big', `${isPlain(main) ? '' : t(main.label) + ' '}${readingText(main)}`) : h('div.row.wrap', { style: { gap: '4px', minHeight: '34px' } }, ...(e.status || []).map(statusChip)),

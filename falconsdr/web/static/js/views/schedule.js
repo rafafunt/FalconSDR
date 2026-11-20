@@ -98,11 +98,14 @@ export function scheduleView(root) {
   }
 
   // -- the timeline: one lane per receiver, the day's entries as blocks ---------------------------------------
+  let lastNowMin = -1;
   function renderTimeline() {
     const entries = sched().entries;
     const n = receiverCount();
     const names = [t('Mon'), t('Tue'), t('Wed'), t('Thu'), t('Fri'), t('Sat'), t('Sun')];
     const dayStart = day * 1440;
+    const now = new Date();
+    lastNowMin = now.getHours() * 60 + now.getMinutes();
     const blocks = [];     // {lane, from, to, entry index}
     entries.forEach((e, i) => {
       const lanes = e.addon ? [e.receivers[0] ?? defaultReceiver(e.addon)] : (e.receivers.length ? e.receivers : [...Array(n).keys()]);
@@ -240,7 +243,7 @@ export function scheduleView(root) {
       h('div.setting',
         h('div', toggle(t('Memory List'), e.memory_list, (v) => { e.memory_list = v; save(); }, { hint: t('{n} enabled channels', { n: channels }) })),
         h('a', { href: '#/channels' }, t('Edit channels →')))];
-    const addonBody = [h('div.row.wrap', h('span.muted', info ? info.summary : ''), h('a', { href: '#/addons', style: { marginLeft: 'auto' } }, t('Add-on settings →')))];
+    const addonBody = [h('div.row.wrap', h('span.muted', info ? t(info.summary) : ''), h('a', { href: '#/addons', style: { marginLeft: 'auto' } }, t('Add-on settings →')))];
 
     return h('section.card', { id: `entry-${i}` },
       h('div.row.wrap',
@@ -270,7 +273,10 @@ export function scheduleView(root) {
     renderStatus();
     const now = JSON.stringify(active());
     if (now !== lastActive) { lastActive = now; renderList(); }
-    if (day === todayIndex()) renderTimeline();          // the line for "now" moves
+    else if (day === todayIndex()) {
+      const d = new Date();
+      if (d.getHours() * 60 + d.getMinutes() !== lastNowMin) renderTimeline();   // the line for "now" moves once a minute
+    }
   }));
   offs.push(on('settings', () => { renderHead(); renderList(); }));
   return { destroy() { offs.forEach((f) => f()); } };

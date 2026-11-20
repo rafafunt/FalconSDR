@@ -352,7 +352,7 @@ export function listenView(root) {
     const missing = (caps.usb_seen || []).filter((f) => !listed.has(f));
     if (!missing.length) return null;
     const name = missing.map((f) => FAMILY_NAMES[f] || f).join(', ');
-    return h('span.small', { style: { color: '#ff9f0a' } }, caps.soapy
+    return h('span.small', { style: { color: 'var(--orange)' } }, caps.soapy
       ? t('{name} is plugged in but not listed. Install its SoapySDR module (e.g. soapysdr-module-hackrf), allow USB access (udev rules or the plugdev group), then reload this page.', { name })
       : t('{name} is plugged in, but SoapySDR is not available to FalconSDR (the Python module python3-soapysdr is not visible to it). Install python3-soapysdr and soapysdr-module-<your receiver>, then reinstall with install.sh --from-source, or install libhackrf0 / libairspy0 for the experimental native access.', { name }));
   }
@@ -438,7 +438,7 @@ export function listenView(root) {
       return h('div.col', { style: { gap: '6px' } }, h('label.field', t('Dongle {n}', { n: i + 2 }), h('div.row', s, del)),
         xMethod ? h('label.field', t('Access method'), xMethod) : null,
         xAddr ? h('label.field', t('rtl_tcp address'), xAddr) : null,
-        twice ? h('span.small', { style: { color: '#ff9f0a' } }, t('This receiver is already used above - it can only be opened once.')) : null,
+        twice ? h('span.small', { style: { color: 'var(--orange)' } }, t('This receiver is already used above - it can only be opened once.')) : null,
         h('label.field', t('Capture width (MHz)'), xWidth), xBias, xRange);
     });
     const add = h('button.ghost.small', {

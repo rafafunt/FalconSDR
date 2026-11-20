@@ -192,9 +192,17 @@ export function tabs(options, value, onchange) {
 export function seg(options, value, onchange) {
   const wrap = h('div.seg');
   for (const [v, label] of options) {
+    const active = String(v) === String(value);
     wrap.append(h('button', {
-      class: String(v) === String(value) ? 'active' : '',
-      onclick: () => { [...wrap.children].forEach((b) => b.classList.remove('active')); btn(v).classList.add('active'); onchange(v); },
+      class: active ? 'active' : '',
+      'aria-pressed': String(active),
+      onclick: () => {
+        [...wrap.children].forEach((b) => { b.classList.remove('active'); b.setAttribute('aria-pressed', 'false'); });
+        const cur = btn(v);
+        cur.classList.add('active');
+        cur.setAttribute('aria-pressed', 'true');
+        onchange(v);
+      },
       'data-v': v,
     }, label));
   }

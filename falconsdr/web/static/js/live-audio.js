@@ -78,7 +78,7 @@ export const liveAudio = {
     this.onchange();
   },
 
-  toggle() { return this.playing ? this.stop() : this.start(); },
+  async toggle() { return this.playing ? this.stop() : this.start(); },
 
   setVolume(v) {
     this.volume = v;
@@ -109,6 +109,7 @@ export const liveAudio = {
         if (rest) { const m = new Uint8Array(rest.length + u.length); m.set(rest); m.set(u, rest.length); u = m; rest = null; }
         if (u.length % 2) { rest = u.slice(-1); u = u.slice(0, -1); }
         if (!u.length) continue;
+        if (u.byteOffset % 2) u = u.slice();
         const i16 = new Int16Array(u.buffer, u.byteOffset, u.length / 2);
         const f = new Float32Array(i16.length);
         for (let i = 0; i < f.length; i++) f[i] = i16[i] / 32768;

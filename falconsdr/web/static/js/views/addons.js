@@ -2,7 +2,7 @@
 // and rtl_433 / VDL2 (external programs that take the receiver for themselves). Transcription and digital
 // voice live on the same page (settings.js, scope 'addons').
 import { api, errorToast, h, icon, select, t, toast, toggle } from '../core.js';
-import { S, cfg, loadSettings, patchConfig } from '../state.js';
+import { S, cfg, loadSettings, patchConfigNow } from '../state.js';
 import { newBand } from './bands.js';
 
 const mhz = (hz) => (hz / 1e6).toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
@@ -18,16 +18,24 @@ function addToScan(a) {
   const f = [...a.frequencies].sort((x, y) => x - y);
   const step = f.length > 1 ? f.slice(1).reduce((g, v, i) => gcd(g, v - f[i]), 0) : 12500;
   const band = newBand({ start_hz: f[0], stop_hz: f[f.length - 1], step_hz: step, modulation: a.id === 'acars' ? 'AM' : 'NFM', label: a.name });
-  return patchConfig({ bands: [...cfg().bands, band] });
+  return patchConfigNow({ bands: [...cfg().bands, band] });
 }
 
 const devName = (d) => {
   const args = String(d.device_args || '');
   return (args.match(/label=([^,]+)/) || args.match(/serial=([^,]+)/) || [])[1] || d.driver || '';
 };
-export const receiverName = (i) => (i === 0 ? t('Receiver 1 (main)') : `${t('Receiver {n}', { n: i + 1 })} (${devName(cfg().device.extra_devices[i - 1])})`);
+export const receiverName = (i) => {
+  if (i === 0) return t('Receiver 1 (main)');
+  const extra = (cfg().device.extra_devices || [])[i - 1];
+  return extra ? `${t('Receiver {n}', { n: i + 1 })} (${devName(extra)})` : t('Receiver {n}', { n: i + 1 });
+};
 
 function setting(title, desc, control) {
+  if (control && control.querySelector) {
+    const field = control.matches('input, select') ? control : control.querySelector('input, select');
+    if (field && !field.getAttribute('aria-label')) field.setAttribute('aria-label', title);
+  }
   return h('div.setting', h('div', h('b', title), desc ? h('p', desc) : null), control);
 }
 
@@ -36,6 +44,7 @@ export function decodersCard(box) {
   let busy = false;
   let starting = '';   // the add-on being started: stopping the scanner and waiting for the receiver takes seconds
   let timer = null;
+  let dead = false;
 
   async function act(path, body) {
     busy = true;
@@ -51,11 +60,12 @@ export function decodersCard(box) {
     } catch (e) { errorToast(e); }
     busy = false;
     starting = '';
-    render();
+    if (!dead) render();
   }
 
   async function load() {
     try { rows = (await api.get('/api/addons')).addons; } catch { return; }
+    if (dead) return;
     const a = document.activeElement;
     const editing = box.contains(a) && ['INPUT', 'SELECT', 'SUMMARY'].includes(a.tagName);   // a refresh would wipe what is being typed
     if (!busy && !editing) render();
@@ -171,8 +181,8 @@ export function decodersCard(box) {
     const parts = [
       h('div.row.wrap.addon-head', h('b.addon-name', a.name), ...status, h('span.spacer'),
         external ? null : toggle(a.enabled ? t('On') : t('Off'), a.enabled, (v) => act('/api/addons/configure', { id: a.id, enabled: v }))),
-      h('p.muted', { style: { margin: 0 } }, a.summary),
-      h('p.faint.small', { style: { margin: 0 } }, t('Licence: {license}', { license: a.license })),
+      h('p.muted', { style: { margin: 0 } }, t(a.summary)),
+      h('p.faint.small', { style: { margin: 0 } }, t('Licence: {license}', { license: t(a.license) })),
     ];
     if (!external) {
       if (a.enabled) {
@@ -191,7 +201,7 @@ export function decodersCard(box) {
         if (a.experimental) parts.push(h('p.faint.small', { style: { margin: 0 } }, t('Only tested on synthetic signals so far. If channels are heard but nothing is decoded, please report it.')));
       }
     } else if (!a.installed) {
-      parts.push(h('p', { style: { margin: '4px 0' } }, a.install_hint));
+      parts.push(h('p', { style: { margin: '4px 0' } }, t(a.install_hint)));
       if (a.can_install) {
         const st = a.install || {};
         parts.push(h('div.row.wrap',
@@ -249,5 +259,5 @@ export function decodersCard(box) {
 
   load();
   timer = setInterval(load, 3000);
-  return () => clearInterval(timer);
+  return () => { dead = true; clearInterval(timer); };
 }

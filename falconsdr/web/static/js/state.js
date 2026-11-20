@@ -1,6 +1,6 @@
 // App-wide state: server settings (config, Memory List, blacklist, presets...),
 // the live scanner snapshot (polled), and tiny pub/sub so views can react.
-import { api, debounce, errorToast, lang, modal, setCh833, t } from './core.js';
+import { api, errorToast, lang, modal, setCh833, t } from './core.js';
 
 export const S = {
   settings: null,   // GET /api/settings
@@ -32,18 +32,31 @@ function mergeLocal(target, patch) {
 }
 
 let pending = {};
-const flush = debounce(async () => {
+let flushTimer = null;
+async function sendPending() {
+  clearTimeout(flushTimer);
+  flushTimer = null;
+  if (!Object.keys(pending).length) return;
   const patch = pending;
   pending = {};
   try { await api.post('/api/config', patch); } catch (e) { errorToast(e); }
-}, 350);
+}
 
 export function patchConfig(patch) {
   mergeLocal(S.settings.config, patch);
   mergeLocal(pending, JSON.parse(JSON.stringify(patch)));
   if (patch.bands) pending.bands = S.settings.config.bands;  // bands always go as a whole list
   emit('config');
-  flush();
+  clearTimeout(flushTimer);
+  flushTimer = setTimeout(sendPending, 350);
+}
+
+export async function patchConfigNow(patch) {
+  mergeLocal(S.settings.config, patch);
+  mergeLocal(pending, JSON.parse(JSON.stringify(patch)));
+  if (patch.bands) pending.bands = S.settings.config.bands;
+  emit('config');
+  await sendPending();
 }
 
 export async function saveChannels(channels) {
