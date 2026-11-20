@@ -26,16 +26,17 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 def system_env() -> dict | None:
     """Environment for running a *system* program (ffmpeg, nvidia-smi). A
-    frozen Linux build points LD_LIBRARY_PATH at its own bundled libraries;
-    a system ffmpeg loading those fails ("could not encode MP3")."""
+    frozen Linux/macOS build points LD_LIBRARY_PATH/DYLD_LIBRARY_PATH at its
+    own bundled libraries; a system ffmpeg loading those fails."""
     if not getattr(sys, "frozen", False):
         return None
     env = dict(os.environ)
-    orig = env.pop("LD_LIBRARY_PATH_ORIG", None)  # PyInstaller keeps the user's own value here
-    if orig is None:
-        env.pop("LD_LIBRARY_PATH", None)
-    else:
-        env["LD_LIBRARY_PATH"] = orig
+    for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        orig = env.pop(var + "_ORIG", None)  # PyInstaller keeps the user's own value here
+        if orig is None:
+            env.pop(var, None)
+        else:
+            env[var] = orig
     return env
 
 
@@ -77,13 +78,17 @@ def transcode_to_mp3(wav_path: Path, bitrate_kbps: int = 96) -> Path | None:
             ],
             check=True,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             timeout=120,
             creationflags=NO_WINDOW,
             env=system_env(),
         )
         partial.replace(mp3_path)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-        partial.unlink(missing_ok=True)
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            pass
         return None
     try:
         wav_path.unlink()

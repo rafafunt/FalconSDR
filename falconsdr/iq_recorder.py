@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -16,10 +17,12 @@ import numpy as np
 class IQRecorder:
     def __init__(self, output_dir: str, sample_rate_hz: float):
         self.sample_rate_hz = sample_rate_hz
+        self._lock = threading.Lock()
         self._samples_written = 0
         self._captures: list[dict] = []
         self._last_center_hz: float | None = None
-        stamp = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        now = dt.datetime.now()
+        stamp = now.strftime("%Y-%m-%d_%H-%M-%S-") + f"{now.microsecond:06d}"
         # Kept in its own subfolder, separate from the recording-library
         # WAV/MP3 tree (organizer.py/library.py only expect audio there) -
         # raw IQ is technical output for the user's own tools, not something
@@ -36,18 +39,28 @@ class IQRecorder:
         return str(self.data_path)
 
     def write(self, iq: np.ndarray, center_freq_hz: float) -> None:
-        if center_freq_hz != self._last_center_hz:
-            self._captures.append({
-                "core:sample_start": self._samples_written,
-                "core:frequency": center_freq_hz,
-                "core:datetime": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            })
-            self._last_center_hz = center_freq_hz
-        self._fh.write(np.ascontiguousarray(iq, dtype=np.complex64).tobytes())
-        self._samples_written += iq.size
+        if iq.size == 0:
+            return
+        buf = np.ascontiguousarray(iq, dtype="<c8")
+        with self._lock:
+            if self._fh.closed:
+                return
+            if center_freq_hz != self._last_center_hz:
+                self._captures.append({
+                    "core:sample_start": self._samples_written,
+                    "core:frequency": center_freq_hz,
+                    "core:datetime": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                })
+                self._last_center_hz = center_freq_hz
+            self._fh.write(memoryview(buf))
+            self._samples_written += buf.size
 
     def close(self) -> None:
-        self._fh.close()
+        with self._lock:
+            if self._fh.closed:
+                return
+            self._fh.close()
+            captures = list(self._captures)
         meta = {
             "global": {
                 "core:datatype": "cf32_le",
@@ -59,7 +72,7 @@ class IQRecorder:
                     "windows at different center frequencies, see 'captures' below."
                 ),
             },
-            "captures": self._captures,
+            "captures": captures,
             "annotations": [],
         }
         with open(self.meta_path, "w", encoding="utf-8") as f:

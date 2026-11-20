@@ -93,7 +93,8 @@ def split_by_range(default_windows: list, lanes: list, index: int, ranges: list[
             return None
         if len(freqs) == len(window.freqs):
             return window
-        return ScanWindow(center_hz=(freqs[0] + freqs[-1]) // 2, freqs=freqs, band=window.band)
+        step = min(25_000, freqs[1] - freqs[0]) if len(freqs) > 1 else 12_500
+        return ScanWindow(center_hz=(freqs[0] + freqs[-1]) // 2 + int(step * 0.37), freqs=freqs, band=window.band)
 
     kept = [w for w in map(restrict, default_windows) if w is not None]
     kept_lanes = []

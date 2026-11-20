@@ -169,6 +169,7 @@ class Demodulator:
         self._chan_taps: np.ndarray | None = None
         self._chan_zi: np.ndarray | None = None
         self._decim_resampler: StreamResampler | None = None  # _decimate() / WFM stage 1
+        self._decim_rate: float | None = None
         self._audio_resampler: StreamResampler | None = None  # WFM stage 2 (real audio)
 
     def reset(self) -> None:
@@ -179,10 +180,14 @@ class Demodulator:
         self._agc_level = _AGC_TARGET_RMS
         self._agc_gain = None
         self._carrier = None
+        self._ssb_ba = None
         self._ssb_zi = None
         self._ssb_mix_index = 0
+        self._voice_lpf_ba = None
         self._voice_lpf_zi = None
+        self._stream_resampler = None
         self._decim_resampler = None
+        self._decim_rate = None
         self._audio_resampler = None
         self._afc_rad, self._afc_phase, self._afc_power, self._afc_started = 0.0, 0.0, 0.0, False
         self._chan_zi = None
@@ -226,8 +231,9 @@ class Demodulator:
         return self._stream_decimate(x, self.audio_rate)
 
     def _stream_decimate(self, x: np.ndarray, rate: float) -> np.ndarray:
-        if self._decim_resampler is None:
+        if self._decim_resampler is None or self._decim_rate != rate:
             self._decim_resampler = StreamResampler(self.sample_rate, rate)
+            self._decim_rate = rate
         return self._decim_resampler.process(x)
 
     def _deemphasize(self, audio: np.ndarray, rate: float, zi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -355,6 +361,8 @@ class Demodulator:
     def _track_carrier(self, env: np.ndarray) -> float:
         """Smoothed AM carrier amplitude: follows a stronger carrier quickly and a weaker one slowly, and
         never goes below ``carrier_floor``."""
+        if env.size == 0:
+            return max(self._carrier or 0.0, self.carrier_floor, 1e-6)
         mean = float(np.mean(env))
         if self._carrier is None:
             self._carrier = mean

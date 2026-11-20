@@ -1543,9 +1543,10 @@ class ScannerEngine(threading.Thread):
                     primary_level if primary_level is not None
                     else (best_level if best_level is not None else -120.0)
                 )
+                band = _live_band(self.config, window)
                 self._submit_spectrum(
                     iq, sample_rate, window.center_hz, effective_trigger,
-                    window.band is not None and window.band.has_advanced_overrides,
+                    band is not None and band.has_advanced_overrides,
                 )
                 self._emit_state(self._display_state())
 
@@ -1577,7 +1578,7 @@ class ScannerEngine(threading.Thread):
                     else:
                         raw_level = raw_powers[best_freq]
                         self._calibration_log.log_detect(
-                            best_freq, window.center_hz, sample_rate, self._applied_gain_mode,
+                            best_freq, window.center_hz, sample_rate, self._calibration_key(self._applied_gain_mode),
                             self._applied_gain_db, raw_level, effective_trigger,
                             self._channel_bw_map.get(best_freq, 0.0),
                         )
@@ -1936,7 +1937,9 @@ class ScannerEngine(threading.Thread):
             if slot.dsd.encrypted:
                 self.signals.log.emit(tr("{freq:.4f} MHz: encrypted - not decoded").format(freq=freq_hz / 1e6))
         finished_path = None
-        if self.config.recording.enabled:
+        # Check whether this slot actually opened a file (not the current config flag:
+        # toggling auto-recording off mid-transmission must still finalize the open WAV).
+        if slot.recorder.is_writing:
             finished_path = slot.recorder.end_transmission()
             slot.recorder.stop_session()
             if (finished_path is None and reason == "linger" and not slot.recording_failed and not (slot.dsd and slot.dsd.encrypted)
@@ -2010,9 +2013,11 @@ class ScannerEngine(threading.Thread):
             self._primary_freq = None
             self._primary_weight = -1.0
             return
-        freq_hz = max(self._slots, key=lambda f: self._channel_weight_map.get(f, 0.0))
+        def _slot_weight(f: int) -> float:
+            return -1.0 if self._is_silent_data(self._slots[f]) else self._channel_weight_map.get(f, 0.0)
+        freq_hz = max(self._slots, key=_slot_weight)
         self._primary_freq = freq_hz
-        self._primary_weight = self._channel_weight_map.get(freq_hz, 0.0)
+        self._primary_weight = _slot_weight(freq_hz)
 
     def _emit_recording_changed(self) -> None:
         # An open slot is only a recording when a file is being written -
@@ -2043,10 +2048,13 @@ class ScannerEngine(threading.Thread):
             if slot.freq_hz == self._primary_freq:
                 # Manual recording gets what a listener hears: silence.
                 self._feed_manual_recording(np.zeros(audio.shape[0], dtype=np.float32))
-            if self.config.recording.enabled:
+            if self.config.recording.enabled and not slot.recording_failed:
                 # real=False: silence alone doesn't make a recording worth keeping.
                 silence = np.zeros(audio.shape[0], dtype=np.float32)
-                slot.recorder.write_audio(silence, real=False)
+                try:
+                    slot.recorder.write_audio(silence, real=False)
+                except OSError as exc:
+                    self._recording_failed(slot, exc)
             return
         if slot.was_squelched:
             # The noise reducer is stateful and was skipped during the gap -

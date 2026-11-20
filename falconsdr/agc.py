@@ -68,10 +68,12 @@ class SoftwareAgc:
             return None
         step_db = max(-self.MAX_STEP_DB, min(self.MAX_STEP_DB, -error_db))
         lo, hi = gain_range_db
-        new_gain = max(lo, min(hi, self._gain_db + step_db))
-        if abs(new_gain - self._gain_db) < 0.05:
+        cur = max(lo, min(hi, self._gain_db))
+        self._gain_db = cur
+        new_gain = max(lo, min(hi, cur + step_db))
+        if abs(new_gain - cur) < 0.05:
             return None
-        self._level_db += new_gain - self._gain_db  # the level moves with the gain it was measured at
+        self._level_db += new_gain - cur  # the level moves with the gain it was measured at
         self._gain_db = new_gain
         self._last_adjust = now
         return new_gain

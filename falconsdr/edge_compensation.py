@@ -18,7 +18,7 @@ import json
 import numpy as np
 
 from .calibration_log import LOG_PATH
-from .config import CONFIG_DIR
+from .config import CONFIG_DIR, atomic_write_text
 
 _BUCKET_HZ = 100_000.0
 # Fewer samples than this: too noisy, no correction for that offset.
@@ -50,12 +50,11 @@ def _read_cache() -> tuple[dict[str, float], dict[str, int], int]:
 
 def _write_cache(sums: dict[str, float], counts: dict[str, int], processed_bytes: int) -> None:
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        _CACHE_PATH.write_text(json.dumps({
+        atomic_write_text(_CACHE_PATH, json.dumps({
             "sums": sums,
             "counts": counts,
             "processed_bytes": processed_bytes,
-        }), encoding="utf-8")
+        }))
     except OSError:
         pass  # diagnostic cache only - never worth failing scanner startup over
 
@@ -92,12 +91,18 @@ def _load_floor_curve() -> dict[str, dict[int, float]]:
                         rec = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if rec.get("t") != "floor":
+                    if not isinstance(rec, dict) or rec.get("t") != "floor":
                         continue
-                    gain_mode = rec.get("gain_mode") or "unknown"
-                    for off_str, dbfs in rec.get("buckets", {}).items():
-                        key = _bucket_key(gain_mode, int(off_str))
-                        power = 10.0 ** (dbfs / 10.0)
+                    gain_mode = str(rec.get("gain_mode") or "unknown")
+                    buckets = rec.get("buckets")
+                    if not isinstance(buckets, dict):
+                        continue
+                    for off_str, dbfs in buckets.items():
+                        try:
+                            key = _bucket_key(gain_mode, int(off_str))
+                            power = 10.0 ** (float(dbfs) / 10.0)
+                        except (ValueError, TypeError, OverflowError):
+                            continue
                         sums[key] = sums.get(key, 0.0) + power
                         counts[key] = counts.get(key, 0) + 1
                 processed_bytes += last_nl + 1
@@ -118,7 +123,10 @@ class EdgeCompensation:
         yet means 0 dB everywhere."""
         curve = _load_floor_curve().get(gain_mode or "unknown", {})
         if curve:
-            reference = max(curve.values())  # the window's own strongest bucket, not assumed to be exactly offset 0
+            # Second-highest bucket when >=3 exist: immune to a single-bucket DC spike (e.g. HackRF +7.7 dB at 0 Hz)
+            # or persistent birdie while staying within ~0.1-0.2 dB of the passband peak on a rolling-off tuner.
+            vals = sorted(curve.values())
+            reference = vals[-2] if len(vals) >= 3 else vals[-1]
             self._correction = {
                 off: min(_MAX_CORRECTION_DB, max(0.0, reference - db))
                 for off, db in curve.items()
