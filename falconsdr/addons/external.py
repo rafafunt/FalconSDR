@@ -55,8 +55,14 @@ class ExternalRunner:
         self._on_line = on_line
         self._on_exit = on_exit
         self._proc: subprocess.Popen | None = None
+        self._stderr_lock = threading.Lock()
         self.stderr_tail: deque[str] = deque(maxlen=40)
+        self._stderr_thread: threading.Thread | None = None
         self._stopping = False
+
+    def stderr_lines(self) -> list[str]:
+        with self._stderr_lock:
+            return list(self.stderr_tail)
 
     @property
     def alive(self) -> bool:
@@ -67,8 +73,9 @@ class ExternalRunner:
         self._proc = subprocess.Popen(
             self.argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
             env=system_env(), text=True, encoding="utf-8", errors="replace", bufsize=1, **kwargs)
+        self._stderr_thread = threading.Thread(target=self._read_stderr, name="addon-stderr", daemon=True)
+        self._stderr_thread.start()
         threading.Thread(target=self._read_stdout, name="addon-stdout", daemon=True).start()
-        threading.Thread(target=self._read_stderr, name="addon-stderr", daemon=True).start()
 
     def _read_stdout(self) -> None:
         proc = self._proc
@@ -82,13 +89,16 @@ class ExternalRunner:
                     pass
         code = proc.wait()
         proc.stdout.close()
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=2.0)  # let stderr drain before on_exit inspects stderr_tail
         self._on_exit(0 if self._stopping else code)
 
     def _read_stderr(self) -> None:
         proc = self._proc
         assert proc is not None and proc.stderr is not None
         for line in proc.stderr:
-            self.stderr_tail.append(line.rstrip())
+            with self._stderr_lock:
+                self.stderr_tail.append(line.rstrip())
         proc.stderr.close()
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -101,6 +111,10 @@ class ExternalRunner:
             proc.wait(timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
+            try:
+                proc.wait(2.0)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 # -- what the programs print -------------------------------------------------------------------------
@@ -174,10 +188,10 @@ def parse_vdl2(line: str) -> tuple[dict, str] | None:
     v = data.get("vdl2") if isinstance(data, dict) else None
     if not isinstance(v, dict):
         return None
-    avlc = v.get("avlc") or {}
-    src = (avlc.get("src") or {}).get("addr", "")
-    dst = (avlc.get("dst") or {}).get("addr", "")
-    acars = avlc.get("acars") or {}
+    avlc = v.get("avlc") if isinstance(v.get("avlc"), dict) else {}
+    src = avlc.get("src").get("addr", "") if isinstance(avlc.get("src"), dict) else ""
+    dst = avlc.get("dst").get("addr", "") if isinstance(avlc.get("dst"), dict) else ""
+    acars = avlc.get("acars") if isinstance(avlc.get("acars"), dict) else {}
     # "layer" lets the UI hide the link-layer chatter (acknowledgements, polls) that is most of what VDL2 carries:
     # an ACARS block, or any application payload next to the control fields, is "data"; the rest is "link".
     control = {"src", "dst", "cr", "frame_type", "cmd", "rseq", "sseq", "poll", "pf", "retransmission", "sig_level"}
@@ -185,9 +199,10 @@ def parse_vdl2(line: str) -> tuple[dict, str] | None:
     event = {"kind": "vdl2", "layer": layer, "freq_hz": v.get("freq"), "src": src, "dst": dst, "frame_type": avlc.get("frame_type"),
              "sig_level": v.get("sig_level"), "fields": {k: acars[k] for k in acars}}
     if acars:
-        event.update(registration=acars.get("reg", "").lstrip("."), label=acars.get("label"), flight=acars.get("flight"),
+        reg = str(acars.get("reg") or "").lstrip(".")
+        event.update(registration=reg, label=acars.get("label"), flight=acars.get("flight"),
                      text=acars.get("msg_text"))
-        summary = " ".join(x for x in (event["registration"], event.get("flight") or "", f"[{acars.get('label', '')}]") if x)
+        summary = " ".join(x for x in (event["registration"], str(event.get("flight") or ""), f"[{acars.get('label') or ''}]") if x)
         if acars.get("msg_text"):
             summary += " " + str(acars["msg_text"]).replace("\n", " ")[:120]
         return event, summary

@@ -134,6 +134,7 @@ class AcarsDecoder:
                     "diff_inverted": 0 if tone == self._last_tone else 1}
             self._last_tone = tone
             for name, bit in bits.items():
+                self._hist[name] = ((self._hist[name] << 1) | bit) & _PREAMBLE_MASK
                 frame = self._frames[name]
                 if frame is not None:
                     done = frame.push(bit)
@@ -148,7 +149,6 @@ class AcarsDecoder:
                             self._frames = {h: None for h in _HYPOTHESES}
                             break
                     continue
-                self._hist[name] = ((self._hist[name] << 1) | bit) & _PREAMBLE_MASK
                 if bin(self._hist[name] ^ _PREAMBLE_INT).count("1") <= _MAX_PREAMBLE_ERRORS:
                     self._frames[name] = _Frame()
         return events

@@ -310,6 +310,10 @@ class Library:
             raise FileNotFoundError(rel)
         return rec.path
 
+    def invalidate_search(self) -> None:
+        with self._lock:
+            self._blobs.clear()
+
     def _blob(self, rel: str, rec: Recording, names: dict[int, str]) -> str:
         blob = self._blobs.get(rel)
         if blob is None:

@@ -81,37 +81,55 @@ def _number(value, low: float, high: float, name: str) -> float:
     return number
 
 
+def _validate_option(key: str, value):
+    if key == "band":
+        if value not in (*RTL433_BANDS, "custom"):
+            raise ValueError("band: unknown")
+        return value
+    if key == "custom_mhz":
+        # "433.92, 868.3" (a comma and a space) separates; "868,95" (a comma between digits) is a decimal comma.
+        tokens = re.split(r"[\s;]+", re.sub(r",\s+", " ", str(value).strip()))
+        return " ".join(f"{_number(v, 1, 6000, 'frequency'):g}" for v in tokens if v)
+    if key == "hop_s":
+        return int(_number(value, 1, 3600, "hop"))
+    if key == "gain":
+        return "" if str(value).strip() == "" else _number(value, 0, 80, "gain")
+    if key == "ppm":
+        return int(_number(value, -500, 500, "ppm"))
+    if key == "units":
+        if value not in ("native", "si", "customary"):
+            raise ValueError("units: unknown")
+        return value
+    if key == "sample_rate":
+        if value not in RTL433_SAMPLE_RATES:
+            raise ValueError("sample rate: unknown")
+        return value
+    if key == "remotes":
+        return bool(value)
+    if key == "extra_decoders":
+        if not isinstance(value, (list, tuple, set)):
+            raise ValueError("decoder: must be a list")
+        return sorted({int(_number(v, 1, 999, "decoder")) for v in value})[:80]
+    return value
+
+
 def clean_options(addon_id: str, current: dict, patch: dict) -> dict:
-    """``current`` updated with the valid keys of ``patch``; raises ValueError for a bad value."""
+    """``current`` updated with the valid keys of ``patch``; validates stored values too
+    (bad values already on disk/via /api/config fall back to defaults, bad values in ``patch`` raise ValueError)."""
     defaults = OPTION_DEFAULTS.get(addon_id, {})
-    out = {**defaults, **{k: v for k, v in current.items() if k in defaults}}
+    out = dict(defaults)
+    if isinstance(current, dict):
+        for key, value in current.items():
+            if key not in defaults:
+                continue
+            try:
+                out[key] = _validate_option(key, value)
+            except (ValueError, TypeError):
+                pass
     for key, value in patch.items():
         if key not in defaults:
             continue
-        if key == "band":
-            if value not in (*RTL433_BANDS, "custom"):
-                raise ValueError("band: unknown")
-        elif key == "custom_mhz":
-            # "433.92, 868.3" (a comma and a space) separates; "868,95" (a comma between digits) is a decimal comma.
-            tokens = re.split(r"[\s;]+", re.sub(r",\s+", " ", str(value).strip()))
-            value = " ".join(f"{_number(v, 1, 6000, 'frequency'):g}" for v in tokens if v)
-        elif key == "hop_s":
-            value = int(_number(value, 1, 3600, "hop"))
-        elif key == "gain":
-            value = "" if str(value).strip() == "" else _number(value, 0, 80, "gain")
-        elif key == "ppm":
-            value = int(_number(value, -500, 500, "ppm"))
-        elif key == "units":
-            if value not in ("native", "si", "customary"):
-                raise ValueError("units: unknown")
-        elif key == "sample_rate":
-            if value not in RTL433_SAMPLE_RATES:
-                raise ValueError("sample rate: unknown")
-        elif key == "remotes":
-            value = bool(value)
-        elif key == "extra_decoders":
-            value = sorted({int(_number(v, 1, 999, "decoder")) for v in (value or [])})[:80]
-        out[key] = value
+        out[key] = _validate_option(key, value)
     return out
 
 
@@ -240,7 +258,9 @@ class AddonManager:
         if "path" in patch:
             cfg.paths = {**cfg.paths, addon_id: str(patch["path"]).strip()}
         if "extra_args" in patch:
-            cfg.extra_args = {**cfg.extra_args, addon_id: str(patch["extra_args"]).strip()}
+            raw_extra = str(patch["extra_args"]).strip()
+            shlex.split(raw_extra, posix=os.name != "nt")  # reject unclosed quotes before saving
+            cfg.extra_args = {**cfg.extra_args, addon_id: raw_extra}
         if "listen_to_data" in patch:
             cfg.listen_to_data = bool(patch["listen_to_data"])
         self._config.save()
@@ -275,7 +295,7 @@ class AddonManager:
         driver = str(device.get("driver", "auto"))
         if driver not in ("auto", "rtlsdr", "rtlsdr_native"):
             raise RuntimeError(tr("{name} works with RTL-SDR receivers only.").format(name=SPECS[addon_id].name))
-        args = dict(kv.split("=", 1) for kv in str(device.get("device_args", "")).split(",") if "=" in kv)
+        args = {k.strip(): v.strip() for k, v in (kv.split("=", 1) for kv in str(device.get("device_args", "")).split(",") if "=" in kv)}
         ident = args.get("serial") or args.get("index") or ""
         if addon_id == "vdl2":
             return ["--rtlsdr", ident or "0"]
@@ -321,19 +341,20 @@ class AddonManager:
             if addon_id in self._runs:
                 raise RuntimeError(tr("{name} is already running.").format(name=spec.name))
             self.last_error = ""
-            self._runs[addon_id] = {"runner": None, "since": time.time(), "cancelled": False}
+            self._runs[addon_id] = {"runner": None, "since": time.time(), "cancelled": False, "timer": None}
         # The dongle that the scanner just closed is not free for a moment (usb_claim_interface -6): the same
         # cooldown the backends keep between a close and the next open.
         SoapyBackend._wait_for_reopen_cooldown()
         try:
-            self._launch(addon_id, argv, parse, tries=3)
+            launched = self._launch(addon_id, argv, parse, tries=3)
         except OSError as exc:      # the program could not even be started
             with self._lock:
                 self._runs.pop(addon_id, None)
             raise RuntimeError(f"{spec.name}: {exc}") from exc
-        self._log(tr("{name} started - the scanner is paused while it runs.").format(name=spec.name))
+        if launched:
+            self._log(tr("{name} started - the scanner is paused while it runs.").format(name=spec.name))
 
-    def _launch(self, addon_id: str, argv: list[str], parse, tries: int) -> None:
+    def _launch(self, addon_id: str, argv: list[str], parse, tries: int) -> bool:
         spec = SPECS[addon_id]
         started = time.monotonic()
 
@@ -350,19 +371,29 @@ class AddonManager:
                 run = self._runs.get(addon_id)
                 runner = run["runner"] if run else None
                 cancelled = run is None or run["cancelled"]
-            tail = list(runner.stderr_tail) if runner else []
+            tail = runner.stderr_lines() if runner else []
             busy = (bool(code) and tries > 0 and not cancelled and time.monotonic() - started < 10
                     and any(re.search(r"claim|busy|-6\b", line, re.I) for line in tail))
             if busy:    # the receiver was not yet free: wait and try again, quietly
                 self._log(tr("The receiver was still busy - trying again."))
-                threading.Timer(_BUSY_RETRY_S, lambda: self._retry(addon_id, argv, parse, tries - 1)).start()
-                return
+                retry_timer = threading.Timer(_BUSY_RETRY_S, lambda: self._retry(addon_id, argv, parse, tries - 1))
+                retry_timer.daemon = True
+                with self._lock:
+                    cur = self._runs.get(addon_id)
+                    if cur is not None and not cur["cancelled"]:
+                        cur["timer"] = retry_timer
+                        retry_timer.start()
+                        return
+            log_msg = ""
             with self._lock:
                 self._runs.pop(addon_id, None)
                 if code:
                     shown = " ".join(tail[-3:])
                     self.last_error = f"{addon_id}: exit {code} {shown}".strip()
-                    self._log(tr("{name} stopped by itself (exit {code}) {tail}").format(name=spec.name, code=code, tail=shown))
+                    log_msg = tr("{name} stopped by itself (exit {code}) {tail}").format(name=spec.name, code=code, tail=shown)
+            if log_msg:
+                # Never call self._log (Controller._lock) while holding self._lock (AB-BA deadlock with Controller.live()).
+                self._log(log_msg)
             if code and not cancelled:
                 self.schedule_failed.add(addon_id)      # the schedule must not restart it every 5 s (cleared when its range is over)
                 self.on_failed(addon_id, f"{spec.name} stopped by itself (exit {code})")
@@ -370,16 +401,30 @@ class AddonManager:
 
         runner = ExternalRunner(argv, on_line, on_exit)
         with self._lock:
-            if addon_id in self._runs:
-                self._runs[addon_id]["runner"] = runner
+            run = self._runs.get(addon_id)
+            if run is None or run["cancelled"]:
+                return False
+            run["runner"] = runner
         runner.start()
+        return True
 
     def _retry(self, addon_id: str, argv: list[str], parse, tries: int) -> None:
         with self._lock:
             run = self._runs.get(addon_id)
             if run is None or run["cancelled"]:
                 return
-        self._launch(addon_id, argv, parse, tries)
+            run["timer"] = None
+        try:
+            self._launch(addon_id, argv, parse, tries)
+        except OSError as exc:
+            spec = SPECS[addon_id]
+            with self._lock:
+                self._runs.pop(addon_id, None)
+                self.last_error = f"{addon_id}: {exc}"
+            self._log(f"{spec.name}: {exc}")
+            self.schedule_failed.add(addon_id)
+            self.on_failed(addon_id, f"{spec.name}: {exc}")
+            self._on_stopped(addon_id)
 
     def stop_external(self, addon_id: str = "") -> None:
         """Stops one external program, or all of them."""
@@ -390,6 +435,9 @@ class AddonManager:
                 run = self._runs.get(i)
                 if run:
                     run["cancelled"] = True
+                    if run.get("timer") is not None:
+                        run["timer"].cancel()
+                        run["timer"] = None
                     runners.append((i, run["runner"]))
         for i, runner in runners:
             if runner is not None:

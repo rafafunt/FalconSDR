@@ -80,14 +80,17 @@ def assignments(config: AppConfig, count: int, held: Iterable[int] = (), now: dt
     active = active_indices(config, now) if sched.enabled else []
     usual = ([b for b in config.bands if b.enabled], config.memory_list_enabled)
 
-    # 1. add-ons take their receivers
+    # 1. add-ons take their receivers (one instance per add-on at a time)
+    assigned_addons: set[str] = set()
     for i in active:
         e = sched.entries[i]
-        if not e.addon or not addon_ok(e.addon):
+        if not e.addon or e.addon in assigned_addons or not addon_ok(e.addon):
             continue
         for k in (e.receivers[:1] or [addon_receiver(e.addon)]):          # one program runs on one receiver
             if 0 <= k < count and not plans[k].addon and k not in held:
                 plans[k].addon, plans[k].entries = e.addon, (i,)
+                assigned_addons.add(e.addon)
+                break
     free = [k for k in range(count) if not plans[k].addon and k not in held]
 
     def selection(indices: Iterable[int]):

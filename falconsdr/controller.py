@@ -180,7 +180,9 @@ class Controller:
         return names
 
     def open_recording_paths(self) -> set[Path]:
-        return set().union(*(engine.open_recording_paths() for engine in self._engines))
+        with self._lock:
+            engines = list(self._engines)
+        return set().union(*(engine.open_recording_paths() for engine in engines))
 
     def log(self, message: str) -> None:
         with self._lock:
@@ -304,10 +306,11 @@ class Controller:
     def stop_addon(self, addon_id: str = "") -> None:
         """Stops one add-on (or all). Stopping a scheduled one by hand keeps the schedule from starting it again
         until its time range has passed."""
-        ids = [addon_id] if addon_id else list(self._addon_dongles)
-        for i in ids:
-            if i in self._sched_started or self._scheduled_receiver(i) is not None:
-                self._sched_suppressed[i] = self._schedule_key(i)
+        with self._start_lock:
+            ids = [addon_id] if addon_id else list(self._addon_dongles)
+            for i in ids:
+                if i in self._sched_started or self._scheduled_receiver(i) is not None:
+                    self._sched_suppressed[i] = self._schedule_key(i)
         self.addons.stop_external(addon_id)
         with self._start_lock:
             for i in ids or list(self._addon_dongles):
@@ -525,7 +528,14 @@ class Controller:
             freq_hz=int(freq_hz), margin_hz=self.config.default_blacklist_margin_hz,
             label="Auto-lockout (SKIP)", date_added=dt.date.today().isoformat(),
         )
-        self.set_blacklist(self.blacklist + [entry])
+        with self._lock:
+            updated = self.blacklist + [entry]
+            self.blacklist = updated
+        storage.save_blacklist(updated)
+        with self._lock:
+            engines = list(self._engines)
+        for engine in engines:
+            engine.update_blacklist(updated)
 
     def _on_live_audio(self, k: int, mono: Any) -> None:
         with self._lock:
@@ -730,16 +740,21 @@ class Controller:
             self._rebuild()
 
     def set_channels(self, channels: list[Channel]) -> None:
-        self.channels = channels
+        with self._lock:
+            self.channels = channels
+            engines = list(self._engines)
         storage.save_channels(channels)
-        for engine in self._engines:
+        self.library.invalidate_search()
+        for engine in engines:
             engine.update_channels(channels)
             engine.request_rebuild()
 
     def set_blacklist(self, blacklist: list[BlacklistEntry]) -> None:
-        self.blacklist = blacklist
+        with self._lock:
+            self.blacklist = blacklist
+            engines = list(self._engines)
         storage.save_blacklist(blacklist)
-        for engine in self._engines:
+        for engine in engines:
             engine.update_blacklist(blacklist)
 
     def _rebuild(self) -> None:

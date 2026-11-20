@@ -80,14 +80,18 @@ def start(addon_id: str) -> None:
 
 
 def uninstall(addon_id: str) -> None:
-    shutil.rmtree(install_dir(addon_id), ignore_errors=True)
     with _lock:
+        if _states.get(addon_id, {}).get("running"):
+            raise RuntimeError(tr("Installation is in progress - wait for it to finish."))
         _states.pop(addon_id, None)
+    shutil.rmtree(install_dir(addon_id), ignore_errors=True)
 
 
 def _say(addon_id: str, line: str) -> None:
     with _lock:
-        _states[addon_id]["log"].append(line)
+        st = _states.get(addon_id)
+        if st is not None:
+            st["log"].append(line)
 
 
 def install_hint() -> str:
@@ -120,9 +124,10 @@ def _download(addon_id: str, name: str, url: str, sha256: str, dest: Path) -> No
 
 
 def _run(addon_id: str, cmd: list[str], env: dict) -> None:
-    # A build must not starve a scanner that is running: lowest priority on POSIX (Windows never builds here).
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                          preexec_fn=(lambda: os.nice(15)) if os.name == "posix" else None)
+    # A build must not starve a scanner that is running: lowest priority on POSIX (via `nice`, never
+    # preexec_fn which can deadlock after fork() in a multithreaded process).
+    run_cmd = ["nice", "-n", "15", *cmd] if os.name == "posix" and shutil.which("nice") else cmd
+    proc = subprocess.run(run_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env)
     if proc.returncode != 0:
         for line in proc.stdout.decode("utf-8", "replace").strip().splitlines()[-6:]:
             _say(addon_id, line)
@@ -149,7 +154,7 @@ def _install_vdl2() -> None:
             raise RuntimeError("Missing for the build: " + ", ".join(missing))
         work = install_dir(addon_id).with_name("vdl2-build")
         shutil.rmtree(work, ignore_errors=True)
-        work.mkdir(parents=True)
+        work.mkdir(parents=True, exist_ok=True)
         try:
             jobs = str(max(1, (os.cpu_count() or 2) // 2))      # half the cores: the scanner may be running
             for name, url, sha256 in _VDL2_SOURCES:
@@ -189,7 +194,7 @@ def _install_rtl433() -> None:
         _say(addon_id, "rtl_433 (GPL-2.0) is downloaded as the author published it.")
         folder = install_dir(addon_id)
         shutil.rmtree(folder, ignore_errors=True)
-        folder.mkdir(parents=True)
+        folder.mkdir(parents=True, exist_ok=True)
         archive = folder / "download.zip"
         _say(addon_id, "Downloading rtl_433…")
         with _urlopen(url) as resp, open(archive, "wb") as out:
@@ -217,6 +222,8 @@ def _install_rtl433() -> None:
         except (OSError, subprocess.SubprocessError) as exc:
             ok, reason = False, [str(exc)]
         if not ok:
+            # Don't leave an unusable binary behind - otherwise find_program() reports it as installed.
+            shutil.rmtree(folder, ignore_errors=True)
             if sys.platform == "darwin":
                 with _lock:
                     _states[addon_id]["hint"] = "brew install librtlsdr libusb openssl@3"

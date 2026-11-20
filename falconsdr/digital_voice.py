@@ -106,8 +106,10 @@ class DsdDecoder:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             cwd=str(exe.parent), env=_env(), creationflags=NO_WINDOW,
         )
-        threading.Thread(target=self._read_voice, daemon=True, name="dsd-voice").start()
-        threading.Thread(target=self._read_info, daemon=True, name="dsd-info").start()
+        self._voice_thread = threading.Thread(target=self._read_voice, daemon=True, name="dsd-voice")
+        self._info_thread = threading.Thread(target=self._read_info, daemon=True, name="dsd-info")
+        self._voice_thread.start()
+        self._info_thread.start()
 
     def feed(self, discriminator: np.ndarray) -> None:
         pcm = (np.clip(discriminator * 40000.0, -32767, 32767)).astype("<i2").tobytes()
@@ -136,38 +138,60 @@ class DsdDecoder:
             pass
         try:
             self._proc.terminate()
-            self._proc.wait(timeout=2)
+            self._proc.wait(timeout=0.5)
         except (OSError, subprocess.TimeoutExpired):
-            self._proc.kill()
+            try:
+                self._proc.kill()
+                self._proc.wait(timeout=0.5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        self._info_thread.join(timeout=0.2)
 
     def _read_voice(self) -> None:
         frame = 2 * self._channels
         rest = b""
-        while True:
-            data = self._proc.stdout.read1(65536)
-            if not data:
-                return
-            data = rest + data
-            usable = len(data) - len(data) % frame
-            rest = data[usable:]
-            pcm = np.frombuffer(data[:usable], dtype="<i2").astype(np.float32) / 32768.0
-            if self._channels == 2:  # DMR: the two timeslots - rarely both talking at once
-                pcm = np.clip(pcm[0::2] + pcm[1::2], -1.0, 1.0)
-            with self._lock:
-                self._buf = np.concatenate([self._buf, pcm])[-int(_MAX_BUFFER_S * _VOICE_RATE):]
+        try:
+            while True:
+                data = self._proc.stdout.read1(65536)
+                if not data:
+                    return
+                data = rest + data
+                usable = len(data) - len(data) % frame
+                rest = data[usable:]
+                pcm = np.frombuffer(data[:usable], dtype="<i2").astype(np.float32) / 32768.0
+                if self._channels == 2:  # DMR: the two timeslots - rarely both talking at once
+                    pcm = np.clip(pcm[0::2] + pcm[1::2], -1.0, 1.0)
+                with self._lock:
+                    self._buf = np.concatenate([self._buf, pcm])[-int(_MAX_BUFFER_S * _VOICE_RATE):]
+        finally:
+            try:
+                self._proc.stdout.close()
+            except OSError:
+                pass
 
     def _read_info(self) -> None:
-        for raw in self._proc.stderr:
-            line = raw.decode("utf-8", "replace")
-            if "Encrypted" in line:
-                self.encrypted = True
-            m = _TALKGROUP_RE.search(line)
-            if m:
-                self.talkgroup, self.source = m.group(1), m.group(2)
-                continue
-            m = _YSF_RE.search(line)
-            if m:
-                self.talkgroup, self.source = m.group(1).strip(), m.group(2).strip()
+        try:
+            for raw in self._proc.stderr:
+                line = raw.decode("utf-8", "replace")
+                if "Encrypted" in line:
+                    with self._lock:
+                        self.encrypted = True
+                m = _TALKGROUP_RE.search(line)
+                if m:
+                    with self._lock:
+                        self.talkgroup, self.source = m.group(1), m.group(2)
+                    continue
+                m = _YSF_RE.search(line)
+                if m:
+                    with self._lock:
+                        self.talkgroup, self.source = m.group(1).strip(), m.group(2).strip()
+        finally:
+            close = getattr(self._proc.stderr, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except OSError:
+                    pass
 
 
 # ---------------------------------------------------------------- installing
@@ -189,6 +213,10 @@ def start_install() -> None:
 
 
 def uninstall() -> None:
+    with _state_lock:
+        if _state["running"]:
+            raise RuntimeError("Installation is in progress - wait for it to finish.")
+        _state.update(log=[], error="", hint="")
     shutil.rmtree(DSD_DIR, ignore_errors=True)
 
 
@@ -274,8 +302,10 @@ def _install_windows() -> None:
     archive.unlink()
 
 
-def _run(cmd: list[str]) -> None:
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=system_env())
+def _run(cmd: list[str], env: dict | None = None) -> None:
+    run_cmd = ["nice", "-n", "15", *cmd] if os.name == "posix" and shutil.which("nice") else cmd
+    proc = subprocess.run(run_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                          env=env if env is not None else system_env())
     if proc.returncode != 0:
         tail = proc.stdout.decode("utf-8", "replace").strip().splitlines()[-6:]
         for line in tail:
@@ -284,14 +314,17 @@ def _run(cmd: list[str]) -> None:
 
 
 def _build_from_source() -> None:
-    missing = [tool for tool in ("cmake", "make", "cc") if not shutil.which(tool)]
+    from .addons.external import tool_path, which
+    missing = [tool for tool in ("cmake", "make", "cc") if not which(tool)]
     if missing:
         raise RuntimeError("Missing build tools: " + ", ".join(missing))
+    env = dict(system_env() or os.environ)
+    env["PATH"] = tool_path()
     work = DSD_DIR.with_name("dsd-fme-build")
     shutil.rmtree(work, ignore_errors=True)
-    work.mkdir(parents=True)
+    work.mkdir(parents=True, exist_ok=True)
     try:
-        jobs = str(max(1, (os.cpu_count() or 2)))
+        jobs = str(max(1, (os.cpu_count() or 2) // 2))  # half the cores so an active scanner isn't starved
         for name, (url, sha256) in _SOURCES.items():
             archive = work / f"{name}.tar.gz"
             _download(url, archive, sha256, gunzip=True)
@@ -306,9 +339,9 @@ def _build_from_source() -> None:
             _run(["cmake", "-S", str(src), "-B", str(src / "build"), "-DCMAKE_BUILD_TYPE=Release",
                   f"-DCMAKE_INSTALL_PREFIX={DSD_DIR}", "-DCMAKE_INSTALL_LIBDIR=lib",
                   f"-DCMAKE_PREFIX_PATH={DSD_DIR}", f"-DCMAKE_INSTALL_RPATH={DSD_DIR / 'lib'}",
-                  "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"])  # CMake 4 refuses mbelib's old minimum otherwise
-            _run(["cmake", "--build", str(src / "build"), "-j", jobs])
-            _run(["cmake", "--install", str(src / "build")])
+                  "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"], env)  # CMake 4 refuses mbelib's old minimum otherwise
+            _run(["cmake", "--build", str(src / "build"), "-j", jobs], env)
+            _run(["cmake", "--install", str(src / "build")], env)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

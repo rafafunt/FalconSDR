@@ -16,6 +16,7 @@ class EventHub:
         self.on_event = None        # called with every message worth reading (not link frames): the Notifier
         self._keep_days = keep_days
         self._lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self._ring: deque[dict] = deque(maxlen=ring)
         self._link_ring: deque[dict] = deque(maxlen=600)    # link-layer frames flood the ring: they get a small one of their own
         self._next_id = int(time.time() * 1000)      # a page open across a restart must not wait for the new numbers to pass its old ones
@@ -27,13 +28,16 @@ class EventHub:
             return
         path = self._dir / f"events-{date.today().isoformat()}.jsonl"
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()[-self._ring.maxlen:]
+            with path.open("r", encoding="utf-8", errors="replace") as f:
+                lines = deque(f, maxlen=self._ring.maxlen)
         except OSError:
             return
         for line in lines:
             try:
                 event = json.loads(line)
             except ValueError:
+                continue
+            if not isinstance(event, dict):
                 continue
             event["id"] = self._next_id
             self._next_id += 1
@@ -68,13 +72,15 @@ class EventHub:
     def _append(self, event: dict) -> None:
         if self._dir is None:
             return
-        try:
-            self._dir.mkdir(parents=True, exist_ok=True)
-            with open(self._dir / f"events-{date.today().isoformat()}.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({k: v for k, v in event.items() if k != "id"}, ensure_ascii=False) + "\n")
-            self._prune()
-        except OSError:
-            pass     # a full disk must not stop the decoder
+        line = json.dumps({k: v for k, v in event.items() if k != "id"}, ensure_ascii=False) + "\n"
+        with self._io_lock:
+            try:
+                self._dir.mkdir(parents=True, exist_ok=True)
+                with open(self._dir / f"events-{date.today().isoformat()}.jsonl", "a", encoding="utf-8") as f:
+                    f.write(line)
+                self._prune()
+            except OSError:
+                pass     # a full disk must not stop the decoder
 
     def _prune(self) -> None:
         today = date.today()
