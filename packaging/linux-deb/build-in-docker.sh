@@ -5,7 +5,7 @@
 # found" from some bundled modules). This one runs on Ubuntu 20.04+.
 set -eu
 cd "$(dirname "$0")/../.."
-docker run --rm -v "$PWD":/src -w /src python:3.12-slim-bullseye sh -c "
+docker run --rm -e FALCONSDR_REQUIRE_NATIVE_LIBS=1 -v "$PWD":/src -w /src python:3.12-slim-bullseye sh -ec "
     apt-get update -qq && apt-get install -y -qq binutils libhackrf0 libairspy0 >/dev/null
     packaging/linux-deb/build.sh
     chown -R $(id -u):$(id -g) packaging/linux-deb"

@@ -57,6 +57,8 @@ See /usr/share/doc/%{name}/packaging-README.md.
 python3 -m venv .rpm-venv
 .rpm-venv/bin/pip install --upgrade --quiet pip
 .rpm-venv/bin/pip install --quiet -r requirements.txt pyinstaller
+source packaging/linux-native-libs.sh
+collect_native_libs soft
 .rpm-venv/bin/pyinstaller \
   --name %{name} \
   --onedir \
@@ -68,12 +70,14 @@ python3 -m venv .rpm-venv
   --collect-data pyrtlsdrlib \
   --collect-data imageio_ffmpeg \
   --collect-all pip \
+  "${NATIVE_ARGS[@]}" \
   --distpath dist \
   --workpath build-pyinstaller \
   --specpath build-pyinstaller \
   main.py
 ./dist/%{name}/%{name} --self-test
 .rpm-venv/bin/python packaging/collect_licenses.py THIRD-PARTY-LICENSES.txt
+append_native_licenses THIRD-PARTY-LICENSES.txt
 
 %install
 install -d %{buildroot}/opt/%{name}

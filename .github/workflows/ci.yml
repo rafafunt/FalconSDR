@@ -21,7 +21,9 @@ jobs:
       - run: python -m compileall -q main.py falconsdr tests
       - run: python -m unittest tests/test_core.py tests/test_addons.py -v
       - if: runner.os == 'Linux'
-        run: for f in falconsdr/web/static/js/*.js falconsdr/web/static/js/views/*.js; do node --check "$f"; done
+        run: |
+          for f in falconsdr/web/static/js/*.js falconsdr/web/static/js/views/*.js demo/site/sw.js; do node --check "$f"; done
+          node --test tests/test_dongles.mjs
       # New packaging must stay valid without building full bundles in CI:
       # shell syntax + RPM spec parses. (.SRCINFO sync is verified by the
       # AUR maintainer on release, not on every push - it needs the Arch
@@ -39,6 +41,8 @@ jobs:
         run: |
           bash -n packaging/linux-native-libs.sh
           bash -n packaging/linux-deb/build.sh
+          bash -n packaging/linux-deb/build-in-docker.sh
+          bash -n packaging/remote-server/install.sh
       # The Windows build bundles libhackrf/libairspy from pinned conda-forge files (gotcha 55): fetch them the way
       # build.ps1 does and load them with nothing else on the machine - a changed hash or a missing DLL fails here, not
       # at release time.

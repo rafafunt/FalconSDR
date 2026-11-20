@@ -31,7 +31,9 @@ append_native_licenses() {
   local out="$1" pkg f here
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   { printf '\n%s\nlibhackrf (bundled shared library)\n%s\n\n' "==============================================================================" "=============================================================================="
-    cat "$here/licenses/libhackrf-BSD-3-Clause.txt"; } >> "$out"
+    cat "$here/licenses/libhackrf-BSD-3-Clause.txt"
+    printf '\n%s\nlibairspy (bundled shared library)\n%s\n\n' "==============================================================================" "=============================================================================="
+    cat "$here/licenses/libairspy-BSD-3-Clause.txt"; } >> "$out"
   for pkg in libhackrf0 libairspy0 libusb-1.0-0 hackrf airspyone_host libusb1; do
     for f in "/usr/share/doc/$pkg/copyright" /usr/share/licenses/"$pkg"/*; do
       [ -f "$f" ] || continue

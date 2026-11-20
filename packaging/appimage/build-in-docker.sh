@@ -13,7 +13,7 @@ cd "$(dirname "$0")/../.."
 docker run --rm -e FALCONSDR_REQUIRE_NATIVE_LIBS=1 -v "$PWD":/src -w /src python:3.12-slim-bullseye sh -ec "
     apt-get update -qq && apt-get install -y -qq binutils file libhackrf0 libairspy0 >/dev/null
     python3 -c 'import urllib.request, sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
-      https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+      "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-\$(uname -m).AppImage" \
       /usr/local/bin/appimagetool
     chmod +x /usr/local/bin/appimagetool
     export APPIMAGE_EXTRACT_AND_RUN=1
