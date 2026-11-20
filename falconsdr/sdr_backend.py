@@ -131,35 +131,46 @@ class SoapyBackend(SdrBackend):
         # (0.8.1-7build1) silently matches no device when given a dict.
         args_str = ",".join(f"{k}={v}" for k, v in args.items())
         self.device = SoapySDR.Device(args_str)
+        self.stream = None
         self.bias_tee = False  # on only once the device is fully set up (end of __init__)
-        self._apply_bias_tee()
-        self.sample_rate = sample_rate
-        self.device.setSampleRate(SOAPY_SDR_RX, 0, sample_rate)
-        self._gain_steps: tuple[float, ...] | None = None
         try:
-            rng = self.device.getGainRange(SOAPY_SDR_RX, 0)
-            self.gain_range_db = (rng.minimum(), rng.maximum())
-            if args["driver"] == "rtlsdr" and abs(rng.maximum() - _R82XX_GAINS_DB[-1]) < 0.05:
-                self._gain_steps = _R82XX_GAINS_DB
-        except Exception:
-            pass
-        self.set_gain(gain_mode, gain_db)
-        try:
-            self.stream = self.device.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32, [0], _soapy_stream_args(sample_rate))
-        except Exception:
-            # A driver that rejects the args still opens - they only shape latency and slack.
-            self.stream = self.device.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
-        self.device.activateStream(self.stream)
-        try:
-            self.stream_mtu = self.device.getStreamMTU(self.stream)
-        except Exception:
-            self.stream_mtu = None
-        # Grown in read() so a whole chunk fits in one readStream() call.
-        self._buf = np.empty(65536, dtype=np.complex64)
-        self._io_diag = SdrIoDiagLogger()
-        if bias_tee:
-            self.bias_tee = True
             self._apply_bias_tee()
+            self.sample_rate = sample_rate
+            self.device.setSampleRate(SOAPY_SDR_RX, 0, sample_rate)
+            try:
+                actual_rate = float(self.device.getSampleRate(SOAPY_SDR_RX, 0) or 0)
+                if actual_rate > 0:
+                    self.sample_rate = actual_rate
+            except Exception:
+                pass
+            self._gain_steps: tuple[float, ...] | None = None
+            try:
+                rng = self.device.getGainRange(SOAPY_SDR_RX, 0)
+                self.gain_range_db = (rng.minimum(), rng.maximum())
+                if args["driver"] == "rtlsdr" and abs(rng.maximum() - _R82XX_GAINS_DB[-1]) < 0.05:
+                    self._gain_steps = _R82XX_GAINS_DB
+            except Exception:
+                pass
+            self.set_gain(gain_mode, gain_db)
+            try:
+                self.stream = self.device.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32, [0], _soapy_stream_args(self.sample_rate))
+            except Exception:
+                # A driver that rejects the args still opens - they only shape latency and slack.
+                self.stream = self.device.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+            self.device.activateStream(self.stream)
+            try:
+                self.stream_mtu = self.device.getStreamMTU(self.stream)
+            except Exception:
+                self.stream_mtu = None
+            # Grown in read() so a whole chunk fits in one readStream() call.
+            self._buf = np.empty(65536, dtype=np.complex64)
+            self._io_diag = SdrIoDiagLogger()
+            if bias_tee:
+                self.bias_tee = True
+                self._apply_bias_tee()
+        except Exception:
+            self.close()
+            raise
 
     def _apply_bias_tee(self, on: bool | None = None) -> None:
         on = self.bias_tee if on is None else on
@@ -240,11 +251,13 @@ class SoapyBackend(SdrBackend):
         return out[:got]
 
     def close(self) -> None:
-        try:
-            self.device.deactivateStream(self.stream)
-            self.device.closeStream(self.stream)
-        except Exception:
-            pass
+        if self.stream is not None:
+            try:
+                self.device.deactivateStream(self.stream)
+                self.device.closeStream(self.stream)
+            except Exception:
+                pass
+            self.stream = None
         self._apply_bias_tee(False)  # never leave the antenna powered once FalconSDR lets go
         # Closing the stream leaves the device itself open, and so the USB interface claimed: the same
         # process could not open it again another way (Access method) - librtlsdr failed with "busy".
@@ -401,6 +414,8 @@ class RtlSdrBackend(SdrBackend):
         self._stream_cb = None           # the ctypes callback must outlive the stream
         self._stream_cond = threading.Condition()
         self._stream_chunks: deque[bytes] = deque()
+        self._stream_buffered = 0
+        self._stream_max_bytes = max(256 * 1024, int(sample_rate * 2 * 2.0))  # cap at ~2 s of raw IQ
         self._stream_error: int | None = None
         self._stream_stopping = False
         self._stream_stats = _StreamStats(sample_rate)
@@ -432,13 +447,15 @@ class RtlSdrBackend(SdrBackend):
             self.device.set_bias_tee(True)
 
     def set_frequency(self, freq_hz: float) -> None:
+        was_streaming = self._stream_thread is not None
         try:
             self._stop_stream()
             self.device.center_freq = int(freq_hz)
             # See SoapyBackend.set_frequency() - re-asserted on every retune.
             self.device.set_bias_tee(self.bias_tee)
         except OSError as exc:  # a native crash right after a stream ran (issue #14: access violation, Windows)
-            if not self._async:
+            # LibUSBError subclasses OSError; only a plain OSError (ctypes access violation) after an active stream is a StreamFault.
+            if not (self._async and was_streaming and type(exc) is OSError):
                 raise
             self._faulted = True
             raise StreamFault(str(exc)) from exc
@@ -446,12 +463,13 @@ class RtlSdrBackend(SdrBackend):
         self._carry = np.empty(0, dtype=np.uint8)
 
     def set_gain(self, gain_mode: str, gain_db: float) -> None:
+        was_streaming = self._stream_thread is not None
         try:
             self._stop_stream()  # a gain step stalls the dongle anyway
             # pyrtlsdr's set_gain() already picks the nearest supported step.
             self.device.set_gain("auto" if gain_mode == "auto" else gain_db)
         except OSError as exc:
-            if not self._async:
+            if not (self._async and was_streaming and type(exc) is OSError):
                 raise
             self._faulted = True
             raise StreamFault(str(exc)) from exc
@@ -509,8 +527,10 @@ class RtlSdrBackend(SdrBackend):
         print(f"[rtlsdr] async stream unavailable ({reason}) - using blocking reads", flush=True)
         self._async = False
         self._stream_thread = None
+        self._stream_cb = None
         with self._stream_cond:
             self._stream_chunks.clear()
+            self._stream_buffered = 0
 
     @staticmethod
     def _async_buffer_bytes(sample_rate: float) -> int:
@@ -523,17 +543,22 @@ class RtlSdrBackend(SdrBackend):
         dev_p = self.device.dev_p
         with self._stream_cond:
             self._stream_chunks.clear()
+            self._stream_buffered = 0
             self._stream_error, self._stream_stopping = None, False
             self._stream_fault = None
         self._stream_stats = _StreamStats(self.sample_rate)
         stats = self._stream_stats
         buffer_bytes = self._async_buffer_bytes(self.sample_rate)
+        max_bytes = getattr(self, "_stream_max_bytes", max(256 * 1024, int(self.sample_rate * 2 * 2.0)))
 
         def on_data(buf, length, _ctx):  # runs in the stream thread, GIL held: copy and queue only
             data = ctypes.string_at(buf, length)
             stats.add(time.monotonic(), length)
             with self._stream_cond:
                 self._stream_chunks.append(data)
+                self._stream_buffered += len(data)
+                while self._stream_buffered > max_bytes and len(self._stream_chunks) > 1:
+                    self._stream_buffered -= len(self._stream_chunks.popleft())
                 self._stream_cond.notify()
 
         self._stream_cb = rtlsdr_read_async_cb_t(on_data)
@@ -572,13 +597,17 @@ class RtlSdrBackend(SdrBackend):
             except OSError as exc:
                 self._faulted = True
                 self._stream_thread = None
+                self._stream_cb = None
                 raise StreamFault(str(exc)) from exc
             thread.join(0.05)
-        self._stream_thread = None
         with self._stream_cond:
             self._stream_chunks.clear()
+            self._stream_buffered = 0
         if thread.is_alive():
+            # Keep self._stream_thread set so close() also sees the stuck stream and refuses to free dev_p underneath it.
             raise RuntimeError("RTL-SDR stream did not stop - device not responding")
+        self._stream_thread = None
+        self._stream_cb = None
 
     def _read_stream(self, need: int) -> np.ndarray:
         parts: list[bytes] = []
@@ -591,6 +620,7 @@ class RtlSdrBackend(SdrBackend):
                     raise StreamFault(str(self._stream_fault)) from self._stream_fault
                 if self._stream_chunks:
                     chunk = self._stream_chunks.popleft()
+                    self._stream_buffered = max(0, self._stream_buffered - len(chunk))
                     parts.append(chunk)
                     got += len(chunk)
                     continue
@@ -721,6 +751,7 @@ class RtlTcpBackend(SdrBackend):
         self.sample_rate = sample_rate
         self.bias_tee = False  # on only once everything else is set up, like the other backends
         self._discard_until = 0.0  # time.monotonic() until which the IQ is still the old frequency's
+        self._discard_odd = False  # keeps 2-byte (I, Q) alignment across arbitrary TCP recv() sizes while discarding
         self._gains: tuple[int, ...] | None = None
         self._sock: socket.socket | None = None
         try:
@@ -791,8 +822,15 @@ class RtlTcpBackend(SdrBackend):
         """Exactly 2 * num_samples bytes of IQ (unconverted); raises when the stream stops."""
         try:
             while time.monotonic() < self._discard_until:
-                if not self._sock.recv(1 << 16):
+                dropped = self._sock.recv(1 << 16)
+                if not dropped:
                     raise RuntimeError(tr("rtl_tcp closed the connection"))
+                if len(dropped) & 1:
+                    self._discard_odd = not self._discard_odd
+            if self._discard_odd:
+                # Re-align to a 2-byte (I, Q) sample boundary; otherwise I and Q stay swapped (mirrored spectrum).
+                self._recv_exact(1)
+                self._discard_odd = False
             return np.frombuffer(self._recv_exact(2 * num_samples), dtype=np.uint8)
         except socket.timeout as exc:
             raise RuntimeError(tr("rtl_tcp sent no data for {s:g} s - connection lost or the server is not responding").format(
@@ -815,8 +853,11 @@ class RtlTcpBackend(SdrBackend):
         self._sock.setblocking(False)
         try:
             for _ in range(64):  # a bound, in case a fast source never lets the buffer run empty
-                if not self._sock.recv(1 << 20):
+                dropped = self._sock.recv(1 << 20)
+                if not dropped:
                     break
+                if len(dropped) & 1:
+                    self._discard_odd = not self._discard_odd
         except (BlockingIOError, InterruptedError):
             pass
         except OSError:
@@ -1189,10 +1230,11 @@ class AcquisitionThread:
             block = self._queue.popleft()
         return self._to_iq(block) if self._to_iq is not None else block
 
-    def _submit_command(self, kind: str, args: tuple, timeout: float = 2.0) -> None:
+    def _submit_command(self, kind: str, args: tuple, timeout: float = 4.5) -> None:
         """Hands a retune/gain change to the acquisition thread (see
         __init__) and waits until it's applied - about one read() - or
-        raises on timeout or a dead device."""
+        raises on timeout or a dead device. Timeout stays above
+        RtlSdrBackend._STREAM_STOP_TIMEOUT_S (3 s) plus one read."""
         self._command_done.clear()
         with self._cond:
             if self._error is not None:
@@ -1216,8 +1258,10 @@ class AcquisitionThread:
         self._stop_evt.set()
         with self._cond:
             self._cond.notify_all()
-        self._thread.join(timeout=2.0)
-        self._backend.close()
+        self._thread.join(timeout=4.5)
+        if not self._thread.is_alive():
+            # Single-owner invariant (gotcha 11): never free C device handles while the acquisition thread is still inside I/O.
+            self._backend.close()
 
     @property
     def label(self) -> str:

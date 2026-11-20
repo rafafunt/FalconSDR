@@ -128,6 +128,12 @@ class CallbackStream:
             self._chunks.clear()
             self._buffered = 0
 
+    def clear(self) -> None:
+        with self._cond:
+            self._chunks.clear()
+            self._buffered = 0
+            self._cond.notify_all()
+
     def fail(self, message: str) -> None:
         with self._cond:
             self._error = message
@@ -249,6 +255,9 @@ def hackrf_library() -> ctypes.CDLL | None:
             for name, (args, res) in sig.items():
                 fn = getattr(lib, name)
                 fn.argtypes, fn.restype = args, res
+            if hasattr(lib, "hackrf_device_list_open"):
+                lib.hackrf_device_list_open.argtypes = [c.POINTER(_HackrfDeviceList), c.c_int, c.POINTER(c.c_void_p)]
+                lib.hackrf_device_list_open.restype = c.c_int
             if lib.hackrf_init() != 0:
                 return None
         except (AttributeError, OSError):
@@ -296,7 +305,22 @@ class HackRfBackend(_NativeStreamBackend):
         args = {k.strip(): v.strip() for k, v in (kv.split("=", 1) for kv in (device_args or "").split(",") if "=" in kv)}
         dev = ctypes.c_void_p()
         serial = args.get("serial")
-        rc = lib.hackrf_open_by_serial(serial.encode(), ctypes.byref(dev)) if serial else lib.hackrf_open(ctypes.byref(dev))
+        index_str = args.get("index", "")
+        if serial:
+            rc = lib.hackrf_open_by_serial(serial.encode(), ctypes.byref(dev))
+        elif index_str.isdigit() and hasattr(lib, "hackrf_device_list_open"):
+            lst = lib.hackrf_device_list()
+            if not lst:
+                raise RuntimeError("Could not list HackRF devices")
+            try:
+                idx = int(index_str)
+                if not 0 <= idx < lst.contents.devicecount:
+                    raise RuntimeError(f"HackRF device #{idx + 1} is not connected")
+                rc = lib.hackrf_device_list_open(lst, idx, ctypes.byref(dev))
+            finally:
+                lib.hackrf_device_list_free(lst)
+        else:
+            rc = lib.hackrf_open(ctypes.byref(dev))
         if rc != 0:
             raise RuntimeError(f"Could not open the HackRF: {_hackrf_error(lib, rc)}")
         self._dev = dev
@@ -358,6 +382,8 @@ class HackRfBackend(_NativeStreamBackend):
             except Exception:  # noqa: BLE001
                 pass
         lib.hackrf_close(dev)
+        self._cb = None
+        self._stream.clear()
         SoapyBackend._record_close_time()
 
     @staticmethod
@@ -543,6 +569,8 @@ class AirspyBackend(_NativeStreamBackend):
             except Exception:  # noqa: BLE001
                 pass
         lib.airspy_close(dev)
+        self._cb = None
+        self._stream.clear()
         SoapyBackend._record_close_time()
 
     @staticmethod
@@ -586,17 +614,19 @@ def native_status(max_age_s: float = 15.0) -> dict:
     with _status_lock:
         if _status is not None and time.monotonic() - _status[0] < max_age_s:
             return _status[1]
-        cmd = [sys.executable, "--list-native-sdr"] if getattr(sys, "frozen", False) else \
-            [sys.executable, str(Path(__file__).resolve().parent.parent / "main.py"), "--list-native-sdr"]
-        try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
-                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
-            data = json.loads(next(line for line in reversed(out.splitlines()) if line.startswith("{")))
-            status = {"hackrf": bool(data["hackrf"]), "airspy": bool(data["airspy"]), "devices": list(data["devices"])}
-        except (OSError, subprocess.SubprocessError, StopIteration, ValueError, KeyError, TypeError):
-            status = dict(_EMPTY_STATUS)
+    cmd = [sys.executable, "--list-native-sdr"] if getattr(sys, "frozen", False) else \
+        [sys.executable, str(Path(__file__).resolve().parent.parent / "main.py"), "--list-native-sdr"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=15, stdin=subprocess.DEVNULL,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        data = json.loads(next(line for line in reversed(out.splitlines()) if line.startswith("{")))
+        status = {"hackrf": bool(data["hackrf"]), "airspy": bool(data["airspy"]), "devices": list(data["devices"])}
+    except (OSError, subprocess.SubprocessError, StopIteration, ValueError, KeyError, TypeError):
+        status = dict(_EMPTY_STATUS)
+    with _status_lock:
         _status = (time.monotonic(), status)
-        return status
+    return status
 
 
 # USB ids of receivers that need more than the built-in RTL-SDR path (Linux; sysfs needs no library).
