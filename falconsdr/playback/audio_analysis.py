@@ -32,6 +32,18 @@ SHORT_RECORDING_SEC = 1.0
 SHORT_RECORDING_PENALTY = 15.0
 
 
+def cleanup_temp_decodes() -> None:
+    """Removes leftover decode-*.wav temp files from a prior crash."""
+    try:
+        for path in APP_DATA_DIR.glob("decode-*.wav"):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _mp3_to_wav_file(path: Path) -> Path:
     """Decodes an mp3 with ffmpeg into a temporary WAV on disk (``wave`` can't read mp3; PyAV is
     only part of the optional transcription extra) and returns its path - the caller deletes it.
@@ -47,7 +59,8 @@ def _mp3_to_wav_file(path: Path) -> Path:
     try:
         subprocess.run(
             [ffmpeg, "-v", "error", "-y", "-i", str(path), "-f", "wav", name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True, creationflags=NO_WINDOW, env=system_env(),
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            check=True, timeout=300, creationflags=NO_WINDOW, env=system_env(),
         )
     except BaseException:
         Path(name).unlink(missing_ok=True)
@@ -119,8 +132,12 @@ def compute_waveform_peaks(path: Path, n_buckets: int = 400) -> np.ndarray | Non
         return None
     peaks = np.concatenate(fine)
     n_buckets = max(1, min(n_buckets, peaks.size))
-    edge = peaks.size - (peaks.size % n_buckets)
-    peaks = peaks[:edge].reshape(n_buckets, -1).max(axis=1)
+    if peaks.size % n_buckets == 0:
+        peaks = peaks.reshape(n_buckets, -1).max(axis=1)
+    else:
+        # Spread samples evenly across n_buckets instead of dropping up to (n_buckets - 1) trailing samples.
+        edges = np.linspace(0, peaks.size, n_buckets + 1, dtype=np.intp)
+        peaks = np.maximum.reduceat(peaks, edges[:-1])
     peak_max = float(peaks.max())
     if peak_max > 1e-4:
         peaks = peaks / peak_max

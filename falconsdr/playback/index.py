@@ -27,7 +27,7 @@ from falconsdr.config import AppConfig, atomic_write_text
 from falconsdr.military_presets import get_all_presets
 from falconsdr.models import airband_channel, snap_airband_hz
 from falconsdr.playback import stats
-from falconsdr.playback.audio_analysis import analyze_wav, compute_waveform_peaks
+from falconsdr.playback.audio_analysis import analyze_wav, cleanup_temp_decodes, compute_waveform_peaks
 from falconsdr.playback.config import APP_DATA_DIR, UTC_TZ
 from falconsdr.playback.favorites_store import FavoritesStore
 from falconsdr.playback.models import MANUAL_FREQ_KHZ, QualityMetrics, Recording, TranscriptionResult
@@ -93,6 +93,7 @@ class Library:
         return Path(self.config.recording.output_dir)
 
     def start(self) -> None:
+        cleanup_temp_decodes()
         try:
             organize(self.root)  # legacy loose files -> date folders (never touches open files: those are in date folders)
         except OSError:
@@ -315,14 +316,16 @@ class Library:
             self._blobs.clear()
 
     def _blob(self, rel: str, rec: Recording, names: dict[int, str]) -> str:
-        blob = self._blobs.get(rel)
+        with self._lock:
+            blob = self._blobs.get(rel)
         if blob is None:
             blob = " ".join((
                 f"{rec.freq_khz / 1000:.3f}", airband_channel(rec.freq_khz * 1000, ch833=True), names.get(rec.freq_khz, ""),
                 rec.dt_local.strftime("%Y-%m-%d %H:%M:%S"), rec.dt_utc.strftime("%Y-%m-%d %H:%M"),
                 rec.path.name, rec.transcript_text,
             )).lower()
-            self._blobs[rel] = blob
+            with self._lock:
+                self._blobs[rel] = blob
         return blob
 
     def _select(self, sel: Iterable[str], q: str, since: Optional[float], until: Optional[float],
@@ -440,7 +443,8 @@ class Library:
 
     def stats(self, sel=(), utc: bool = False) -> dict:
         recs = [rec for _, rec in self._select(sel, "", None, None, 0.0)]
-        summary = stats.summarize(recs, use_utc=utc)
+        freq_st = stats.frequency_stats(recs, use_utc=utc)
+        summary = stats.summarize(recs, use_utc=utc, freq_st=freq_st)
         names = self._freq_names()
         return {
             "summary": {
@@ -456,7 +460,7 @@ class Library:
                 {"freq_khz": s.freq_khz, "name": names.get(s.freq_khz, ""), "count": s.count,
                  "quality": round(s.avg_quality, 1), "duration": s.total_duration_sec,
                  "last": s.last_heard.isoformat()}
-                for s in stats.frequency_stats(recs, use_utc=utc)
+                for s in freq_st
             ],
             "per_day": stats.counts_per_day(recs, use_utc=utc),
             "per_hour": stats.counts_per_hour(recs, use_utc=utc),
@@ -464,32 +468,35 @@ class Library:
         }
 
     def peaks(self, rel: str) -> list[float]:
-        cached = self._peaks.get(rel)
+        with self._lock:
+            cached = self._peaks.get(rel)
         if cached is None:
             values = compute_waveform_peaks(self.path_of(rel), 600)
             cached = [round(float(v), 3) for v in values] if values is not None else []
-            if len(self._peaks) > 300:
-                self._peaks.clear()
-            self._peaks[rel] = cached
+            with self._lock:
+                if len(self._peaks) > 300:
+                    self._peaks.clear()
+                self._peaks[rel] = cached
         return cached
 
     def storage(self) -> dict:
         import shutil
         with self._lock:
-            recs = list(self._recs.values())
+            items = list(self._recs.items())
+            mirrored_set = set(self._mirrored)
         try:
             disk = shutil.disk_usage(self.root if self.root.exists() else self.root.parent)
             disk_info = {"total": disk.total, "free": disk.free}
         except OSError:
             disk_info = {"total": None, "free": None}
-        oldest = min((r.dt_utc for r in recs), default=None)
+        oldest = min((r.dt_utc for _, r in items), default=None)
         return {
             "root": str(self.root),
-            "count": len(recs),
-            "bytes": sum(r.size for r in recs),
+            "count": len(items),
+            "bytes": sum(r.size for _, r in items),
             "oldest": oldest.isoformat() if oldest else None,
-            "mirrored": sum(1 for r in recs if self._rel_safe(r) in self._mirrored),
-            "favorites": sum(1 for r in recs if r.is_favorite),
+            "mirrored": sum(1 for rel, _ in items if rel in mirrored_set),
+            "favorites": sum(1 for _, r in items if r.is_favorite),
             **disk_info,
         }
 
@@ -516,31 +523,40 @@ class Library:
         self.favorites.save()  # once, and not while holding the lock the scan thread waits on
 
     def delete(self, rels: Iterable[str]) -> int:
+        with self._lock:
+            targets = [(rel, self._recs.get(rel)) for rel in rels]
+        # Unlink files outside self._lock so bulk deletes don't stall ScannerEngine.add_file() (gotcha 50).
+        removed: list[tuple[str, Recording]] = []
+        for rel, rec in targets:
+            if rec is None:
+                continue
+            try:
+                rec.path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.exception("Could not delete %s", rec.path)
+                continue
+            removed.append((rel, rec))
         deleted = 0
         with self._lock:
-            for rel in rels:
-                rec = self._recs.pop(rel, None)
-                if rec is None:
+            for rel, rec in removed:
+                if self._recs.get(rel) is not rec:
                     continue
-                try:
-                    rec.path.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    self._recs[rel] = rec
-                    logger.exception("Could not delete %s", rec.path)
-                    continue
+                self._recs.pop(rel, None)
                 self.quality.remove(rec.key)
                 self.transcripts.remove(rec.key)
                 self.favorites.remove(rec.key)
                 self._mirrored.discard(rel)
                 self._blobs.pop(rel, None)
+                self._peaks.pop(rel, None)
                 self._requests.pop(rel, None)
                 self._leases.pop(rel, None)
                 deleted += 1
             if deleted:
-                self.favorites.save()
                 self._dirty = True
+        if deleted:
+            self.favorites.save()
         return deleted
 
     def set_transcript_text(self, rel: str, text: str) -> None:

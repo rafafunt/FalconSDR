@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Set
 
@@ -18,13 +19,18 @@ logger = logging.getLogger(__name__)
 class FavoritesStore:
     def __init__(self, favorites_file: Path = FAVORITES_FILE):
         self.favorites_file = favorites_file
+        self._lock = threading.Lock()
+        self._save_lock = threading.Lock()
         self._keys: Set[str] = set()
         self._load()
 
     def _load(self) -> None:
         if self.favorites_file.exists():
             try:
-                self._keys = set(json.loads(self.favorites_file.read_text(encoding="utf-8")))
+                raw = json.loads(self.favorites_file.read_text(encoding="utf-8"))
+                if not isinstance(raw, list):
+                    raise ValueError("favorites file is not a JSON list")
+                self._keys = {str(k) for k in raw}
             except (ValueError, OSError) as exc:
                 logger.warning("Failed to load the favorites list, starting fresh")
                 if isinstance(exc, ValueError):
@@ -32,28 +38,35 @@ class FavoritesStore:
                 self._keys = set()
 
     def save(self) -> None:
-        try:
-            atomic_write_text(self.favorites_file, json.dumps(sorted(self._keys)))
-        except OSError as exc:
-            logger.warning("Failed to save the favorites list: %s", exc)
+        with self._save_lock:
+            with self._lock:
+                snapshot = sorted(self._keys)
+            try:
+                atomic_write_text(self.favorites_file, json.dumps(snapshot))
+            except OSError as exc:
+                logger.warning("Failed to save the favorites list: %s", exc)
 
     def is_favorite(self, key: str) -> bool:
-        return key in self._keys
+        with self._lock:
+            return key in self._keys
 
     def set_favorite(self, key: str, favorite: bool) -> None:
         """In memory only - the caller saves once after a batch (starring 5,000
         recordings must not rewrite the whole file 5,000 times)."""
-        if favorite:
-            self._keys.add(key)
-        else:
-            self._keys.discard(key)
+        with self._lock:
+            if favorite:
+                self._keys.add(key)
+            else:
+                self._keys.discard(key)
 
     def prune(self, valid_keys: set[str]) -> int:
         """Forgets stars of files that no longer exist; returns how many (caller saves)."""
-        stale = self._keys - valid_keys
-        self._keys -= stale
-        return len(stale)
+        with self._lock:
+            stale = self._keys - valid_keys
+            self._keys -= stale
+            return len(stale)
 
     def remove(self, key: str) -> None:
         """Removes a single entry (e.g. right after the user manually deletes a recording); caller saves."""
-        self._keys.discard(key)
+        with self._lock:
+            self._keys.discard(key)
