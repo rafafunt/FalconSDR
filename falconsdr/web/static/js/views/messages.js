@@ -5,7 +5,7 @@
 import { api, fmtTime, h, icon, mount, select, seg, t } from '../core.js';
 import { S, cfg, on } from '../state.js';
 
-export const NAMES = () => ({ acars: 'ACARS', aprs: 'APRS', rtl_433: t('Sensors'), vdl2: 'VDL2' });
+export const NAMES = () => ({ acars: 'ACARS', aprs: 'APRS', tetra: 'TETRA', rtl_433: t('Sensors'), vdl2: 'VDL2' });
 const MAX_ROWS = 800;
 const REPEAT_WINDOW_S = 180;
 
@@ -62,11 +62,42 @@ function body(e) {
     const where = e.lat !== undefined ? `${(+e.lat).toFixed(4)}, ${(+e.lon).toFixed(4)}` : '';
     return [h('b', e.source), h('span.muted', e.type || ''), where ? h('span', where) : null, e.comment || e.text ? h('span', e.comment || e.text) : null, mapLink(e)];
   }
+  if (e.kind === 'tetra') {
+    const sub = e.subtype || '';
+    if (sub === 'sync') {
+      return [h('b', `MCC ${e.mcc} / MNC ${e.mnc}`), h('span.chip', `CC ${e.cc}`), h('span.muted', `TS ${e.ts || 1}`)];
+    }
+    if (sub === 'sysinfo') {
+      return [h('b', `MCC ${e.mcc} / MNC ${e.mnc}`), h('span.chip', `LA ${e.la}`),
+        h('span.chip', { class: e.encrypted ? 'warn' : 'good' }, e.encrypted ? t('Encrypted network') : t('Clear network'))];
+    }
+    if (sub === 'call') {
+      return [h('b', `GSSI ${e.gssi || 0}`), e.issi ? h('span.muted', `← ISSI ${e.issi}`) : null,
+        h('span.chip', e.event || 'call'), h('span.muted', `TS ${e.ts || 1}`)];
+    }
+    if (sub === 'encrypted') {
+      return [h('b', e.gssi ? `GSSI ${e.gssi}` : t('Encrypted')), h('span.chip.warn', t('Encrypted (muted)')),
+        h('span.muted', `TS ${e.ts || 1}`)];
+    }
+    if (sub === 'sds') {
+      return [h('b', `ISSI ${e.src || 0}`), h('span.muted', `→ ${e.dst || 0}`), h('span.chip', 'SDS'),
+        e.text ? h('span.mono.msg-text', e.text) : null];
+    }
+    if (sub === 'lip') {
+      const where = e.lat !== undefined ? `${(+e.lat).toFixed(4)}, ${(+e.lon).toFixed(4)}` : '';
+      return [h('b', `ISSI ${e.src || 0}`), h('span.chip', 'LIP'), where ? h('span', where) : null, mapLink(e)];
+    }
+  }
   return [h('span', e.summary)];
 }
 
 export function whoOf(e) {
   if (e.kind === 'sensor') return `${e.model} #${e.device_id}`;      // as the summary spells it, so the search finds it
+  if (e.kind === 'tetra') {
+    if (e.gssi) return `GSSI ${e.gssi}`;
+    if (e.src) return `ISSI ${e.src}`;
+    if (e.mcc !== undefined) return `MCC ${e.mcc} / MNC ${e.mnc}`;
+  }
   return e.registration || e.source || e.src || e.model || '';
 }
 

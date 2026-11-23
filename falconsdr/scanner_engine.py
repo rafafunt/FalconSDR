@@ -35,6 +35,7 @@ from .channelizer import (
 )
 from .config import AppConfig, CONFIG_DIR, RecordingConfig, VfoRangeConfig
 from . import digital_voice
+from .addons import tetra as tetra_addon
 from .dsp import Demodulator, NoiseReducer
 from .i18n import tr
 from . import schedule
@@ -351,6 +352,8 @@ class _Slot:
         # Digital voice (DMR/YSF): its dsd-fme process, None for analog - or
         # when the add-on is missing, then it plays as NFM.
         self.dsd: digital_voice.DsdDecoder | None = None
+        # Experimental clear-mode TETRA decoder (falconsdr-tetra subprocess).
+        self.tetra: tetra_addon.TetraSlotDecoder | None = None
         # Add-on data decoder (ACARS, APRS - falconsdr/addons): reads this slot's audio instead of playing/recording it.
         self.data_decoder = None
         self.data_addon = ""
@@ -507,6 +510,7 @@ class ScannerEngine(threading.Thread):
         self._seen_rates_version = 0
         self._logged_checkpoints: set[str] = set()  # see _checkpoint_once()
         self._dsd_warned = False
+        self._tetra_warned = False
 
         # Guards the scheduling state below: _rebuild_windows() replaces it
         # from the API thread while _next_window() reads it on this thread.
@@ -1899,8 +1903,20 @@ class ScannerEngine(threading.Thread):
                 slot.announced_call = call
                 self.signals.log.emit(tr("{mod} {freq:.4f} MHz: to {tg} from {src}").format(
                     mod=slot.modulation.value, freq=slot.freq_hz / 1e6, tg=call[0], src=call[1]))
+        elif getattr(slot, "tetra", None) is not None:
+            squelched = False
+            slot.tetra.feed(slot.demod.channelize_iq(iq, slot.offset_hz, tetra_addon.TETRA_IQ_RATE))
+            audio = slot.tetra.read(round(iq.size * AUDIO_RATE / slot.demod.sample_rate))
+            events = slot.tetra.drain_events()
+            if events and self.addons is not None:
+                self.addons.publish_decoded("tetra", slot.freq_hz, events)
+            call = (slot.tetra.talkgroup, slot.tetra.source)
+            if call[0] and call != slot.announced_call:
+                slot.announced_call = call
+                self.signals.log.emit(tr("{mod} {freq:.4f} MHz: to {tg} from {src}").format(
+                    mod=slot.modulation.value, freq=slot.freq_hz / 1e6, tg=call[0], src=call[1] or "?"))
         else:
-            mod = Modulation.NFM if slot.modulation in digital_voice.DIGITAL_MODULATIONS else slot.modulation
+            mod = Modulation.NFM if slot.modulation in (*digital_voice.DIGITAL_MODULATIONS, Modulation.TETRA) else slot.modulation
             audio = slot.demod.demod(iq, mod, slot.offset_hz)
         if slot.data_decoder is not None:
             self._decode_data(slot, audio)
@@ -1944,7 +1960,7 @@ class ScannerEngine(threading.Thread):
             modulation = claim.modulation      # the decoder needs this demodulation whatever the band says
         offset_hz = float(freq_hz - window.center_hz)
         slot = _Slot(freq_hz, name, modulation, offset_hz, demod, noise_reducer, recorder)
-        if claim is not None:
+        if claim is not None and claim.addon_id != "tetra":
             slot.data_decoder, slot.data_addon = claim.make(), claim.addon_id
         slot.window = window  # remembered for _register_recency_boost on close
         if modulation in digital_voice.DIGITAL_MODULATIONS:
@@ -1955,6 +1971,21 @@ class ScannerEngine(threading.Thread):
                     self._dsd_warned = True
                     self.signals.log.emit(tr("Digital voice is not available ({error}) - playing {mod} channels as NFM").format(
                         error=exc, mod=modulation.value))
+        elif modulation == Modulation.TETRA:
+            paths = getattr(self.config, "addons", None)
+            paths_map = paths.paths if paths is not None else {}
+            try:
+                slot.tetra = tetra_addon.TetraSlotDecoder(
+                    freq_hz, AUDIO_RATE,
+                    custom_path=str(paths_map.get("tetra", "")),
+                    codec_path=str(paths_map.get("tetra_codec", "")),
+                )
+                if claim is None and self.addons is not None:
+                    self.addons.note_slot("tetra")
+            except (RuntimeError, OSError) as exc:
+                if not self._tetra_warned:
+                    self._tetra_warned = True
+                    self.signals.log.emit(tr("TETRA decoder is not available ({error}) - playing TETRA channels as NFM").format(error=exc))
         self._slots[freq_hz] = slot
 
         # Higher weight wins the live speaker; a tie keeps whichever slot
@@ -2020,17 +2051,31 @@ class ScannerEngine(threading.Thread):
             slot.meta.update(talkgroup=slot.dsd.talkgroup, source=slot.dsd.source, encrypted=slot.dsd.encrypted)
             if slot.dsd.encrypted:
                 self.signals.log.emit(tr("{freq:.4f} MHz: encrypted - not decoded").format(freq=freq_hz / 1e6))
+        tetra = getattr(slot, "tetra", None)
+        if tetra is not None:
+            tetra.close()
+            rem = tetra.drain_events()
+            if rem and self.addons is not None:
+                self.addons.publish_decoded("tetra", freq_hz, rem)
+            slot.meta.update(
+                talkgroup=tetra.talkgroup, source=tetra.source, encrypted=tetra.encrypted,
+                mcc=tetra.mcc, mnc=tetra.mnc,
+            )
+            if tetra.encrypted:
+                self.signals.log.emit(tr("{freq:.4f} MHz: encrypted - not decoded").format(freq=freq_hz / 1e6))
         finished_path = None
         # Check whether this slot actually opened a file (not the current config flag:
         # toggling auto-recording off mid-transmission must still finalize the open WAV).
         if slot.recorder.is_writing:
             finished_path = slot.recorder.end_transmission()
             slot.recorder.stop_session()
-            if (finished_path is None and reason == "linger" and not slot.recording_failed and not (slot.dsd and slot.dsd.encrypted)
+            tetra_signalling_only = bool(tetra and (tetra.encrypted or tetra.events_seen > 0))
+            if (finished_path is None and reason == "linger" and not slot.recording_failed
+                    and not (slot.dsd and slot.dsd.encrypted) and not tetra_signalling_only
                     and not self._is_silent_data(slot)):
                 # Recorder dropped it - say so, a silent loss looks like a bug.
                 self.signals.log.emit(
-                    (tr("{freq:.4f} MHz: no digital voice decoded - recording discarded") if slot.dsd
+                    (tr("{freq:.4f} MHz: no digital voice decoded - recording discarded") if (slot.dsd or tetra)
                      else tr("{freq:.4f} MHz: nothing above the squelch level - recording discarded")).format(freq=freq_hz / 1e6)
                 )
             if finished_path is not None and reason == "reflection":
@@ -2147,7 +2192,8 @@ class ScannerEngine(threading.Thread):
             slot.noise_reducer.reset()
             slot.was_squelched = False
         # Vocoder output is already clean; a spectral gate only damages it.
-        mono = audio if slot.dsd is not None else self._apply_noise_reduction(slot, audio)
+        is_digital = slot.dsd is not None or getattr(slot, "tetra", None) is not None
+        mono = audio if is_digital else self._apply_noise_reduction(slot, audio)
         if slot.freq_hz == self._primary_freq:
             self.signals.live_audio_ready.emit(mono)
         if slot.freq_hz == self._primary_freq:
@@ -2156,7 +2202,7 @@ class ScannerEngine(threading.Thread):
         if self.config.recording.enabled and not slot.recording_failed:
             # Digital: only decoded voice makes a recording worth keeping (not an encrypted call's silence).
             try:
-                slot.recorder.write_audio(mono, real=slot.dsd is None or bool(mono.any()))
+                slot.recorder.write_audio(mono, real=not is_digital or bool(mono.any()))
             except OSError as exc:
                 self._recording_failed(slot, exc)
 

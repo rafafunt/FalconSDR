@@ -53,7 +53,11 @@ _states: dict[str, dict] = {}
 
 
 def can_install(addon_id: str) -> bool:
-    """vdl2: built from source (Linux, macOS); rtl_433: the author's ready build (Windows, macOS)."""
+    """vdl2: built from source (Linux, macOS); rtl_433: the author's ready build (Windows, macOS);
+    tetra: built locally from tetra-rs/ via cargo."""
+    if addon_id == "tetra":
+        from . import tetra
+        return tetra.can_build_tetra()
     if addon_id == "vdl2":
         return sys.platform != "win32"
     return addon_id == "rtl_433" and _rtl433_asset() is not None
@@ -64,12 +68,19 @@ def install_dir(addon_id: str) -> Path:
 
 
 def state(addon_id: str) -> dict:
+    if addon_id == "tetra":
+        from . import tetra
+        return tetra.install_state()
     with _lock:
         s = _states.get(addon_id) or {"running": False, "log": [], "error": "", "hint": ""}
         return {**s, "log": list(s["log"][-12:])}
 
 
 def start(addon_id: str) -> None:
+    if addon_id == "tetra":
+        from . import tetra
+        tetra.start_build()
+        return
     if not can_install(addon_id):
         raise RuntimeError(tr("FalconSDR cannot install this one on this computer: put the program in {folder} or set its path below.").format(folder=install_dir(addon_id)))
     with _lock:
@@ -80,6 +91,10 @@ def start(addon_id: str) -> None:
 
 
 def uninstall(addon_id: str) -> None:
+    if addon_id == "tetra":
+        from . import tetra
+        tetra.uninstall_tetra()
+        return
     with _lock:
         if _states.get(addon_id, {}).get("running"):
             raise RuntimeError(tr("Installation is in progress - wait for it to finish."))

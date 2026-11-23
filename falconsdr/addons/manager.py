@@ -18,6 +18,7 @@ from ..i18n import tr
 from ..models import Modulation
 from .acars import AcarsDecoder
 from .aprs import AprsDecoder
+from . import tetra as tetra_addon
 from .events import EventHub
 from .stats import StatsStore
 from ..sdr_backend import SoapyBackend
@@ -56,6 +57,10 @@ CATALOG: tuple[AddonSpec, ...] = (
               "Reads VDL Mode 2 aircraft data link (136.7-137 MHz) with dumpvdl2. Needs the receiver for itself while it runs.",
               "dumpvdl2: GPL-3.0, libacars: MIT", homepage="https://github.com/szpajder/dumpvdl2",
               frequencies="vdl2_frequencies_hz", exe=("dumpvdl2", "dumpvdl2.exe")),
+    AddonSpec("tetra", "TETRA (clear-mode)", "builtin",
+              "Decodes unencrypted TETRA downlink control channels (MCC/MNC/LA, clear calls, SDS text, LIP GPS). Encrypted networks and calls stay muted and are never decrypted.",
+              "FalconSDR, GPL-3.0-or-later", modulation=Modulation.TETRA, frequencies="tetra_frequencies_hz",
+              exe=("falconsdr-tetra", "falconsdr-tetra.exe"), experimental=True),
 )
 SPECS = {s.id: s for s in CATALOG}
 
@@ -134,6 +139,10 @@ def clean_options(addon_id: str, current: dict, patch: dict) -> dict:
 
 
 def _install_hint(spec: AddonSpec) -> str:
+    if spec.id == "tetra":
+        if installer.can_install("tetra"):
+            return tr("FalconSDR can compile the bundled Rust TETRA decoder locally (needs cargo/rustc), or put falconsdr-tetra in {folder}.").format(folder=BIN_DIR / "tetra")
+        return tr("Put falconsdr-tetra in {folder} or set its path below.").format(folder=BIN_DIR / "tetra")
     if spec.id == "rtl_433":
         if installer.can_install("rtl_433"):
             return tr("FalconSDR can download the ready build the author publishes for this system.")
@@ -154,6 +163,24 @@ def summarize(event: dict) -> str:
     if kind == "acars":
         head = " ".join(x for x in (event.get("registration"), event.get("flight"), f"[{event.get('label', '')}]") if x)
         return f"{head} {event.get('text', '')}".replace("\n", " ").strip()
+    if kind == "tetra":
+        sub = event.get("subtype", "")
+        if sub == "sync":
+            return f"SYNC · MCC {event.get('mcc', 0)} / MNC {event.get('mnc', 0)} · CC {event.get('cc', 0)} · TS {event.get('ts', 1)}"
+        if sub == "sysinfo":
+            enc = "Encrypted" if event.get("encrypted") else "Clear"
+            return f"SYSINFO · MCC {event.get('mcc', 0)} / MNC {event.get('mnc', 0)} · LA {event.get('la', 0)} · {enc}"
+        if sub == "call":
+            ev = event.get("event", "call")
+            who = f"GSSI {event.get('gssi', 0)}" + (f" ← ISSI {event.get('issi')}" if event.get("issi") else "")
+            return f"Call {ev} · {who} · TS {event.get('ts', 1)}"
+        if sub == "encrypted":
+            who = f"GSSI {event.get('gssi', 0)}" if event.get("gssi") else "Encrypted call"
+            return f"Encrypted · {who} · TS {event.get('ts', 1)} (muted)"
+        if sub == "sds":
+            return f"SDS · {event.get('src', 0)} → {event.get('dst', 0)}: {event.get('text', '')}".strip()
+        if sub == "lip":
+            return f"LIP · {event.get('src', 0)}: {float(event.get('lat', 0.0)):.4f}, {float(event.get('lon', 0.0)):.4f}"
     return event.get("summary", "")
 
 
@@ -214,6 +241,9 @@ class AddonManager:
 
     def program(self, addon_id: str) -> str | None:
         spec = SPECS[addon_id]
+        if addon_id == "tetra":
+            exe = tetra_addon.tetra_executable(str(self._config.addons.paths.get("tetra", "")))
+            return str(exe) if exe is not None else None
         return find_program(spec.exe, str(self._config.addons.paths.get(addon_id, "")), addon_id) if spec.exe else None
 
     def status(self) -> list[dict]:
@@ -221,21 +251,25 @@ class AddonManager:
         out = []
         for spec in CATALOG:
             program = self.program(spec.id) if spec.exe else None
-            out.append({
+            installed = (program is not None) if spec.exe else (spec.kind == "builtin")
+            entry = {
                 "id": spec.id, "name": spec.name, "kind": spec.kind, "summary": tr(spec.summary), "license": tr(spec.license),
                 "homepage": spec.homepage, "enabled": self.enabled(spec.id), "experimental": spec.experimental,
-                "installed": spec.kind == "builtin" or program is not None, "program": program or "",
+                "installed": installed, "program": program or "",
                 "running": spec.id in self.running_ids,
                 "frequencies": list(getattr(cfg, spec.frequencies)) if spec.frequencies else [],
                 "receiver": self.receiver(spec.id, 0 if spec.kind == "external" else -1),
                 "options": clean_options(spec.id, cfg.options.get(spec.id, {}), {}) if spec.id in OPTION_DEFAULTS else {},
                 "path": str(cfg.paths.get(spec.id, "")), "extra_args": str(cfg.extra_args.get(spec.id, "")),
-                "install_hint": _install_hint(spec) if spec.kind == "external" and program is None else "",
+                "install_hint": _install_hint(spec) if spec.exe and program is None else "",
                 "managed": bool(program) and Path(program).is_relative_to(BIN_DIR),
                 "can_install": installer.can_install(spec.id), "install": installer.state(spec.id) if installer.can_install(spec.id) else None,
                 "stats": dict(self._stats[spec.id]),
                 "error": self.last_error if self.last_error.startswith(spec.id + ":") else "",
-            })
+            }
+            if spec.id == "tetra":
+                entry["codec_path"] = str(cfg.paths.get("tetra_codec", ""))
+            out.append(entry)
         return out
 
     def configure(self, addon_id: str, patch: dict) -> None:
@@ -257,6 +291,8 @@ class AddonManager:
             cfg.receivers = {**cfg.receivers, addon_id: int(patch["receiver"])}
         if "path" in patch:
             cfg.paths = {**cfg.paths, addon_id: str(patch["path"]).strip()}
+        if "codec_path" in patch and addon_id == "tetra":
+            cfg.paths = {**cfg.paths, "tetra_codec": str(patch["codec_path"]).strip()}
         if "extra_args" in patch:
             raw_extra = str(patch["extra_args"]).strip()
             shlex.split(raw_extra, posix=os.name != "nt")  # reject unclosed quotes before saving
@@ -271,6 +307,9 @@ class AddonManager:
         value = self._config.addons.receivers.get(addon_id, default)
         return value if isinstance(value, int) else default
 
+    def note_slot(self, addon_id: str) -> None:
+        self._stats[addon_id]["slots"] += 1
+
     def claim(self, freq_hz: int, receiver: int = 0) -> Claim | None:
         cfg = self._config.addons
         for spec in CATALOG:
@@ -278,8 +317,10 @@ class AddonManager:
                 continue
             if self.receiver(spec.id) not in (-1, receiver):
                 continue          # this add-on listens on another receiver
+            if spec.id == "tetra" and self.program("tetra") is None:
+                continue
             if any(abs(freq_hz - int(f)) <= CLAIM_TOLERANCE_HZ for f in getattr(cfg, spec.frequencies)):
-                make = AcarsDecoder if spec.id == "acars" else AprsDecoder
+                make = (lambda: None) if spec.id == "tetra" else (AcarsDecoder if spec.id == "acars" else AprsDecoder)
                 self._stats[spec.id]["slots"] += 1
                 return Claim(spec.id, spec.modulation, make)
         return None

@@ -1371,5 +1371,93 @@ class AuditAddonsRegressionsTest(unittest.TestCase):
         self.assertTrue(all(seen_unlocked))
 
 
+class TetraDecoderTest(unittest.TestCase):
+    def test_channelize_iq_shifts_and_decimates_to_72k(self) -> None:
+        from falconsdr.dsp import Demodulator
+        fs = 2_400_000
+        offset = 150_000.0
+        n = 48_000
+        t = np.arange(n, dtype=np.float64) / fs
+        iq = np.exp(2j * np.pi * (offset + 5_000.0) * t).astype(np.complex64)
+        dem = Demodulator(fs, 12500)
+        out = dem.channelize_iq(iq, offset_hz=offset, rate=72_000)
+        self.assertEqual(out.dtype, np.complex64)
+        self.assertGreater(out.size, 1000)
+        # Peak FFT bin of channelized baseband should sit right at +5 kHz.
+        spec = np.abs(np.fft.fft(out[-1024:]))
+        freqs = np.fft.fftfreq(1024, d=1.0 / 72_000)
+        peak_hz = float(freqs[int(np.argmax(spec))])
+        self.assertAlmostEqual(peak_hz, 5_000.0, delta=250.0)
+
+    def test_summarize_and_manager_catalog_for_tetra(self) -> None:
+        from falconsdr.addons.manager import AddonManager, summarize
+        from falconsdr.config import AppConfig
+        self.assertIn("MCC 260 / MNC 42", summarize({"kind": "tetra", "subtype": "sync", "mcc": 260, "mnc": 42, "cc": 7, "ts": 1}))
+        self.assertIn("Encrypted", summarize({"kind": "tetra", "subtype": "sysinfo", "mcc": 260, "mnc": 42, "la": 101, "encrypted": True}))
+        self.assertIn("GSSI 1001", summarize({"kind": "tetra", "subtype": "call", "event": "setup", "gssi": 1001, "issi": 2601111, "ts": 2}))
+        self.assertIn("muted", summarize({"kind": "tetra", "subtype": "encrypted", "gssi": 9999, "ts": 3}))
+        self.assertIn("TEST CLEAR SDS", summarize({"kind": "tetra", "subtype": "sds", "src": 2602222, "dst": 1001, "text": "TEST CLEAR SDS"}))
+        self.assertIn("50.0619", summarize({"kind": "tetra", "subtype": "lip", "src": 2603333, "lat": 50.0619, "lon": 19.9368}))
+
+        cfg = AppConfig()
+        mgr = AddonManager(cfg)
+        mgr.configure("tetra", {"enabled": True, "frequencies": [392_412_500], "codec_path": "/tmp/fake-codec"})
+        self.assertIn("tetra", cfg.addons.enabled)
+        self.assertEqual(cfg.addons.tetra_frequencies_hz, [392_412_500])
+        self.assertEqual(cfg.addons.paths.get("tetra_codec"), "/tmp/fake-codec")
+        entry = next(a for a in mgr.status() if a["id"] == "tetra")
+        self.assertTrue(entry["experimental"])
+        self.assertEqual(entry["codec_path"], "/tmp/fake-codec")
+
+    def test_tetra_slot_decoder_end_to_end_pipe_and_encrypted_silence(self) -> None:
+        import subprocess
+        import time
+        from falconsdr.addons import tetra as tetra_mod
+        from falconsdr.addons.manager import AddonManager
+        from falconsdr.config import AppConfig
+        exe = tetra_mod.tetra_executable()
+        if exe is None:
+            self.skipTest("falconsdr-tetra binary not built")
+        raw = subprocess.check_output([str(exe), "--emit-test-iq"], timeout=15)
+        iq = np.frombuffer(raw, dtype="<c8")
+        self.assertGreater(iq.size, 4000)
+
+        dec = tetra_mod.TetraSlotDecoder(392_412_500, out_rate=12500)
+        try:
+            for i in range(0, iq.size, 2160):
+                dec.feed(iq[i:i + 2160])
+            # Give the subprocess pipe a moment to flush stdout JSON lines.
+            events = []
+            for _ in range(40):
+                events.extend(dec.drain_events())
+                if len(events) >= 6:
+                    break
+                time.sleep(0.05)
+            audio = dec.read(500)
+        finally:
+            dec.close()
+
+        # Without a clear-mode vocoder (and on encrypted slots), output audio MUST be exact silence.
+        self.assertEqual(audio.shape, (500,))
+        self.assertFalse(bool(audio.any()))
+        self.assertEqual((dec.mcc, dec.mnc, dec.cc, dec.la), (260, 42, 7, 101))
+        self.assertTrue(dec.encrypted)
+
+        subtypes = {e["subtype"] for e in events}
+        self.assertTrue({"sync", "sysinfo", "call", "encrypted", "sds", "lip"}.issubset(subtypes), f"got {subtypes}")
+        sds = next(e for e in events if e["subtype"] == "sds")
+        self.assertEqual(sds["text"], "TEST CLEAR SDS")
+        lip = next(e for e in events if e["subtype"] == "lip")
+        self.assertAlmostEqual(lip["lat"], 50.0619, places=3)
+        self.assertAlmostEqual(lip["lon"], 19.9368, places=3)
+
+        # Verify AddonManager publishes them cleanly into EventHub + StatsStore.
+        mgr = AddonManager(AppConfig())
+        mgr.publish_decoded("tetra", 392_412_500, events)
+        rows = mgr.hub.since(0, addon="tetra")
+        self.assertGreaterEqual(len(rows), 6)
+        self.assertTrue(any("TEST CLEAR SDS" in r["summary"] for r in rows))
+
+
 if __name__ == "__main__":
     unittest.main()

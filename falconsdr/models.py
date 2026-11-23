@@ -25,6 +25,7 @@ class Modulation(str, Enum):
     LSB = "LSB"
     DMR = "DMR"  # digital - digital_voice.py, needs the optional dsd-fme add-on
     YSF = "YSF"  # Yaesu System Fusion (C4FM)
+    TETRA = "TETRA"  # experimental clear-mode TETRA - addons/tetra.py (falconsdr-tetra)
 
 
 # Amateur convention: LSB below 10 MHz, USB above - except 60 m, which is USB.

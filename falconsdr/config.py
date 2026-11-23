@@ -316,6 +316,7 @@ class AddonsConfig:
     # Channels the built-in decoders listen on while scanning (a slot there decodes instead of playing/recording).
     acars_frequencies_hz: list = field(default_factory=lambda: [131_525_000, 131_725_000, 131_825_000])
     aprs_frequencies_hz: list = field(default_factory=lambda: [144_800_000])
+    tetra_frequencies_hz: list = field(default_factory=list)
     vdl2_frequencies_hz: list = field(default_factory=lambda: [136_725_000, 136_775_000, 136_825_000, 136_875_000, 136_975_000])
     # Which receiver (index in the Controller's order: 0 = the main one, then the extra dongles) an add-on uses.
     # External programs hold that one receiver while the others keep scanning; a built-in decoder only decodes

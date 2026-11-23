@@ -3950,3 +3950,57 @@ msgstr "Najczęstsze częstotliwości (top {n})"
 
 msgid "Refresh devices"
 msgstr "Odśwież listę urządzeń"
+
+msgid "TETRA (experimental)"
+msgstr "TETRA (eksperymentalne)"
+
+msgid "build in Add-ons"
+msgstr "zbuduj w Dodatkach"
+
+msgid "Decodes unencrypted TETRA downlink control channels (MCC/MNC/LA, clear calls, SDS text, LIP GPS). Encrypted networks and calls stay muted and are never decrypted."
+msgstr "Dekoduje nieszyfrowane kanały sterujące TETRA downlink (MCC/MNC/LA, jawne wywołania, tekst SDS, pozycje GPS LIP). Sieci i rozmowy szyfrowane pozostają wyciszone i nigdy nie są odszyfrowywane."
+
+msgid "FalconSDR can compile the bundled Rust TETRA decoder locally (needs cargo/rustc), or put falconsdr-tetra in {folder}."
+msgstr "FalconSDR może skompilować wbudowany dekoder TETRA w Rust lokalnie (wymaga cargo/rustc) lub możesz umieścić plik falconsdr-tetra w {folder}."
+
+msgid "Put falconsdr-tetra in {folder} or set its path below."
+msgstr "Umieść plik falconsdr-tetra w {folder} lub wskaż jego ścieżkę poniżej."
+
+msgid "TETRA source code (tetra-rs/) is not present in this installation."
+msgstr "Brak kodu źródłowego TETRA (tetra-rs/) w tej instalacji."
+
+msgid "Rust compiler (cargo) was not found."
+msgstr "Nie znaleziono kompilatora Rust (cargo)."
+
+msgid "TETRA decoder is not available ({error}) - playing TETRA channels as NFM"
+msgstr "Dekoder TETRA nie jest dostępny ({error}) - kanały TETRA są odtwarzane jako NFM"
+
+msgid "Encrypted network"
+msgstr "Sieć szyfrowana"
+
+msgid "Clear network"
+msgstr "Sieć nieszyfrowana"
+
+msgid "Encrypted"
+msgstr "Szyfrowane"
+
+msgid "Encrypted (muted)"
+msgstr "Szyfrowane (wyciszone)"
+
+msgid "Build decoder"
+msgstr "Zbuduj dekoder"
+
+msgid "Clear-mode only: encrypted networks and calls are detected and muted, never decrypted. You can also choose TETRA directly as the modulation of any band or Memory List channel."
+msgstr "Tylko tryb jawny (clear-mode): szyfrowane sieci i połączenia są wykrywane oraz wyciszane, nigdy odszyfrowywane. Możesz też wybrać TETRA bezpośrednio jako modulację dowolnego pasma lub kanału z Listy pamięci."
+
+msgid "Optional: automatically decode these carriers as TETRA even inside an NFM band."
+msgstr "Opcjonalnie: automatycznie dekoduj te nośne jako TETRA nawet wewnątrz pasma NFM."
+
+msgid "Optional path to external ACELP speech codec helper"
+msgstr "Opcjonalna ścieżka do zewnętrznego kodeka mowy ACELP"
+
+msgid "External ACELP voice codec (optional)"
+msgstr "Zewnętrzny kodek mowy ACELP (opcjonalny)"
+
+msgid "FalconSDR does not ship a TETRA speech codec. Without one, control channels, SDS text and LIP GPS still decode."
+msgstr "FalconSDR nie zawiera kodeka mowy TETRA. Bez niego kanały sterujące, wiadomości SDS oraz lokalizacja GPS LIP nadal działają."

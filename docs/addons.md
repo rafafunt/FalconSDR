@@ -30,6 +30,11 @@ channel (weight -1 in the primary choice).
   compressed positions, Mic-E, objects, messages, status, weather).
 * `addons/acars.py` - MSK tones -> four tone-to-bit mappings tried in parallel (direct, inverted, and both
   after differential decoding) -> preamble match -> 7-bit characters with odd parity -> CRC-16 -> fields.
+* `addons/tetra.py` + `tetra-rs/` - experimental clear-mode TETRA (ETSI EN 300 392-2) decoder in zero-dependency
+  Rust (`falconsdr-tetra`, GPL-3.0-or-later): π/4-DQPSK RRC demodulator, Gardner timing, 4th-power AFC,
+  burst synchronizer, RM(30,14), 16-state RCPC Viterbi, BSCH/BNCH/MAC-RESOURCE/CMCE/SDS/LIP parsers. Strictly
+  clear-mode: encrypted slots (`encryption_mode != 0`, E2EE, cell AIE) are flagged and muted, never decrypted.
+  Optional external ACELP vocoder can be supplied by the user via `--codec <path>` (never bundled).
 * `addons/events.py` - `EventHub`: a ring in memory plus one JSON-lines file per day (`CONFIG_DIR/addons`).
 * `addons/external.py` - `ExternalRunner` (process, stdout lines, stderr tail) and the parsers of what
   rtl_433 and dumpvdl2 print.

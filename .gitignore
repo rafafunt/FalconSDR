@@ -47,3 +47,6 @@ demo/voices/
 
 # Browser test harness output (tests/live_audio/run.sh)
 tests/live_audio/out/
+
+# Rust TETRA decoder build output
+tetra-rs/target/

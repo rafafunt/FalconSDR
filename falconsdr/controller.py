@@ -31,6 +31,7 @@ from .playback.index import Library
 from .playback.transcription_availability import is_transcription_installed
 from . import sdr_native
 from .addons.manager import AddonManager
+from .addons import tetra as tetra_addon
 from .notifier import Notifier, clean_channel, clean_rule, mask
 from .scanner_engine import AUDIO_RATE, ScannerEngine, SharedFrequencies
 from .sdr_backend import HAVE_SOAPY, RTLTCP_DRIVER, device_family, device_method, enumerate_devices
@@ -710,6 +711,7 @@ class Controller:
                 "addon_messages": bool(self.addons.hub.since(0, limit=1)),     # something was decoded: Messages is worth showing
                 "transcription_installed": is_transcription_installed(),
                 "digital": digital_voice.is_digital_installed(),
+                "tetra": tetra_addon.is_tetra_installed(str(self.config.addons.paths.get("tetra", ""))),
                 "platform": sys.platform,
                 "soapy": HAVE_SOAPY,
                 "native": {k: sdr_native.native_status()[k] for k in ("hackrf", "airspy")},

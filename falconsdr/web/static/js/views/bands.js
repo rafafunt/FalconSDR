@@ -2,22 +2,31 @@
 import { carrierHz, fmtChannel, fmtMHz, formDialog, h, icon, mount, select, slider, t, toggle } from '../core.js';
 import { S, cfg } from '../state.js';
 
-export const MODULATIONS = ['AM', 'NFM', 'WFM', 'SSB', 'DMR', 'YSF'];
+export const MODULATIONS = ['AM', 'NFM', 'WFM', 'SSB', 'DMR', 'YSF', 'TETRA'];
 const DIGITAL = ['DMR', 'YSF'];
-export const modLabel = (m) => (m === 'YSF' ? 'C4FM (YSF)' : m);
+export const modLabel = (m) => (m === 'YSF' ? 'C4FM (YSF)' : m === 'TETRA' ? t('TETRA (experimental)') : m);
 
 // Digital voice is an optional add-on (Settings → Digital voice): until it is
 // installed DMR/C4FM show greyed out, and picking one leads there instead.
+// Same for the experimental clear-mode TETRA decoder (Add-ons).
 export function modOptions() {
   const ready = S.settings.capabilities.digital;
-  return MODULATIONS.map((m) => (DIGITAL.includes(m) && !ready
-    ? [m, `${modLabel(m)} · ${t('optional download')}`, offerDigital]
-    : [m, modLabel(m)]));
+  const tetraReady = S.settings.capabilities.tetra;
+  return MODULATIONS.map((m) => {
+    if (DIGITAL.includes(m) && !ready) return [m, `${modLabel(m)} · ${t('optional download')}`, offerDigital];
+    if (m === 'TETRA' && !tetraReady) return [m, `${modLabel(m)} · ${t('build in Add-ons')}`, offerAddons];
+    return [m, modLabel(m)];
+  });
 }
 
 function offerDigital() {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));  // closes the form dialog it was picked in
   location.hash = '#/addons/digital';
+}
+
+function offerAddons() {
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  location.hash = '#/addons';
 }
 export const OVERRIDES = ['trigger_level_dbfs', 'tuning_time_ms', 'linger_time_ms', 'gain_mode', 'gain_db', 'noise_reduction_enabled', 'noise_reduction_strength', 'squelch_enabled', 'squelch_offset_db', 'antenna'];
 export const hasOverrides = (b) => OVERRIDES.some((k) => b[k] !== null && b[k] !== undefined && b[k] !== '');

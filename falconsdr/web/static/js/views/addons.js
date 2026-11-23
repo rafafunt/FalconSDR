@@ -16,8 +16,9 @@ const scanned = (hz) => cfg().bands.some((b) => b.enabled !== false && hz >= b.s
 
 function addToScan(a) {
   const f = [...a.frequencies].sort((x, y) => x - y);
-  const step = f.length > 1 ? f.slice(1).reduce((g, v, i) => gcd(g, v - f[i]), 0) : 12500;
-  const band = newBand({ start_hz: f[0], stop_hz: f[f.length - 1], step_hz: step, modulation: a.id === 'acars' ? 'AM' : 'NFM', label: a.name });
+  const step = a.id === 'tetra' ? 25000 : (f.length > 1 ? f.slice(1).reduce((g, v, i) => gcd(g, v - f[i]), 0) : 12500);
+  const mod = a.id === 'acars' ? 'AM' : a.id === 'tetra' ? 'TETRA' : 'NFM';
+  const band = newBand({ start_hz: f[0], stop_hz: f[f.length - 1], step_hz: step, modulation: mod, label: a.name });
   return patchConfigNow({ bands: [...cfg().bands, band] });
 }
 
@@ -175,30 +176,60 @@ export function decodersCard(box) {
       external ? h('span.chip', t('separate program')) : h('span.chip', t('built in')),
       a.experimental ? h('span.chip.warn', t('experimental')) : null,
       a.running ? h('span.chip.good.live', h('span.dot'), t('running')) : null,
-      external && !a.installed ? h('span.chip.bad', t('not installed')) : null,
+      !a.installed ? h('span.chip.bad', t('not installed')) : null,
     ];
     // The switch sits with the name: it is what turns this add-on on (external programs are started with Start).
     const parts = [
       h('div.row.wrap.addon-head', h('b.addon-name', a.name), ...status, h('span.spacer'),
-        external ? null : toggle(a.enabled ? t('On') : t('Off'), a.enabled, (v) => act('/api/addons/configure', { id: a.id, enabled: v }))),
+        external || !a.installed ? null : toggle(a.enabled ? t('On') : t('Off'), a.enabled, (v) => act('/api/addons/configure', { id: a.id, enabled: v }))),
       h('p.muted', { style: { margin: 0 } }, t(a.summary)),
       h('p.faint.small', { style: { margin: 0 } }, t('Licence: {license}', { license: t(a.license) })),
     ];
-    if (!external) {
-      if (a.enabled) {
-        parts.push(h('p.faint.small', { style: { margin: 0 } }, t('While scanning, a transmission on one of these channels is decoded instead of being played or recorded.')));
+    if (!external && !a.installed) {
+      parts.push(h('p', { style: { margin: '4px 0' } }, t(a.install_hint)));
+      if (a.can_install) {
+        const st = a.install || {};
+        parts.push(h('div.row.wrap',
+          st.running ? h('span.chip.accent.live', h('span.dot'), t('Installing…'))
+            : h('button.primary', { onclick: () => act('/api/addons/install', { id: a.id }) }, icon('download'), t('Build decoder'))));
+        if (st.log && st.log.length) parts.push(h('pre.msg-detail', st.log.join('\n')));
+        if (st.error) parts.push(h('span', { style: { color: 'var(--red)' } }, t('Installation failed: {error}', { error: st.error })));
+        if (st.hint) parts.push(h('div.col', { style: { gap: '4px' } },
+          h('span.small', t('Install what the build needs first (this needs administrator rights, so FalconSDR does not run it):')), h('code', st.hint)));
+      }
+      const input = h('input', { placeholder: t('Path of the program'), value: a.path, style: { width: '320px' } });
+      parts.push(setting(t('Program'), t('Where it is installed, if FalconSDR does not find it by itself.'),
+        h('div.row.wrap', input, h('button', { onclick: () => act('/api/addons/configure', { id: a.id, path: input.value }) }, t('Save')))));
+    } else if (!external) {
+      if (a.id === 'tetra') {
+        parts.push(h('p.faint.small', { style: { margin: 0 } }, t('Clear-mode only: encrypted networks and calls are detected and muted, never decrypted. You can also choose TETRA directly as the modulation of any band or Memory List channel.')));
+      }
+      if (a.enabled || a.id === 'tetra') {
+        if (a.id !== 'tetra') {
+          parts.push(h('p.faint.small', { style: { margin: 0 } }, t('While scanning, a transmission on one of these channels is decoded instead of being played or recorded.')));
+        }
         const missing = a.frequencies.filter((f) => !scanned(f));
-        if (missing.length) {
+        if (missing.length && a.enabled) {
           parts.push(h('div.notice', { role: 'status' }, icon('ban'),
             h('span', { style: { flex: '1 1 260px' } }, t('The scanner does not visit {list} MHz yet, so nothing can be decoded.', { list: missing.map(mhz).join(', ') })),
             h('button', { onclick: async () => { await addToScan(a); await loadSettings(); render(); } }, t('Add to scanned bands'))));
         }
-        parts.push(setting(t('Channels (MHz)'), '', frequencyEditor(a)));
-        const picker = receiverPicker(a);
-        if (picker) parts.push(picker);
+        if (a.enabled) {
+          parts.push(setting(t('Channels (MHz)'), a.id === 'tetra' ? t('Optional: automatically decode these carriers as TETRA even inside an NFM band.') : '', frequencyEditor(a)));
+          const picker = receiverPicker(a);
+          if (picker) parts.push(picker);
+        }
         parts.push(h('div.row.wrap', h('span.faint.small', t('Channels heard: {slots} · messages decoded: {events}', { slots: a.stats.slots, events: a.stats.events })),
           h('a', { href: '#/messages' }, t('Open Messages'))));
         if (a.experimental) parts.push(h('p.faint.small', { style: { margin: 0 } }, t('Only tested on synthetic signals so far. If channels are heard but nothing is decoded, please report it.')));
+        if (a.id === 'tetra') {
+          const codecInput = h('input', { value: a.codec_path || '', placeholder: t('Optional path to external ACELP speech codec helper'), style: { width: '320px' } });
+          parts.push(h('details.addon-advanced', h('summary', t('Advanced')),
+            h('p.faint.small', { style: { margin: '6px 0' } }, t('Found: {path}', { path: a.program })),
+            setting(t('External ACELP voice codec (optional)'), t('FalconSDR does not ship a TETRA speech codec. Without one, control channels, SDS text and LIP GPS still decode.'),
+              h('div.row.wrap', codecInput, h('button', { onclick: () => act('/api/addons/configure', { id: a.id, codec_path: codecInput.value }) }, t('Save')))),
+            a.managed ? h('div.row', h('button.ghost.danger', { onclick: () => act('/api/addons/uninstall', { id: a.id }) }, icon('trash'), t('Uninstall'))) : null));
+        }
       }
     } else if (!a.installed) {
       parts.push(h('p', { style: { margin: '4px 0' } }, t(a.install_hint)));

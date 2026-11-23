@@ -27,6 +27,13 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 def _who(event: dict) -> str:
     if event.get("kind") == "sensor":
         return f"{event.get('model', '?')} #{event.get('device_id')}"
+    if event.get("kind") == "tetra":
+        if event.get("gssi"):
+            return f"GSSI {event['gssi']}"
+        if event.get("src"):
+            return f"ISSI {event['src']}"
+        if event.get("mcc") is not None and event.get("mnc") is not None:
+            return f"MCC {event['mcc']}/{event['mnc']}"
     return str(event.get("registration") or event.get("source") or "")
 
 

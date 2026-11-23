@@ -236,6 +236,15 @@ class Demodulator:
             self._decim_rate = rate
         return self._decim_resampler.process(x)
 
+    def channelize_iq(self, iq: np.ndarray, offset_hz: float, rate: int = 72_000) -> np.ndarray:
+        """Mixes a channel ``offset_hz`` away from window center to baseband and
+        decimates it cleanly to ``rate`` complex64 samples/s (e.g. 72 kS/s for TETRA)."""
+        if iq.size == 0:
+            return np.zeros(0, dtype=np.complex64)
+        if offset_hz:
+            iq = self._mix(iq, offset_hz)
+        return np.ascontiguousarray(self._stream_decimate(iq, rate), dtype=np.complex64)
+
     def _deemphasize(self, audio: np.ndarray, rate: float, zi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         dt = 1.0 / rate
         alpha = dt / (WFM_DEEMPHASIS_TAU_S + dt)
