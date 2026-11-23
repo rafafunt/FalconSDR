@@ -105,18 +105,22 @@ def _opt_bool(val: Any) -> bool | None:
 
 def channel_from_dict(d: dict) -> Channel:
     mod = str(d.get("modulation", "AM"))
+    bw = _opt_int(d.get("bandwidth_hz"))
+    sq_off = _opt_float(d.get("squelch_offset_db"))
+    linger = _opt_int(d.get("linger_time_ms"))
+    nr_str = _opt_float(d.get("noise_reduction_strength"))
     return Channel(
         freq_hz=snap_airband_hz(int(d["freq_hz"])), name=str(d.get("name", "")),
         modulation=Modulation(mod) if mod in Modulation._value2member_map_ else Modulation.AM,
         enabled=bool(d.get("enabled", True)), folder=str(d.get("folder", "")), weight=float(d.get("weight", 0.0)),
         ch833=bool(d.get("ch833", False)),
-        bandwidth_hz=_opt_int(d.get("bandwidth_hz")),
+        bandwidth_hz=max(1000, bw) if bw is not None else None,
         trigger_level_dbfs=_opt_float(d.get("trigger_level_dbfs")),
         squelch_enabled=_opt_bool(d.get("squelch_enabled")),
-        squelch_offset_db=_opt_float(d.get("squelch_offset_db")),
-        linger_time_ms=_opt_int(d.get("linger_time_ms")),
+        squelch_offset_db=min(0.0, sq_off) if sq_off is not None else None,
+        linger_time_ms=max(0, linger) if linger is not None else None,
         noise_reduction_enabled=_opt_bool(d.get("noise_reduction_enabled")),
-        noise_reduction_strength=_opt_float(d.get("noise_reduction_strength")),
+        noise_reduction_strength=min(1.0, max(0.0, nr_str)) if nr_str is not None else None,
     )
 
 

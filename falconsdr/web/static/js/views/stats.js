@@ -96,6 +96,41 @@ export function statsView(root, hash = '') {
     }
     const days = s.per_day.slice(-45);
     const weekdays = [t('Mon'), t('Tue'), t('Wed'), t('Thu'), t('Fri'), t('Sat'), t('Sun')];
+    let freqQ = '';
+    let showAllFreqs = false;
+    const freqTableHost = h('div.col', { style: { gap: '10px' } });
+    const renderFreqTable = () => {
+      const q = freqQ.trim().toLowerCase();
+      const rows = q
+        ? s.frequencies.filter((f) => `${f.freq_khz ? fmtChannel(f.freq_khz * 1000) : t('Manual recording')} ${f.name || ''}`.toLowerCase().includes(q))
+        : s.frequencies;
+      const limit = showAllFreqs || q ? rows.length : 100;
+      const visible = rows.slice(0, limit);
+      mount(freqTableHost,
+        visible.length
+          ? h('div.table-wrap', h('table',
+            h('thead', h('tr', h('th', t('MHz')), h('th', t('Name')), h('th.num', t('Count')), h('th', t('Quality')), h('th', t('Total time')), h('th', t('Last heard')), h('th', ''))),
+            h('tbody', visible.map((f) => h('tr', {
+              style: { cursor: 'pointer' },
+              onclick: () => { sessionStorage.setItem('openFreq', `freq:${f.freq_khz}`); location.hash = '#/recordings'; },
+            },
+            h('td.mono', f.freq_khz ? fmtChannel(f.freq_khz * 1000) : t('Manual recording')),
+            h('td', f.name || h('span.faint', '–')),
+            h('td.num', f.count.toLocaleString()),
+            h('td', qualityBadge(f.quality)),
+            h('td.mono', fmtDuration(f.duration)),
+            h('td.small.muted', fmtAgo(f.last)),
+            h('td', h('div.actions', selectedFilter === `freq:${f.freq_khz}` ? null : h('button.icon.ghost', {
+              title: t('Show statistics for this frequency'),
+              onclick: (e) => { e.stopPropagation(); selectedFilter = `freq:${f.freq_khz}`; renderFilter(); load(); },
+            }, icon('stats')))))))))
+          : h('div.empty', t('Nothing matches these filters.')),
+        rows.length > limit
+          ? h('div.row', { style: { justifyContent: 'center' } },
+            h('button.ghost', { onclick: () => { showAllFreqs = true; renderFreqTable(); } }, t('Show all {n}', { n: rows.length.toLocaleString() })))
+          : null);
+    };
+    renderFreqTable();
     mount(body,
       h('div.kpis',
         h('div.kpi', h('span', t('Recordings')), h('b', sum.count.toLocaleString())),
@@ -109,23 +144,12 @@ export function statsView(root, hash = '') {
         bars(s.per_weekday, weekdays, t('By day of week'))),
       days.length > 1 ? bars(days.map(([, c]) => c), days.map(([d]) => d.slice(5)), t('Per day (last {n} days)', { n: days.length })) : null,
       h('section.card',
-        h('div.card-head', h('h2', t('Frequencies')), h('span.faint.small', t('Click a row to open its recordings'))),
-        h('div.table-wrap', h('table',
-          h('thead', h('tr', h('th', t('MHz')), h('th', t('Name')), h('th.num', t('Count')), h('th', t('Quality')), h('th', t('Total time')), h('th', t('Last heard')), h('th', ''))),
-          h('tbody', s.frequencies.map((f) => h('tr', {
-            style: { cursor: 'pointer' },
-            onclick: () => { sessionStorage.setItem('openFreq', `freq:${f.freq_khz}`); location.hash = '#/recordings'; },
-          },
-          h('td.mono', f.freq_khz ? fmtChannel(f.freq_khz * 1000) : t('Manual recording')),
-          h('td', f.name || h('span.faint', '–')),
-          h('td.num', f.count.toLocaleString()),
-          h('td', qualityBadge(f.quality)),
-          h('td.mono', fmtDuration(f.duration)),
-          h('td.small.muted', fmtAgo(f.last)),
-          h('td', h('div.actions', h('button.icon.ghost', {
-            title: t('Show statistics for this frequency'),
-            onclick: (e) => { e.stopPropagation(); selectedFilter = `freq:${f.freq_khz}`; renderFilter(); load(); },
-          }, icon('stats')))))))))));
+        h('div.card-head', h('h2', t('Frequencies')),
+          s.frequencies.length > 15
+            ? h('input', { type: 'search', placeholder: t('Filter…'), style: { width: 'min(220px, 100%)' }, oninput: (e) => { freqQ = e.target.value; renderFreqTable(); } })
+            : null,
+          h('span.faint.small', t('Click a row to open its recordings'))),
+        freqTableHost));
   }
   api.get('/api/library/facets').then((f) => { facets = f; renderFilter(); }).catch(() => {});
   load();

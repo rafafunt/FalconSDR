@@ -3941,3 +3941,6 @@ msgstr "np. Antenna A, Antenna B, Hi-Z"
 
 msgid "Driver default"
 msgstr "Domyślne sterownika"
+
+msgid "Show all {n}"
+msgstr "Pokaż wszystkie ({n})"
