@@ -4004,3 +4004,6 @@ msgstr "Zewnętrzny kodek mowy ACELP (opcjonalny)"
 
 msgid "FalconSDR does not ship a TETRA speech codec. Without one, control channels, SDS text and LIP GPS still decode."
 msgstr "FalconSDR nie zawiera kodeka mowy TETRA. Bez niego kanały sterujące, wiadomości SDS oraz lokalizacja GPS LIP nadal działają."
+
+msgid "Could not switch antenna to \"{antenna}\" ({error})"
+msgstr "Nie udało się przełączyć anteny na „{antenna}” ({error})"

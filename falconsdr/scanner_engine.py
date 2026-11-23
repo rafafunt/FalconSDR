@@ -546,6 +546,7 @@ class ScannerEngine(threading.Thread):
         self._applied_gain_db = None
         self._applied_antenna = ""
         self._default_antenna = ""
+        self._failed_antennas: set[str] = set()
         # Only while the effective gain mode is "sw_auto" (agc.py).
         self._software_agc: SoftwareAgc | None = None
         self._plans: list = []
@@ -936,6 +937,7 @@ class ScannerEngine(threading.Thread):
         antennas = getattr(self._backend, "antennas", ())
         self._default_antenna = self.antenna or (antennas[0] if antennas else "")
         self._applied_antenna = self._default_antenna
+        self._failed_antennas = set()
         self.signals.antennas_changed.emit(antennas)
         if self.bias_tee and self._backend.label != "simulated":
             self.signals.log.emit(tr("Bias-T is on: the dongle powers its antenna input (until scanning stops)."))
@@ -1322,7 +1324,7 @@ class ScannerEngine(threading.Thread):
 
     def _maybe_apply_antenna(self, window: ScanWindow | None) -> None:
         want = self._effective_antenna(window)
-        if not want or want == self._applied_antenna:
+        if not want or want == self._applied_antenna or want in self._failed_antennas:
             return
         if not hasattr(self._backend, "set_antenna"):
             return
@@ -1330,8 +1332,9 @@ class ScannerEngine(threading.Thread):
             self._backend.set_antenna(want)
             self._applied_antenna = want
             self._last_tuned_center_hz = None  # force settle on the new antenna input
-        except Exception:  # noqa: BLE001 - an unsupported port name must not stop scanning
-            pass
+        except Exception as exc:  # noqa: BLE001 - an unsupported port name must not stop scanning
+            self._failed_antennas.add(want)
+            self.signals.log.emit(tr("Could not switch antenna to \"{antenna}\" ({error})").format(antenna=want, error=exc))
 
     def _maybe_run_software_agc(self, iq: np.ndarray) -> None:
         """Steps the SoftwareAgc from this tick's IQ peak; no-op unless "sw_auto"."""

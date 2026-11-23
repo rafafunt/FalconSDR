@@ -347,7 +347,7 @@ export function channelsView(root) {
     const from = all.indexOf(src), to = all.indexOf(dst);
     if (from < 0 || to < 0) return;
     all.splice(from, 1);
-    all.splice(all.indexOf(dst), 0, src);
+    all.splice(all.indexOf(dst) + (from < to ? 1 : 0), 0, src);
     await saveChannels(all);
     render();
   }

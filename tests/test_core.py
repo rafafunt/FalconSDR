@@ -3349,6 +3349,50 @@ class Discussion16FeaturesTest(unittest.TestCase):
         self.assertIsNot(f3, f1)
         self.assertEqual(f3["favorites"], 1)
 
+        # Removing the recordings root must invalidate facets/stats caches.
+        import shutil
+        shutil.rmtree(root)
+        lib.rescan()
+        self.assertEqual(lib.facets()["total"], 0)
+        self.assertEqual(lib.stats()["summary"]["count"], 0)
+
+    def test_antenna_switch_latches_failed_port_and_logs_once(self) -> None:
+        from types import SimpleNamespace
+        from falconsdr.channelizer import ScanWindow
+        from falconsdr.config import AppConfig, VfoRangeConfig
+        from falconsdr.scanner_engine import ScannerEngine
+
+        calls = []
+        logs = []
+
+        class FakeBackend:
+            def set_antenna(self, name: str) -> None:
+                calls.append(name)
+                if name == "BAD_PORT":
+                    raise RuntimeError("no such port")
+
+        cfg = AppConfig()
+        eng = ScannerEngine(cfg, [], [])
+        eng._backend = FakeBackend()
+        eng._default_antenna = "ANT_A"
+        eng._applied_antenna = "ANT_A"
+        eng.signals.log.connect(logs.append)
+
+        win_b = ScanWindow(center_hz=125_000_000, freqs=[125_000_000], band=VfoRangeConfig(antenna="ANT_B"), antenna="ANT_B")
+        eng._maybe_apply_antenna(win_b)
+        eng._maybe_apply_antenna(win_b)
+        self.assertEqual(calls, ["ANT_B"])
+        self.assertEqual(eng._applied_antenna, "ANT_B")
+
+        win_bad = ScanWindow(center_hz=125_000_000, freqs=[125_000_000], band=VfoRangeConfig(antenna="BAD_PORT"), antenna="BAD_PORT")
+        eng._maybe_apply_antenna(win_bad)
+        eng._maybe_apply_antenna(win_bad)
+        eng._maybe_apply_antenna(win_bad)
+        # Must fail once and log once, not hammer set_antenna every 30 ms tick.
+        self.assertEqual(calls, ["ANT_B", "BAD_PORT"])
+        self.assertEqual(len(logs), 1)
+        self.assertIn("BAD_PORT", logs[0])
+
 
 if __name__ == "__main__":
     unittest.main()

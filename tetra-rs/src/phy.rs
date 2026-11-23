@@ -43,12 +43,6 @@ impl C32 {
         self.norm_sq().sqrt()
     }
 
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub fn add(self, o: Self) -> Self {
-        Self { re: self.re + o.re, im: self.im + o.im }
-    }
-
     #[inline(always)]
     pub fn sub(self, o: Self) -> Self {
         Self { re: self.re - o.re, im: self.im - o.im }
@@ -225,7 +219,6 @@ pub struct Pi4DqpskDemod {
     omega_min: f32,
     omega_max: f32,
     prev_sym: C32,
-    prev_mid: C32,
 
     // Fine CFO tracker (radians per symbol, tracked via arg(-d^4)/4)
     cfo_rad: f32,
@@ -251,7 +244,6 @@ impl Pi4DqpskDemod {
             omega_min: sps * 0.995,
             omega_max: sps * 1.005,
             prev_sym: C32::new(1.0, 0.0),
-            prev_mid: C32::default(),
             cfo_rad: 0.0,
             cfo_max: 0.72, // ~2.0 kHz fine CFO pull-in range at 18 ksym/s
             avg_mag: 1.0,
@@ -370,7 +362,6 @@ impl Pi4DqpskDemod {
             soft_bits.push((d.re * scale).clamp(-2.0, 2.0));
 
             self.prev_sym = sym;
-            self.prev_mid = mid;
         }
 
         // Discard already-consumed samples while keeping 4 samples of cubic-interp lookbehind.

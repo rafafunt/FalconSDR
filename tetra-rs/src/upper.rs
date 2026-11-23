@@ -6,11 +6,7 @@
 use crate::mac::{BitReader, BitWriter};
 
 /// MLE protocol discriminator (3 bits, ETSI Clause 18.5.21).
-#[allow(dead_code)]
-pub const MLE_MM: u8 = 0b001;
 pub const MLE_CMCE: u8 = 0b010;
-#[allow(dead_code)]
-pub const MLE_SNDCP: u8 = 0b100;
 
 /// CMCE PDU types (5 bits, ETSI Clause 14.8.28).
 pub const CMCE_D_CONNECT: u8 = 0x02;
@@ -159,9 +155,7 @@ fn parse_d_sds_data(r: &mut BitReader<'_>) -> Option<UpperEvent> {
     if r.remaining() < payload_bits || payload_bits < 8 {
         return None;
     }
-    let start = r.pos();
     let payload = &r.rest()[..payload_bits];
-    let _ = start;
 
     let mut pr = BitReader::new(payload);
     let pid = pr.read_u32(8)? as u8;

@@ -43,6 +43,7 @@ pub struct TetraReceiver {
     mnc: Option<u16>,
     colour_code: Option<u8>,
     location_area: Option<u16>,
+    sysinfo_seen: bool,
     cell_aie: bool,
     cur_timeslot: u8, // 1..=4
     cur_frame: u8,
@@ -69,6 +70,7 @@ impl TetraReceiver {
             mnc: None,
             colour_code: None,
             location_area: None,
+            sysinfo_seen: false,
             cell_aie: false,
             cur_timeslot: 1,
             cur_frame: 1,
@@ -176,8 +178,9 @@ impl TetraReceiver {
                     match aach.dl_usage {
                         DownlinkUsage::Traffic(_marker) => {
                             let st = &self.slots[ts_idx];
-                            if st.encrypted || self.cell_aie {
-                                // Strictly muted - never decode or emit audio for encrypted traffic.
+                            // Fail-closed: never decode TCH/S until SYSINFO confirms no cell AIE
+                            // AND a clear call setup opened this slot for speech.
+                            if !self.sysinfo_seen || self.cell_aie || st.encrypted || !st.active_voice {
                                 return;
                             }
                             if let Some(mut tscr) = self.make_scrambler() {
@@ -231,6 +234,7 @@ impl TetraReceiver {
         if let Some(sys) = SysinfoPdu::parse(bits) {
             self.stats.sysinfo_ok += 1;
             self.location_area = Some(sys.location_area);
+            self.sysinfo_seen = true;
             self.cell_aie = sys.air_interface_encryption;
             let sig = (
                 self.mcc.unwrap_or(0),

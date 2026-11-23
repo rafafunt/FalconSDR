@@ -253,17 +253,13 @@ pub fn block_deinterleave_soft(llrs: &[f32], a: usize) -> Vec<f32> {
 }
 
 /// RCPC puncturing rates defined in ETSI EN 300 392-2 Clause 8.2.3.1.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RcpcRate {
     /// Rate 2/3: P = [1, 2, 5] (BSCH 80->120, SCH/HD & BNCH 144->216, SCH/F 288->432).
     Rate2_3,
-    /// Rate 1/3: P = [1, 2, 3, 5, 6, 7] (high-protection signalling).
-    Rate1_3,
-    /// Rate 292/432: used in TCH/S class-1 and medium protection channels.
-    Rate292_432,
-    /// Rate 148/432: used in TCH/S class-2.
-    Rate148_432,
+    /// Two-class TCH/S speech half-frame (90 input bits -> 165 channel bits:
+    /// 56 Class-1 bits @ rate 2/3 -> 84 bits, then 30 Class-2 + 4 tail bits -> 81 bits).
+    TchSpeechHalf,
 }
 
 impl RcpcRate {
@@ -279,36 +275,23 @@ impl RcpcRate {
                     })
                     .collect()
             }
-            RcpcRate::Rate1_3 => {
-                const P: [usize; 6] = [1, 2, 3, 5, 6, 7];
-                (1..=num_out_bits)
-                    .map(|j| {
-                        let k = 8 * ((j - 1) / 6) + P[(j - 1) % 6];
-                        k - 1
-                    })
-                    .collect()
-            }
-            RcpcRate::Rate292_432 => {
-                // ETSI Clause 8.2.3.1.4: t = 3, P = [1, 2, 5] with i(j) = j + floor((j-1)/65)
-                const P: [usize; 3] = [1, 2, 5];
-                (1..=num_out_bits)
-                    .map(|j| {
-                        let i = j + (j - 1) / 65;
-                        let k = 8 * ((i - 1) / 3) + P[(i - 1) % 3];
-                        k - 1
-                    })
-                    .collect()
-            }
-            RcpcRate::Rate148_432 => {
-                // ETSI Clause 8.2.3.1.5: t = 6, P = [1, 2, 3, 5, 6, 7] with i(j) = j + floor((j-1)/35)
-                const P: [usize; 6] = [1, 2, 3, 5, 6, 7];
-                (1..=num_out_bits)
-                    .map(|j| {
-                        let i = j + (j - 1) / 35;
-                        let k = 8 * ((i - 1) / 6) + P[(i - 1) % 6];
-                        k - 1
-                    })
-                    .collect()
+            RcpcRate::TchSpeechHalf => {
+                // Class 1 (first 56 input bits -> mother [0..224]): 84 bits at rate 2/3 (P=[1,2,5]).
+                // Class 2 + 4 tail (last 34 input bits -> mother [224..360]): 81 bits at rate 34/81.
+                const P1: [usize; 3] = [1, 2, 5];
+                let c1_out = 84usize.min(num_out_bits);
+                let mut out = Vec::with_capacity(num_out_bits);
+                for j in 1..=c1_out {
+                    let k = 8 * ((j - 1) / 3) + P1[(j - 1) % 3];
+                    out.push(k - 1);
+                }
+                let c2_out = num_out_bits.saturating_sub(c1_out);
+                let mother_c2_start = 56 * 4;
+                let mother_c2_len = 34 * 4; // 136 mother bits for 30 Class-2 + 4 tail bits
+                for j in 0..c2_out {
+                    out.push(mother_c2_start + (j * mother_c2_len) / c2_out.max(1));
+                }
+                out
             }
         }
     }

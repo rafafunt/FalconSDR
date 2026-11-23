@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -102,6 +103,9 @@ class TetraSlotDecoder:
         self._frac = 0.0
         self._events: list[dict] = []
         self._lock = threading.Lock()
+        # Bounded outbound IQ queue: a slow or stalled subprocess (--codec) must never
+        # block the scanner engine's slot worker thread (Finding #6).
+        self._iq_queue: queue.Queue[bytes | None] = queue.Queue(maxsize=16)
 
         argv = [str(exe), "--pipe", "--rate", str(TETRA_IQ_RATE), "--freq-hz", str(self.freq_hz)]
         if codec_path:
@@ -114,7 +118,9 @@ class TetraSlotDecoder:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env=system_env(), creationflags=NO_WINDOW,
         )
+        self._writer_thread = threading.Thread(target=self._write_stdin, daemon=True, name="tetra-tx")
         self._reader_thread = threading.Thread(target=self._read_stdout, daemon=True, name="tetra-rx")
+        self._writer_thread.start()
         self._reader_thread.start()
 
     def feed(self, iq: np.ndarray) -> None:
@@ -122,10 +128,36 @@ class TetraSlotDecoder:
             return
         raw = np.ascontiguousarray(iq, dtype="<c8").tobytes()
         try:
-            self._proc.stdin.write(raw)
-            self._proc.stdin.flush()
+            self._iq_queue.put_nowait(raw)
+        except queue.Full:
+            # Drop the oldest queued IQ chunk rather than stalling the real-time scan loop.
+            try:
+                self._iq_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._iq_queue.put_nowait(raw)
+            except queue.Full:
+                pass
+
+    def _write_stdin(self) -> None:
+        try:
+            while True:
+                chunk = self._iq_queue.get()
+                if chunk is None:
+                    return
+                if self._proc.stdin is None:
+                    return
+                self._proc.stdin.write(chunk)
+                self._proc.stdin.flush()
         except (BrokenPipeError, OSError, ValueError):
             pass
+        finally:
+            try:
+                if self._proc.stdin is not None:
+                    self._proc.stdin.close()
+            except OSError:
+                pass
 
     def read(self, n: int) -> np.ndarray:
         want = n * _VOICE_RATE / self.out_rate + self._frac
@@ -148,6 +180,14 @@ class TetraSlotDecoder:
 
     def close(self) -> None:
         try:
+            self._iq_queue.put_nowait(None)
+        except queue.Full:
+            try:
+                self._iq_queue.get_nowait()
+                self._iq_queue.put_nowait(None)
+            except (queue.Empty, queue.Full):
+                pass
+        try:
             if self._proc.stdin is not None:
                 self._proc.stdin.close()
         except OSError:
@@ -161,6 +201,7 @@ class TetraSlotDecoder:
                 self._proc.wait(timeout=0.5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        self._writer_thread.join(timeout=0.3)
         self._reader_thread.join(timeout=0.3)
 
     def _read_stdout(self) -> None:

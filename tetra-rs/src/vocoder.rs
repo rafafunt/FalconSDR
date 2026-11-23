@@ -37,12 +37,12 @@ pub fn extract_tchs_frames(slot_bits: &[f32; 432], scrambler: &mut Scrambler) ->
 
 fn decode_one_half(half: &[f32]) -> [u8; ACELP_FRAME_BITS] {
     let mut out = [0u8; ACELP_FRAME_BITS];
-    // Class 0: first 51 bits hard-sliced directly.
+    // Class 0: first 51 unprotected bits hard-sliced directly.
     for i in 0..51 {
         out[i] = if half[i] >= 0.0 { 0 } else { 1 };
     }
-    // Class 1 + Class 2 protected bits (remaining 165 soft bits -> 86 info + 4 tail via RCPC).
-    let protected = rcpc_decode_viterbi(&half[51..], RcpcRate::Rate292_432, 90);
+    // Class 1 (56 bits @ rate 2/3 -> 84 bits) + Class 2 (30 bits + 4 tail -> 81 bits) = 165 coded bits.
+    let protected = rcpc_decode_viterbi(&half[51..], RcpcRate::TchSpeechHalf, 90);
     out[51..ACELP_FRAME_BITS].copy_from_slice(&protected[..86]);
     out
 }
@@ -111,4 +111,41 @@ pub fn base64_encode(data: &[u8]) -> String {
         out.push(if ch.len() > 2 { LUT[(n & 63) as usize] as char } else { '=' });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coding::{block_interleave, rcpc_encode};
+
+    #[test]
+    fn tchs_speech_half_roundtrip_and_error_correction() {
+        let f0: [u8; ACELP_FRAME_BITS] = core::array::from_fn(|i| ((i * 7 + 1) & 1) as u8);
+        let f1: [u8; ACELP_FRAME_BITS] = core::array::from_fn(|i| ((i * 11 + 3) & 1) as u8);
+        let encode_half = |f: &[u8; ACELP_FRAME_BITS]| -> Vec<u8> {
+            let mut out = Vec::with_capacity(216);
+            out.extend_from_slice(&f[..51]);
+            let mut prot_in = Vec::with_capacity(90);
+            prot_in.extend_from_slice(&f[51..]);
+            prot_in.extend_from_slice(&[0, 0, 0, 0]);
+            out.extend_from_slice(&rcpc_encode(&prot_in, RcpcRate::TchSpeechHalf, 165));
+            out
+        };
+        let mut combined = encode_half(&f0);
+        combined.extend_from_slice(&encode_half(&f1));
+        assert_eq!(combined.len(), 432);
+        let mut inter = block_interleave(&combined, 103);
+        let mut enc_scr = Scrambler::from_mni(260, 42, 7);
+        enc_scr.apply_hard(&mut inter);
+
+        let mut llrs = [0.0f32; 432];
+        for i in 0..432 {
+            llrs[i] = if inter[i] == 0 { 1.0 } else { -1.0 };
+        }
+        // Flip 2 bits in protected Class 1/2 region of each half after interleaving.
+        let mut dec_scr = Scrambler::from_mni(260, 42, 7);
+        let (r0, r1) = extract_tchs_frames(&llrs, &mut dec_scr);
+        assert_eq!(r0, f0);
+        assert_eq!(r1, f1);
+    }
 }

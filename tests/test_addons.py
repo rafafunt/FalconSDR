@@ -1458,6 +1458,29 @@ class TetraDecoderTest(unittest.TestCase):
         self.assertGreaterEqual(len(rows), 6)
         self.assertTrue(any("TEST CLEAR SDS" in r["summary"] for r in rows))
 
+    def test_codec_path_requires_local_or_password_on_addons_configure(self) -> None:
+        from unittest import mock
+        from falconsdr.web import server
+        # Simulate a non-local client trying to set tetra codec_path without an access password.
+        self.assertFalse(server.may_change_command_line("", "192.168.50.99"))
+        self.assertTrue(server.may_change_command_line("secret", "192.168.50.99"))
+        self.assertTrue(server.may_change_command_line("", "127.0.0.1"))
+        # Verify server.Handler.addons actually returns 403 for codec_path from a remote IP.
+        errors = []
+        app = mock.Mock(token="", controller=mock.Mock())
+        Handler = server.make_handler(app)
+        h = Handler.__new__(Handler)
+        h.path = "/api/addons/configure"
+        h.command = "POST"
+        h.client_address = ("192.168.50.99", 12345)
+        h._body = lambda: {"id": "tetra", "codec_path": "/bin/sh"}
+        h._error = lambda code, msg: errors.append((code, msg))
+        h._json = mock.Mock()
+        h.addons({})
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0][0], 403)
+        app.controller.addons.configure.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

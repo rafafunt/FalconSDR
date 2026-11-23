@@ -226,7 +226,11 @@ class Library:
         root = self.root
         if not root.is_dir():
             with self._lock:
+                had = bool(self._recs)
                 self._recs, self._blobs = {}, {}
+                if had:
+                    self._version += 1
+                    self._stats_version += 1
             return
         open_now = {p.resolve() for p in self._open_paths()}
         open_names = {p.name for p in open_now}
