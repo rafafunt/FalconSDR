@@ -84,8 +84,10 @@ class Library:
         self._quality_saved_at = time.monotonic()
         self._dir_mtimes: dict[Path, int] = {}  # folder -> st_mtime_ns at the last rescan
         self._peaks: dict[str, list[float]] = {}
-        # Generation counter for facets()/stats() caches - bumped on every library mutation.
+        # Generation counters for facets()/stats() caches - bumped on library mutations.
+        # _stats_version ignores transcript updates (which don't affect non-language stats).
         self._version = 0
+        self._stats_version = 0
         self._facets_cache: tuple[int, tuple, dict] | None = None
         self._stats_cache: dict[tuple, dict] = {}
         self._stop = threading.Event()
@@ -288,6 +290,7 @@ class Library:
                 self._dirty = self._dirty or dropped > 0 or self.favorites.changed
             if found.keys() != known.keys() or any(found[k] is not known.get(k) for k in found):
                 self._version += 1
+                self._stats_version += 1
         self._dir_mtimes = mtimes
 
     def add_file(self, path: Path) -> None:
@@ -300,21 +303,27 @@ class Library:
             self._recs[rel] = rec
             self._blobs.pop(rel, None)
             self._version += 1
+            self._stats_version += 1
 
     def _analyze_some(self, budget_s: float) -> None:
         deadline = time.monotonic() + budget_s
         with self._lock:
             todo = [r for r in self._recs.values() if r.quality is None]
         todo.sort(key=lambda r: r.dt_utc, reverse=True)
+        analyzed = 0
         for rec in todo:
             if time.monotonic() > deadline or self._stop.is_set():
-                return
+                break
             quality = analyze_wav(rec.path)
             with self._lock:
                 rec.quality = quality
                 self.quality.put(rec.key, quality)
                 self._dirty = True
+            analyzed += 1
+        if analyzed:
+            with self._lock:
                 self._version += 1
+                self._stats_version += 1
 
     # -- reading ----------------------------------------------------------
     def get(self, rel: str) -> Optional[Recording]:
@@ -332,6 +341,7 @@ class Library:
         with self._lock:
             self._blobs.clear()
             self._version += 1
+            self._stats_version += 1
 
     def _blob(self, rel: str, rec: Recording, names: dict[int, str]) -> str:
         with self._lock:
@@ -470,9 +480,10 @@ class Library:
 
     def stats(self, sel=(), utc: bool = False) -> dict:
         sel_key = tuple(sel)
+        needs_lang = any(s.startswith("lang:") for s in sel_key)
         with self._lock:
-            ver = self._version
-            cache_key = (ver, sel_key, bool(utc))
+            ver = self._version if needs_lang else self._stats_version
+            cache_key = (needs_lang, ver, sel_key, bool(utc))
             cached = self._stats_cache.get(cache_key)
             if cached is not None:
                 return cached
@@ -501,9 +512,13 @@ class Library:
             "per_weekday": [c for _, c in stats.counts_per_weekday(recs, use_utc=utc)],
         }
         with self._lock:
-            if self._version == ver:
-                if len(self._stats_cache) >= 32 or any(k[0] != ver for k in self._stats_cache):
-                    self._stats_cache = {k: v for k, v in self._stats_cache.items() if k[0] == ver}
+            cur_ver = self._version if needs_lang else self._stats_version
+            if cur_ver == ver:
+                if len(self._stats_cache) >= 32:
+                    self._stats_cache = {
+                        k: v for k, v in self._stats_cache.items()
+                        if k[1] == (self._version if k[0] else self._stats_version)
+                    }
                     if len(self._stats_cache) >= 32:
                         self._stats_cache.clear()
                 self._stats_cache[cache_key] = out
@@ -563,6 +578,7 @@ class Library:
                     rec.is_favorite = favorite
                     self.favorites.set_favorite(rec.key, favorite)
             self._version += 1
+            self._stats_version += 1
         self.favorites.save()  # once, and not while holding the lock the scan thread waits on
 
     def delete(self, rels: Iterable[str]) -> int:
@@ -599,6 +615,7 @@ class Library:
             if deleted:
                 self._dirty = True
                 self._version += 1
+                self._stats_version += 1
         if deleted:
             self.favorites.save()
         return deleted
@@ -672,13 +689,15 @@ class Library:
             rec = self._recs.get(rel)
             if rec is None or rec.key != key:
                 return False  # deleted or rewritten meanwhile
+            old_lang = rec.transcript.language if rec.transcript else ""
             rec.transcript = _from_fields(TranscriptionResult, result)
             if rec.transcript.status == "error":
                 self._failed.add(rel)
             self.transcripts.put(rec.key, rec.transcript)
             self._blobs.pop(rel, None)
             self._dirty = True
-            self._version += 1
+            if rec.transcript.status != "error" and rec.transcript.language != old_lang:
+                self._version += 1
             done = (rec.freq_khz, rec.transcript.text, rec.transcript.status) if self.on_transcript else None
         if done and done[2] in ("ok", "low_confidence") and done[1]:
             try:
@@ -720,6 +739,7 @@ class Library:
                     self.favorites.set_favorite(rec.key, True)
             self._dirty = True
             self._version += 1
+            self._stats_version += 1
         self.favorites.save()
         return n
 
