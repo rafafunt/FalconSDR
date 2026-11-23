@@ -15,8 +15,8 @@ export function emit(event, data) { (listeners[event] || []).forEach((fn) => fn(
 
 export const cfg = () => S.settings.config;
 
-export async function loadSettings() {
-  S.settings = await api.get('/api/settings');
+export async function loadSettings({ refreshDevices = false } = {}) {
+  S.settings = await api.get('/api/settings' + (refreshDevices ? '?refresh_devices=1' : ''));
   setCh833(S.settings.channels);
   emit('settings');
   return S.settings;

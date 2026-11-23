@@ -8,6 +8,8 @@ Type=simple
 # Not root: the dongle only needs the plugdev group (60-rtl-sdr.rules).
 User=falconsdr
 SupplementaryGroups=plugdev
+# Allow AcquisitionThread / ScannerEngine to use SCHED_FIFO (priority 10) without root.
+LimitRTPRIO=20
 WorkingDirectory=/opt/falconsdr
 ExecStart=/opt/falconsdr/.venv/bin/python /opt/falconsdr/main.py --server --start
 # SIGTERM closes every open recording cleanly (sdr-mode switches stop this unit).

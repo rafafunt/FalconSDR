@@ -296,8 +296,8 @@ def make_handler(app: App):
             self._json(ctl.live())
 
         # -- settings -------------------------------------------------------
-        def settings(self, _query: dict) -> None:
-            data = ctl.settings()
+        def settings(self, query: dict) -> None:
+            data = ctl.settings(refresh_devices=_qs(query, "refresh_devices") == "1")
             data["curated"] = {
                 "military": [channel_dict(c) for c in military_presets.MILITARY_CHANNELS],
                 "fire": [channel_dict(c) for c in military_presets.FIRE_CHANNELS],

@@ -48,8 +48,15 @@ export function statsView(root, hash = '') {
       sel.append(grp);
     }
     if (facets.frequencies && facets.frequencies.length) {
-      const grp = h('optgroup', { label: t('Frequencies') });
-      [...facets.frequencies].sort((a, b) => b.count - a.count).forEach((f) => {
+      const sortedFreqs = [...facets.frequencies].sort((a, b) => b.count - a.count);
+      const topFreqs = sortedFreqs.slice(0, 50);
+      if (selectedFilter.startsWith('freq:') && !topFreqs.some((f) => f.key === selectedFilter)) {
+        const picked = sortedFreqs.find((f) => f.key === selectedFilter);
+        if (picked) topFreqs.push(picked);
+      }
+      const label = sortedFreqs.length > 50 ? t('Top {n} frequencies', { n: 50 }) : t('Frequencies');
+      const grp = h('optgroup', { label });
+      topFreqs.forEach((f) => {
         const name = f.freq_khz === 0 ? t('Manual recording') : `${fmtChannel(f.freq_khz * 1000)} MHz${f.name ? ` · ${f.name}` : ''}`;
         grp.append(opt(f.key, `${name} (${f.count.toLocaleString()})`));
       });

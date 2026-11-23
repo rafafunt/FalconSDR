@@ -165,6 +165,7 @@ class Controller:
         self._shared: Optional[SharedFrequencies] = None
         self._resume = False    # one receiver only: the scanner was running when an add-on took it
         self._known_antennas: list[str] = []
+        self._devices_cache: tuple[float, list[dict], list[str]] | None = None
         self.log(i18n.tr("Ready."))
 
     @staticmethod
@@ -674,7 +675,24 @@ class Controller:
             raise ValueError("No such channel")
         return self.notifier.test(channel)
 
-    def settings(self) -> dict:
+    def _enumerated_hardware(self, refresh: bool = False) -> tuple[list[dict], list[str]]:
+        """Caches hardware enumeration so opening UI tabs while scanning does not
+        re-probe SoapySDR/USB (slow, noisy ALSA/Avahi stderr, and busy-device errors).
+        Refreshed automatically every 60 s while stopped, or on demand via refresh=True."""
+        if not isinstance(self, Controller):
+            return enumerate_devices(), sdr_native.usb_receivers_seen()
+        now = time.monotonic()
+        cached = self._devices_cache
+        if cached is not None and not refresh and (self.running or now - cached[0] < 60.0):
+            return cached[1], cached[2]
+        devs = enumerate_devices()
+        usb = sdr_native.usb_receivers_seen()
+        self._devices_cache = (now, devs, usb)
+        return devs, usb
+
+    def settings(self, refresh_devices: bool = False) -> dict:
+        devices = self.devices(refresh=refresh_devices)
+        _, usb_seen = self._enumerated_hardware(refresh=False)
         return {
             "version": __version__,
             "config": asdict(self.config),
@@ -684,7 +702,7 @@ class Controller:
                 {**p.to_dict(), "user": military_presets.is_user_owned_preset(p.id)}
                 for p in military_presets.get_all_presets()
             ],
-            "devices": self.devices(),
+            "devices": devices,
             "antennas": list(self._known_antennas),
             "languages": [{"code": c, "name": i18n.LANGUAGE_NAMES.get(c, c)} for c in i18n.available_languages()],
             "capabilities": {
@@ -695,16 +713,17 @@ class Controller:
                 "platform": sys.platform,
                 "soapy": HAVE_SOAPY,
                 "native": {k: sdr_native.native_status()[k] for k in ("hackrf", "airspy")},
-                "usb_seen": sdr_native.usb_receivers_seen(),
+                "usb_seen": usb_seen,
                 "autostart": autostart.is_enabled() if autostart.supported() else None,
             },
         }
 
-    def devices(self) -> list[dict]:
+    def devices(self, refresh: bool = False) -> list[dict]:
         """Every way to open a receiver, one entry each: the UI groups them by ``group`` (one physical
         receiver) and offers ``method`` as "how to access it". The first entry of a group is its default."""
+        raw_devs, usb_seen = Controller._enumerated_hardware(self, refresh=refresh)
         out = [{"driver": "auto", "args": "", "label": i18n.tr("Automatic (first detected)"), "group": "auto", "method": ""}]
-        for dev in enumerate_devices():
+        for dev in raw_devs:
             out.append(self._device_entry(dev.get("driver", "auto"), {k: str(v) for k, v in dev.items()},
                                           dev.get("label") or dev.get("driver", "device")))
         # An RTL-SDR on another computer (rtl_tcp): nothing to detect - its address is typed on the Listen page and
@@ -730,7 +749,7 @@ class Controller:
         # it fails with the exact thing to install (the Listen page shows the error while RECONNECTING).
         have = {e.get("family") for e in out}
         for family, name in (("hackrf", "HackRF"), ("airspy", "Airspy")):
-            if family in sdr_native.usb_receivers_seen() and family not in have:
+            if family in usb_seen and family not in have:
                 label = f"{name} (plugged in - needs libhackrf/SoapySDR)" if family == "hackrf" else f"{name} (plugged in - needs libairspy/SoapySDR)"
                 entry = self._device_entry(f"{family}_native", {"label": label}, label)
                 entry["missing"] = True

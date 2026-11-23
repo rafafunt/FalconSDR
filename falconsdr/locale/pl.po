@@ -3944,3 +3944,9 @@ msgstr "Domyślne sterownika"
 
 msgid "Show all {n}"
 msgstr "Pokaż wszystkie ({n})"
+
+msgid "Top {n} frequencies"
+msgstr "Najczęstsze częstotliwości (top {n})"
+
+msgid "Refresh devices"
+msgstr "Odśwież listę urządzeń"

@@ -3307,6 +3307,48 @@ class Discussion16FeaturesTest(unittest.TestCase):
         eng._maybe_apply_antenna(w_b)
         self.assertEqual(fake_backend.set_antenna.call_count, 1)
 
+    def test_controller_caches_device_enumeration_and_library_caches_facets_and_stats(self) -> None:
+        from unittest import mock
+        from falconsdr import controller as ctl
+        from falconsdr.playback.index import Library
+
+        tmp = Path(tempfile.mkdtemp())
+        cfg = AppConfig()
+        cfg.recording.output_dir = str(tmp / "rec")
+        with mock.patch.object(ctl, "enumerate_devices", return_value=[]) as enum_mock, \
+             mock.patch.object(ctl.sdr_native, "usb_receivers_seen", return_value=[]):
+            c = ctl.Controller(cfg)
+            c.settings()
+            c.settings()
+            self.assertEqual(enum_mock.call_count, 1)
+            c.settings(refresh_devices=True)
+            self.assertEqual(enum_mock.call_count, 2)
+
+        root = tmp / "rec"
+        rel1 = "2026-08-15/2026-08-15_12-00-00_121500.wav"
+        rel2 = "2026-08-15/2026-08-15_12-01-00_131400.wav"
+        _wav(root, rel1)
+        lib = Library(cfg, lambda: set(), lambda: {})
+        lib.rescan()
+        f1 = lib.facets()
+        f2 = lib.facets()
+        self.assertIs(f1, f2)
+        s1 = lib.stats()
+        s2 = lib.stats()
+        self.assertIs(s1, s2)
+        self.assertEqual(s1["summary"]["count"], 1)
+
+        # Mutation invalidates caches immediately.
+        _wav(root, rel2)
+        lib.add_file(root / rel2)
+        s3 = lib.stats()
+        self.assertIsNot(s3, s1)
+        self.assertEqual(s3["summary"]["count"], 2)
+        lib.set_favorite([rel1], True)
+        f3 = lib.facets()
+        self.assertIsNot(f3, f1)
+        self.assertEqual(f3["favorites"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

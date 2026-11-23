@@ -3,7 +3,7 @@
 import { NETWORK, groupDevices, groupOf, groupOfExtra, heldGroups, isTwice, nextGroup, takenByExtra, usableFor } from './dongles.js';
 import { api, confirmDialog, errorToast, fmtChannel, fmtMHz, h, icon, modal, mount, select, seg, slider, t, toast, toggle } from '../core.js';
 import { BOOST_STEPS_DB, liveAudio } from '../live-audio.js';
-import { S, cfg, confirmRecording, on, patchConfig, setFastPolling } from '../state.js';
+import { S, cfg, confirmRecording, loadSettings, on, patchConfig, setFastPolling } from '../state.js';
 import { NAMES, eventLine, fold, levelControl, passes } from './messages.js';
 import { askCustomRange, askSingleFrequency, bandEditor, bandRange, clearOverrides, hasOverrides, knownAntennas, presetPicker, supportsAntennaSwitch } from './bands.js';
 
@@ -456,9 +456,16 @@ export function listenView(root) {
         setExtra([...extra, { driver: d.driver, device_args: d.driver === NETWORK ? '' : d.args }]);
       },
     }, icon('plus'), t('Scan with another dongle (experimental)'));
-    deviceInputs = [sel, ...(methods ? [methods] : []), ...(addr ? [addr] : []), bw, ...(antInput ? [antInput] : []), bias.querySelector('input'), add, ...extraInputs];
+    const refreshBtn = h('button.icon.ghost', {
+      title: t('Refresh devices'),
+      onclick: async () => {
+        refreshBtn.disabled = true;
+        try { await loadSettings({ refreshDevices: true }); renderDevice(); } catch (e) { errorToast(e); refreshBtn.disabled = false; }
+      },
+    }, icon('refresh'));
+    deviceInputs = [sel, ...(methods ? [methods] : []), ...(addr ? [addr] : []), bw, ...(antInput ? [antInput] : []), bias.querySelector('input'), add, refreshBtn, ...extraInputs];
     mount(device,
-      h('div.card-head', h('h2', t('SDR device'))),
+      h('div.card-head', h('h2', t('SDR device')), refreshBtn),
       h('div.fields',
         h('label.field', t('Device'), sel),
         methods ? h('label.field', t('Access method'), methods) : null,
