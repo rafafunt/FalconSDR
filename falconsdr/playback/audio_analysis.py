@@ -145,10 +145,19 @@ def compute_waveform_peaks(path: Path, n_buckets: int = 400) -> np.ndarray | Non
 
 
 def analyze_wav(path: Path) -> QualityMetrics:
-    """Computes quality metrics for a single wav file."""
+    """Computes quality metrics for a single wav file.
+
+    Combines envelope SNR (voice peaks vs background pauses) with per-window
+    voice-band spectral clarity (300-3000 Hz speech energy density vs >3400 Hz
+    broadband hiss). That avoids two failure modes of envelope SNR alone:
+    1) a clean, continuous voice clip with no quiet pause used to look like low SNR;
+    2) broadband static with a single loud squelch pop used to score high.
+    """
     rms_parts: list[np.ndarray] = []
     clip_parts: list[np.ndarray] = []   # clipped samples per window
+    spec_snr_parts: list[np.ndarray] = []  # voice-band vs high-band density ratio (dB) per window
     n_frames, window_len, framerate_seen = 0, 0, 0
+    voice_mask = high_mask = None
     try:
         for data, full_scale, window, framerate in _stream_samples(path, WINDOW_SEC):
             first = n_frames == 0
@@ -156,12 +165,24 @@ def analyze_wav(path: Path) -> QualityMetrics:
             framerate_seen = framerate
             if first:
                 window_len = min(window, data.size)  # a file shorter than one window is a single window
+                if framerate >= 8000 and window_len >= 64:
+                    freqs = np.fft.rfftfreq(window_len, d=1.0 / framerate)
+                    vm = (freqs >= 300.0) & (freqs <= 3000.0)
+                    hm = freqs >= 3400.0
+                    if vm.any() and hm.any():
+                        voice_mask, high_mask = vm, hm
             n_windows = data.size // window_len
             if not n_windows:
                 continue
             frames = data[: n_windows * window_len].reshape(n_windows, window_len)
             rms_parts.append(np.sqrt(np.mean(frames ** 2, axis=1)))
             clip_parts.append(np.sum(np.abs(frames) >= CLIP_THRESHOLD_FRAC * full_scale, axis=1))
+            if voice_mask is not None and high_mask is not None:
+                spec = np.fft.rfft(frames, axis=1)
+                psd = spec.real ** 2 + spec.imag ** 2
+                v_dens = np.mean(psd[:, voice_mask], axis=1)
+                h_dens = np.mean(psd[:, high_mask], axis=1)
+                spec_snr_parts.append(10.0 * np.log10(np.maximum(v_dens, 1e-12) / np.maximum(h_dens, 1e-12)))
     except Exception:
         return QualityMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, readable=False)
 
@@ -186,7 +207,22 @@ def analyze_wav(path: Path) -> QualityMetrics:
     signal_level = float(np.percentile(real_rms, SIGNAL_PERCENTILE))
 
     eps = 1e-6
-    snr_db = 20.0 * math.log10(max(signal_level, eps) / max(noise_floor, eps))
+    envelope_snr_db = 20.0 * math.log10(max(signal_level, eps) / max(noise_floor, eps))
+
+    if spec_snr_parts:
+        spec_snr = np.concatenate(spec_snr_parts)[real_mask]
+        # Focus on the louder half of non-silent windows (where speech lives, not the trailing hiss).
+        active = real_rms >= float(np.percentile(real_rms, 50))
+        speech_band_db = float(np.percentile(spec_snr[active], 75)) if active.any() else float(np.median(spec_snr))
+        # Broadband static + a single squelch pop has high envelope_snr_db but ~0 dB speech_band_db;
+        # continuous clean voice has low envelope_snr_db but high speech_band_db.
+        if speech_band_db < 3.0:
+            # Mostly broadband hiss: cap how much envelope spikes can inflate the score.
+            snr_db = min(envelope_snr_db, max(0.0, speech_band_db * 2.5))
+        else:
+            snr_db = max(envelope_snr_db, min(speech_band_db, SNR_FOR_100))
+    else:
+        snr_db = envelope_snr_db
 
     clipping_ratio = float(clipped[real_mask].sum() / (real_rms.size * window_len))
 

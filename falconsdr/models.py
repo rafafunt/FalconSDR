@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import json
 
 
 class ScannerState(str, Enum):
@@ -62,11 +63,30 @@ class Channel:
     # Airband carrier on the 25 kHz grid published as an 8.33 channel
     # (126.800 -> "126.805") rather than as the 25 kHz channel ("130.875").
     ch833: bool = False
+    # Optional per-channel overrides (None = follow band/global settings).
+    bandwidth_hz: int | None = None
+    trigger_level_dbfs: float | None = None
+    squelch_enabled: bool | None = None
+    squelch_offset_db: float | None = None
+    linger_time_ms: int | None = None
+    noise_reduction_enabled: bool | None = None
+    noise_reduction_strength: float | None = None
+
+    _OVERRIDE_KEYS = (
+        "bandwidth_hz", "trigger_level_dbfs", "squelch_enabled", "squelch_offset_db",
+        "linger_time_ms", "noise_reduction_enabled", "noise_reduction_strength",
+    )
+
+    @property
+    def has_overrides(self) -> bool:
+        return any(getattr(self, k) is not None for k in self._OVERRIDE_KEYS)
 
     def to_row(self) -> list[str]:
+        ov = {k: getattr(self, k) for k in self._OVERRIDE_KEYS if getattr(self, k) is not None}
         return [
             str(self.freq_hz), self.name, self.modulation.value, "1" if self.enabled else "0", self.folder,
             repr(self.weight), "1" if self.ch833 else "0",
+            json.dumps(ov, separators=(",", ":")) if ov else "",
         ]
 
     @staticmethod
@@ -81,7 +101,24 @@ class Channel:
         except ValueError:
             weight = 0.0
         ch833 = len(row) > 6 and row[6] == "1"
-        return Channel(freq_hz=freq_hz, name=name, modulation=modulation, enabled=enabled, folder=folder, weight=weight, ch833=ch833)
+        ov: dict = {}
+        if len(row) > 7 and row[7].strip():
+            try:
+                parsed = json.loads(row[7])
+                if isinstance(parsed, dict):
+                    ov = parsed
+            except ValueError:
+                pass
+        return Channel(
+            freq_hz=freq_hz, name=name, modulation=modulation, enabled=enabled, folder=folder, weight=weight, ch833=ch833,
+            bandwidth_hz=int(ov["bandwidth_hz"]) if ov.get("bandwidth_hz") is not None else None,
+            trigger_level_dbfs=float(ov["trigger_level_dbfs"]) if ov.get("trigger_level_dbfs") is not None else None,
+            squelch_enabled=bool(ov["squelch_enabled"]) if ov.get("squelch_enabled") is not None else None,
+            squelch_offset_db=float(ov["squelch_offset_db"]) if ov.get("squelch_offset_db") is not None else None,
+            linger_time_ms=int(ov["linger_time_ms"]) if ov.get("linger_time_ms") is not None else None,
+            noise_reduction_enabled=bool(ov["noise_reduction_enabled"]) if ov.get("noise_reduction_enabled") is not None else None,
+            noise_reduction_strength=float(ov["noise_reduction_strength"]) if ov.get("noise_reduction_strength") is not None else None,
+        )
 
 
 @dataclass

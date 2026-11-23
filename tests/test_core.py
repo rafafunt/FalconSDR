@@ -3154,5 +3154,159 @@ class AuditRegressionsTest(unittest.TestCase):
         self.assertEqual(dups, {})
 
 
+class Discussion16FeaturesTest(unittest.TestCase):
+    def test_favorites_survive_mtime_shift_legacy_paths_and_initial_rescan(self) -> None:
+        from falconsdr.playback.favorites_store import FavoritesStore
+        from falconsdr.playback.index import Library
+
+        tmp = Path(tempfile.mkdtemp())
+        root = tmp / "recordings"
+        rel = "2026-08-15/2026-08-15_17-49-21_131900.wav"
+        _wav(root, rel)
+        fav_file = tmp / "favorites.json"
+
+        # Simulate an old Windows/Linux absolute key with a completely different mtime and size.
+        legacy_key = r"C:\Users\alice\SmartScanATC\recordings\2026-08-15\2026-08-15_17-49-21_131900.wav|999|1700000000"
+        other_key = "2026-08-16/2026-08-16_09-00-00_121500.wav|123|1700000001"
+        store = FavoritesStore(fav_file)
+        store._keys = {legacy_key, other_key}
+        store._rebuild_index()
+        store.save()
+
+        cfg = AppConfig()
+        cfg.recording.output_dir = str(root)
+        lib = Library(cfg, lambda: set(), lambda: {})
+        lib.favorites = FavoritesStore(fav_file)
+        lib._migrate_keys()
+        lib.rescan()
+
+        rec = lib.get(rel)
+        self.assertIsNotNone(rec)
+        self.assertTrue(rec.is_favorite)
+        # Key was upgraded to the current file's key, and the unmatched star was NOT wiped on initial startup rescan.
+        self.assertIn(rec.key, lib.favorites._keys)
+        self.assertNotIn(legacy_key, lib.favorites._keys)
+        self.assertIn(other_key, lib.favorites._keys)
+
+        # Unstarring removes the entry cleanly.
+        lib.set_favorite([rel], False)
+        self.assertFalse(lib.get(rel).is_favorite)
+        self.assertFalse(lib.favorites.is_favorite(rec.key))
+
+    def test_quality_analysis_rewards_continuous_voice_and_penalizes_static_clicks(self) -> None:
+        import wave
+        import numpy as np
+        from falconsdr.playback import audio_analysis as aa
+
+        tmp = Path(tempfile.mkdtemp())
+        fs = 12500
+        t = np.arange(fs * 2) / fs
+
+        # 1. Continuous clean voice-band signal (no quiet pause -> envelope SNR alone was ~0 dB).
+        voice = (0.35 * np.sin(2 * np.pi * 650 * t) + 0.25 * np.sin(2 * np.pi * 1350 * t)) * 32767
+        voice_wav = tmp / "voice.wav"
+        with wave.open(str(voice_wav), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(fs)
+            w.writeframes(voice.astype("<i2").tobytes())
+
+        # 2. Broadband white static with a single loud squelch click (envelope SNR alone scored high).
+        rng = np.random.default_rng(42)
+        static = rng.normal(0, 1200, fs * 2)
+        static[fs:fs + 2500] = rng.normal(0, 14000, 2500)
+        static_wav = tmp / "static.wav"
+        with wave.open(str(static_wav), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(fs)
+            w.writeframes(np.clip(static, -32768, 32767).astype("<i2").tobytes())
+
+        qv = aa.analyze_wav(voice_wav)
+        qs = aa.analyze_wav(static_wav)
+        self.assertGreater(qv.quality_score, 70.0)
+        self.assertLess(qs.quality_score, 30.0)
+        self.assertGreater(qv.quality_score, qs.quality_score + 40.0)
+
+    def test_channel_overrides_csv_roundtrip_and_engine_precedence(self) -> None:
+        from falconsdr.config import VfoRangeConfig
+        from falconsdr.models import Channel, Modulation
+        from falconsdr.scanner_engine import ScannerEngine
+        from falconsdr.channelizer import ScanWindow
+
+        ch_custom = Channel(
+            freq_hz=145_500_000, name="Repeater", modulation=Modulation.NFM,
+            enabled=True, folder="Ham", weight=2.0,
+            bandwidth_hz=12_500, trigger_level_dbfs=-35.0,
+            squelch_enabled=True, squelch_offset_db=-6.0,
+            linger_time_ms=2500, noise_reduction_enabled=False, noise_reduction_strength=0.4,
+        )
+        ch_plain = Channel(freq_hz=121_500_000, name="Guard", modulation=Modulation.AM)
+        # Backward compat with old 7-column CSV row (no overrides column).
+        old_row = ["118100000", "Tower", "AM", "1", "", "0.0", "0"]
+        parsed_old = Channel.from_row(old_row)
+        self.assertFalse(parsed_old.has_overrides)
+        self.assertIsNone(parsed_old.bandwidth_hz)
+
+        # Round-trip custom + plain channel via to_row / from_row.
+        rt = Channel.from_row(ch_custom.to_row())
+        self.assertEqual(rt, ch_custom)
+        self.assertTrue(rt.has_overrides)
+        self.assertEqual(Channel.from_row(ch_plain.to_row()), ch_plain)
+
+        # Engine precedence: Channel override -> Band override -> Global config.
+        cfg = AppConfig()
+        cfg.trigger_level_dbfs = -50.0
+        cfg.squelch_enabled = False
+        cfg.squelch_offset_db = -10.0
+        cfg.timing.linger_time_ms = 5000
+        cfg.noise_reduction.enabled = True
+        cfg.noise_reduction.strength = 0.8
+        cfg.bands = [VfoRangeConfig(
+            start_hz=144_000_000, stop_hz=146_000_000, step_hz=25_000,
+            trigger_level_dbfs=-42.0, linger_time_ms=4000,
+        )]
+        eng = ScannerEngine(cfg, [ch_custom, ch_plain], [])
+        eng._rebuild_windows()
+        win = ScanWindow(center_hz=145_000_000, freqs=[145_500_000, 145_000_000], band=cfg.bands[0])
+
+        self.assertEqual(eng._channel_bw_map[145_500_000], 12_500.0)
+        self.assertEqual(eng._effective_trigger_dbfs(win, 145_500_000), -35.0)
+        self.assertEqual(eng._effective_trigger_dbfs(win, 145_000_000), -42.0)
+        self.assertEqual(eng._effective_trigger_dbfs(None, 121_500_000), -50.0)
+        self.assertEqual(eng._effective_squelch_dbfs(win, 145_500_000), -41.0)
+        self.assertIsNone(eng._effective_squelch_dbfs(win, 145_000_000))
+        self.assertEqual(eng._effective_linger_time_ms(win, 145_500_000), 2500)
+        self.assertEqual(eng._effective_linger_time_ms(win, 145_000_000), 4000)
+        self.assertEqual(eng._effective_noise_reduction(win, 145_500_000), (False, 0.4))
+        self.assertEqual(eng._effective_noise_reduction(win, 145_000_000), (True, 0.8))
+
+    def test_antenna_partitioning_and_switching(self) -> None:
+        from unittest import mock
+        from falconsdr.config import VfoRangeConfig
+        from falconsdr.scanner_engine import ScannerEngine
+
+        cfg = AppConfig()
+        cfg.memory_list_enabled = False
+        cfg.bands = [
+            VfoRangeConfig(start_hz=118_000_000, stop_hz=118_500_000, step_hz=25_000, label="Air", antenna="Antenna A"),
+            VfoRangeConfig(start_hz=118_600_000, stop_hz=119_000_000, step_hz=25_000, label="Air2", antenna="Antenna B"),
+        ]
+        eng = ScannerEngine(cfg, [], [])
+        eng._rebuild_windows()
+        # Even though both bands fit inside one 2.4 MHz window, different antennas must stay in separate windows.
+        windows = eng._default_lane.windows
+        self.assertEqual(len(windows), 2)
+        self.assertEqual({w.antenna for w in windows}, {"Antenna A", "Antenna B"})
+
+        fake_backend = mock.MagicMock()
+        eng._backend = fake_backend
+        eng._default_antenna = "Antenna A"
+        eng._applied_antenna = "Antenna A"
+        w_b = next(w for w in windows if w.antenna == "Antenna B")
+        eng._maybe_apply_antenna(w_b)
+        fake_backend.set_antenna.assert_called_once_with("Antenna B")
+        self.assertEqual(eng._applied_antenna, "Antenna B")
+        # Calling again on the same antenna is a no-op.
+        eng._maybe_apply_antenna(w_b)
+        self.assertEqual(fake_backend.set_antenna.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

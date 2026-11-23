@@ -36,7 +36,11 @@ export function transcriptStatus(tr, queued) {
 export function recordingsView(root) {
   const offs = [];
   const preset = sessionStorage.getItem('openFreq');  // from Statistics
-  if (preset) { F.sel = [preset]; F.mode = 'frequencies'; sessionStorage.removeItem('openFreq'); }
+  if (preset) {
+    F.sel = [preset];
+    F.mode = preset.startsWith('band:') ? 'bands' : preset.startsWith('lang:') ? 'languages' : 'frequencies';
+    sessionStorage.removeItem('openFreq');
+  }
   let items = [], total = 0, loading = false, current = null, selected = new Set(), facets = null, anchor = null, lastRes = null;
   const audio = new Audio();
   audio.preload = 'metadata';
@@ -162,7 +166,7 @@ export function recordingsView(root) {
     const tr = it.transcript;
     const text = tr && tr.text ? tr.text : transcriptStatus(tr, it.queued);
     const el = h('div.rec', {
-      class: (current && current.id === it.id ? 'active ' : '') + (selected.has(it.id) ? 'selected' : ''),
+      class: [current && current.id === it.id ? 'active' : '', selected.has(it.id) ? 'selected' : '', it.favorite ? 'fav' : ''].filter(Boolean).join(' '),
       tabindex: 0,
       role: 'button',
       onclick: (e) => pick(it, e),
@@ -403,7 +407,8 @@ export function recordingsView(root) {
         h('div.grow',
           h('div', h('b.mono', { style: { fontSize: '16px' } }, freqLabel(it)), it.name ? h('span.muted', ` · ${it.name}`) : null),
           h('div.small.muted', `${fmtDate(it.time)} ${fmtTime(it.time)}${prefs.utc ? ' UTC' : ''}`, ' · ', fmtDuration(it.duration),
-            it.snr !== null ? ` · SNR ${it.snr} dB` : '')),
+            it.snr !== null ? ` · SNR ${it.snr} dB` : '',
+            it.clipping !== null && it.clipping >= 0.005 ? ` · ${t('clipped {pct}%', { pct: (it.clipping * 100).toFixed(1) })}` : '')),
         qualityBadge(it.quality),
         h('button.icon.star', { class: it.favorite ? 'on' : '', title: t('Favorite'), onclick: () => setFavorite([it.id], !it.favorite) }, icon('star')),
         h('button.icon.ghost', { title: t('Close'), onclick: closePlayer }, icon('x'))),

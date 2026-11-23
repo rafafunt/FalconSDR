@@ -1,7 +1,7 @@
 // "Settings": recording, band presets, location, language/listening, disk & retention, server
 // connection, access password and advanced options.
 import {
-  api, confirmDialog, errorToast, fmtAgo, fmtBytes, fmtDate, fmtDuration, fmtMHz, formDialog, h, icon, lang, modal, mount, qs, select, t, toast, toggle,
+  api, confirmDialog, errorToast, fmtAgo, fmtBytes, fmtDate, fmtDuration, fmtMHz, formDialog, h, icon, lang, modal, mount, prefs, qs, seg, select, t, toast, toggle,
 } from '../core.js';
 import { S, cfg, confirmRecording, loadSettings, on, patchConfig, patchConfigNow } from '../state.js';
 import { decodersCard } from './addons.js';
@@ -20,7 +20,7 @@ const SECTIONS = [
   ['addons', () => t('Transcription & add-ons')],     // a signpost: these settings moved to the Add-ons page
   ['presets', () => t('Band presets')],
   ['location', () => t('Location')],
-  ['appearance', () => t('Language & listening')],
+  ['appearance', () => t('Appearance & language')],
   ['storage', () => t('Disk & retention')],
   ['connect', () => t('Connect to a server')],
   ['access', () => t('Access')],
@@ -504,6 +504,8 @@ export function settingsView(root, hash, scope = 'settings') {
   // ---------------------------------------------------------- appearance
   function renderAppearance() {
     mount(body('appearance'),
+      setting(t('Theme'), t('“Automatic” follows this device\'s light or dark setting. Stored in this browser.'),
+        seg([['auto', t('Automatic')], ['light', t('Light')], ['dark', t('Dark')]], prefs.theme, (v) => { prefs.theme = v; })),
       setting(t('Language'), t('“Automatic” follows each browser\'s language.'),
         select([['auto', t('Automatic')], ...S.settings.languages.map((l) => [l.code, l.name])], cfg().language, async (v) => {
           await patchConfigNow({ language: v });

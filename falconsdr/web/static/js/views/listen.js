@@ -5,7 +5,7 @@ import { api, confirmDialog, errorToast, fmtChannel, fmtMHz, h, icon, modal, mou
 import { BOOST_STEPS_DB, liveAudio } from '../live-audio.js';
 import { S, cfg, confirmRecording, on, patchConfig, setFastPolling } from '../state.js';
 import { NAMES, eventLine, fold, levelControl, passes } from './messages.js';
-import { askCustomRange, askSingleFrequency, bandEditor, bandRange, clearOverrides, hasOverrides, presetPicker } from './bands.js';
+import { askCustomRange, askSingleFrequency, bandEditor, bandRange, clearOverrides, hasOverrides, knownAntennas, presetPicker, supportsAntennaSwitch } from './bands.js';
 
 // Windows needs the WinUSB driver on the dongle (SDR++, SDR# and friends need the
 // same one, so most users already have it) - without it the device never opens.
@@ -399,6 +399,13 @@ export function listenView(root) {
       onchange: (e) => onset(parseAddr(e.target.value)) });
     const addr = c.device.driver === 'rtl_tcp' ? addrInput(c.device.device_args, (args) => { if (netEntry) netEntry.args = args; patchConfig({ device: { device_args: args } }); }) : null;
     const bw = h('input', { type: 'number', min: 0.25, max: 61.44, step: 0.01, value: (c.device.sample_rate_hz / 1e6).toFixed(2), onchange: (e) => patchConfig({ device: { sample_rate_hz: +e.target.value * 1e6 } }) });
+    const ants = knownAntennas();
+    const showAnt = supportsAntennaSwitch(c.device.driver) || !!c.device.antenna;
+    const antInput = showAnt
+      ? (ants.length
+        ? select([['', t('Driver default')], ...[...new Set([...ants, c.device.antenna].filter(Boolean))].map((a) => [a, a])], c.device.antenna || '', (v) => patchConfig({ device: { antenna: v } }))
+        : h('input', { value: c.device.antenna || '', placeholder: t('Driver default'), onchange: (e) => patchConfig({ device: { antenna: e.target.value.trim() } }) }))
+      : null;
     // Experimental: more dongles scanning together - each takes its share of the capture windows.
     const extra = c.device.extra_devices || [];
     // An extra dongle must be a specific one - and never a simulation next to real hardware (fake
@@ -449,14 +456,15 @@ export function listenView(root) {
         setExtra([...extra, { driver: d.driver, device_args: d.driver === NETWORK ? '' : d.args }]);
       },
     }, icon('plus'), t('Scan with another dongle (experimental)'));
-    deviceInputs = [sel, ...(methods ? [methods] : []), ...(addr ? [addr] : []), bw, bias.querySelector('input'), add, ...extraInputs];
+    deviceInputs = [sel, ...(methods ? [methods] : []), ...(addr ? [addr] : []), bw, ...(antInput ? [antInput] : []), bias.querySelector('input'), add, ...extraInputs];
     mount(device,
       h('div.card-head', h('h2', t('SDR device'))),
       h('div.fields',
         h('label.field', t('Device'), sel),
         methods ? h('label.field', t('Access method'), methods) : null,
         addr ? h('label.field', t('rtl_tcp address'), addr) : null,
-        h('label.field', t('Capture width (MHz)'), bw)),
+        h('label.field', t('Capture width (MHz)'), bw),
+        antInput ? h('label.field', t('Antenna input'), antInput) : null),
       addr ? h('span.faint.small', t('The RTL-SDR on another computer, through its rtl_tcp server (host or host:port, default port 1234). It serves one program at a time, the stream is not encrypted - use it on a trusted network. Retuning takes longer than with a local dongle, so scanning many windows is slower.')) : null,
       methods ? h('span.faint.small', t('How FalconSDR talks to this receiver. The first choice is the default; the other one is the fallback when it will not open, and a way to compare.')) : null,
       missingReceiverNotice(devices),

@@ -91,6 +91,18 @@ def merge_patch(obj: Any, patch: dict) -> None:
             setattr(obj, key, _coerce(current, value))
 
 
+def _opt_int(val: Any) -> int | None:
+    return int(val) if val is not None and val != "" else None
+
+
+def _opt_float(val: Any) -> float | None:
+    return float(val) if val is not None and val != "" else None
+
+
+def _opt_bool(val: Any) -> bool | None:
+    return bool(val) if val is not None and val != "" else None
+
+
 def channel_from_dict(d: dict) -> Channel:
     mod = str(d.get("modulation", "AM"))
     return Channel(
@@ -98,6 +110,13 @@ def channel_from_dict(d: dict) -> Channel:
         modulation=Modulation(mod) if mod in Modulation._value2member_map_ else Modulation.AM,
         enabled=bool(d.get("enabled", True)), folder=str(d.get("folder", "")), weight=float(d.get("weight", 0.0)),
         ch833=bool(d.get("ch833", False)),
+        bandwidth_hz=_opt_int(d.get("bandwidth_hz")),
+        trigger_level_dbfs=_opt_float(d.get("trigger_level_dbfs")),
+        squelch_enabled=_opt_bool(d.get("squelch_enabled")),
+        squelch_offset_db=_opt_float(d.get("squelch_offset_db")),
+        linger_time_ms=_opt_int(d.get("linger_time_ms")),
+        noise_reduction_enabled=_opt_bool(d.get("noise_reduction_enabled")),
+        noise_reduction_strength=_opt_float(d.get("noise_reduction_strength")),
     )
 
 
@@ -141,13 +160,15 @@ class Controller:
         self._bg_stop = threading.Event()
         self._shared: Optional[SharedFrequencies] = None
         self._resume = False    # one receiver only: the scanner was running when an add-on took it
+        self._known_antennas: list[str] = []
         self.log(i18n.tr("Ready."))
 
     @staticmethod
     def _idle_live() -> dict[str, Any]:
         return {
             "state": "IDLE", "level": -120.0, "frequencies": [], "recording": False,
-            "manual_recording": False, "raw_iq": False, "hold": False, "cycle_time": None, "gain_range": [0.0, 50.0],
+            "manual_recording": False, "raw_iq": False, "hold": False, "cycle_time": None,
+            "gain_range": [0.0, 50.0], "antennas": [],
         }
 
     def start_background(self) -> None:
@@ -251,6 +272,7 @@ class Controller:
         s.raw_iq_recording_changed.connect(lambda active, _p: self._set_live(k, raw_iq=bool(active)))
         s.cycle_time_changed.connect(lambda v: self._set_live(k, cycle_time=round(float(v), 2)))
         s.gain_range_changed.connect(lambda lo, hi: self._set_live(k, gain_range=[float(lo), float(hi)]))
+        s.antennas_changed.connect(lambda ants: self._on_antennas(k, ants))
         s.recording_finished.connect(lambda path: self.library.add_file(Path(path)))
         s.recording_finished.connect(self._notify_recording)
         s.spectrum_ready.connect(lambda *a: self._on_spectrum(k, *a))
@@ -523,6 +545,13 @@ class Controller:
                 "custom": bool(custom),
             }
 
+    def _on_antennas(self, k: int, ants: tuple[str, ...]) -> None:
+        items = [str(a) for a in ants if a]
+        self._set_live(k, antennas=items)
+        if k == 0 and items:
+            with self._lock:
+                self._known_antennas = items
+
     def _on_blacklisted(self, freq_hz: int) -> None:
         entry = BlacklistEntry(
             freq_hz=int(freq_hz), margin_hz=self.config.default_blacklist_margin_hz,
@@ -652,6 +681,7 @@ class Controller:
                 for p in military_presets.get_all_presets()
             ],
             "devices": self.devices(),
+            "antennas": list(self._known_antennas),
             "languages": [{"code": c, "name": i18n.LANGUAGE_NAMES.get(c, c)} for c in i18n.available_languages()],
             "capabilities": {
                 "ffmpeg": ffmpeg_available(),

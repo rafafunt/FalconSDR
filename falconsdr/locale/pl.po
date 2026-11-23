@@ -3872,3 +3872,72 @@ msgstr "Zmiana ścieżki programu lub opcji wymaga hasła dostępu (Ustawienia) 
 
 msgid "Installation is in progress - wait for it to finish."
 msgstr "Trwa instalacja - poczekaj, aż się zakończy."
+
+msgid "“Automatic” follows this device's light or dark setting. Stored in this browser."
+msgstr "„Automatycznie” dopasowuje się do jasnego lub ciemnego motywu tego urządzenia. Zapisywane w tej przeglądarce."
+
+msgid "clipped {pct}%"
+msgstr "przesterowanie {pct}%"
+
+msgid "Filter statistics"
+msgstr "Filtruj statystyki"
+
+msgid "Scope:"
+msgstr "Zakres:"
+
+msgid "Show all"
+msgstr "Pokaż wszystko"
+
+msgid "Open recordings"
+msgstr "Otwórz nagrania"
+
+msgid "No recordings match this filter."
+msgstr "Żadne nagrania nie pasują do tego filtra."
+
+msgid "Show statistics for this frequency"
+msgstr "Pokaż statystyki dla tej częstotliwości"
+
+msgid "Global / band"
+msgstr "Ogólne / pasmo"
+
+msgid "Custom settings for this channel"
+msgstr "Własne ustawienia dla tego kanału"
+
+msgid "Leave empty to use the band or global setting."
+msgstr "Pozostaw puste, aby użyć ustawienia pasma lub ogólnego."
+
+msgid "Channel bandwidth (kHz)"
+msgstr "Szerokość kanału (kHz)"
+
+msgid "Trigger level (dBFS)"
+msgstr "Poziom wyzwalania (dBFS)"
+
+msgid "Hold after a transmission (s)"
+msgstr "Podtrzymanie po transmisji (s)"
+
+msgid "Squelch offset (dB)"
+msgstr "Przesunięcie squelcha (dB)"
+
+msgid "Noise reduction strength (%)"
+msgstr "Siła odszumiania (%)"
+
+msgid "Move up"
+msgstr "Przesuń wyżej"
+
+msgid "Move down"
+msgstr "Przesuń niżej"
+
+msgid "Drag rows or use the arrows to arrange channels in your own order. Scan priority is controlled by Weight."
+msgstr "Przeciągaj wiersze lub używaj strzałek, aby ułożyć kanały we własnej kolejności. Priorytet skanowania określa kolumna Waga."
+
+msgid "Custom order"
+msgstr "Własna kolejność"
+
+msgid "Antenna input"
+msgstr "Wejście antenowe"
+
+msgid "e.g. Antenna A, Antenna B, Hi-Z"
+msgstr "np. Antenna A, Antenna B, Hi-Z"
+
+msgid "Driver default"
+msgstr "Domyślne sterownika"

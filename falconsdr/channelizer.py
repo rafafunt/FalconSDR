@@ -30,6 +30,8 @@ class ScanWindow:
     # The band this window was built from alone, for its overrides; None when
     # mixed. Set by ScannerEngine._rebuild_windows().
     band: "VfoRangeConfig | None" = None
+    # Antenna port requested for this window ("" = device default).
+    antenna: str = ""
 
 
 def plan_windows(freqs: list[int], sample_rate_hz: float, channel_bw_hz: float) -> list[ScanWindow]:

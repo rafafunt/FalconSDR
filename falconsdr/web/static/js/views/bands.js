@@ -19,15 +19,25 @@ function offerDigital() {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));  // closes the form dialog it was picked in
   location.hash = '#/addons/digital';
 }
-export const OVERRIDES = ['trigger_level_dbfs', 'tuning_time_ms', 'linger_time_ms', 'gain_mode', 'gain_db', 'noise_reduction_enabled', 'noise_reduction_strength', 'squelch_enabled', 'squelch_offset_db'];
-export const hasOverrides = (b) => OVERRIDES.some((k) => b[k] !== null && b[k] !== undefined);
+export const OVERRIDES = ['trigger_level_dbfs', 'tuning_time_ms', 'linger_time_ms', 'gain_mode', 'gain_db', 'noise_reduction_enabled', 'noise_reduction_strength', 'squelch_enabled', 'squelch_offset_db', 'antenna'];
+export const hasOverrides = (b) => OVERRIDES.some((k) => b[k] !== null && b[k] !== undefined && b[k] !== '');
 export const clearOverrides = (b) => OVERRIDES.forEach((k) => { b[k] = null; });
+
+// Known SoapySDR antenna ports reported by the receiver (live or cached).
+export function knownAntennas() {
+  const live = (S.live && S.live.antennas && S.live.antennas.length) ? S.live.antennas : [];
+  const saved = (S.settings && S.settings.antennas && S.settings.antennas.length) ? S.settings.antennas : [];
+  return live.length ? live : saved;
+}
+
+const NON_SOAPY = new Set(['', 'auto', 'rtlsdr_native', 'rtl_tcp', 'simulated', 'hackrf_native', 'airspy_native']);
+export const supportsAntennaSwitch = (driver) => knownAntennas().length > 1 || (!!driver && !NON_SOAPY.has(driver));
 
 // The id is made here, not by the server: a schedule entry refers to the band right away.
 export function newBand(fields) {
   return { id: Math.random().toString(36).slice(2, 10), enabled: true, modulation: 'AM', weight: 0, label: '',
     trigger_level_dbfs: null, tuning_time_ms: null, linger_time_ms: null,
-    gain_mode: null, gain_db: null, noise_reduction_enabled: null, noise_reduction_strength: null, ...fields };
+    gain_mode: null, gain_db: null, noise_reduction_enabled: null, noise_reduction_strength: null, antenna: null, ...fields };
 }
 
 export function bandRange(b) {
@@ -85,6 +95,7 @@ export function bandEditor(b, save, rerender) {
     gain_mode: c.device.gain_mode, gain_db: c.device.gain_db,
     noise_reduction_enabled: c.noise_reduction.enabled, noise_reduction_strength: c.noise_reduction.strength,
     squelch_enabled: c.squelch_enabled, squelch_offset_db: c.squelch_offset_db,
+    antenna: c.device.antenna || knownAntennas()[0] || '',
   };
   const ov = (keys, label, makeInput, globalValue) => {
     const own = () => keys.some((k) => b[k] !== null && b[k] !== undefined);
@@ -119,7 +130,15 @@ export function bandEditor(b, save, rerender) {
       const strength = rangeInput('noise_reduction_strength', 0, 100, 1, (v) => `${v}%`, 100);
       strength.input.disabled = !on;
       return [toggle(t('On'), on, (v) => { b.noise_reduction_enabled = v; save(); redraw(); }), strength];
-    }, c.noise_reduction.enabled ? `${t('On')}, ${Math.round(c.noise_reduction.strength * 100)}%` : t('Off')));
+    }, c.noise_reduction.enabled ? `${t('On')}, ${Math.round(c.noise_reduction.strength * 100)}%` : t('Off')),
+    (supportsAntennaSwitch(c.device.driver) || b.antenna) ? ov(['antenna'], t('Antenna input'), () => {
+      const ants = knownAntennas();
+      if (ants.length) {
+        const opts = [...new Set([...ants, b.antenna].filter(Boolean))].map((a) => [a, a]);
+        return select(opts, b.antenna ?? ants[0], (v) => { b.antenna = v || null; save(); });
+      }
+      return h('input', { value: b.antenna || '', placeholder: t('e.g. Antenna A, Antenna B, Hi-Z'), onchange: (e) => { b.antenna = e.target.value.trim() || null; save(); } });
+    }, c.device.antenna || t('Driver default')) : null);
   return h('div.col', fields,
     h('div.row.wrap', h('h3', t('Own settings for this band')), h('span.spacer'),
       hasOverrides(b) ? h('button.ghost.small', { onclick: () => { clearOverrides(b); save(); rerender(); } }, icon('refresh'), t('Restore general settings')) : null),

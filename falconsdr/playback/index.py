@@ -168,20 +168,25 @@ class Library:
 
     def _migrate_keys(self) -> None:
         """One-time: keys written by older versions start with the absolute folder path."""
-        prefix = str(self.root) + os.sep
+        roots = {str(self.root).rstrip("/\\"), str(self.root.resolve()).rstrip("/\\")}
+        prefixes = tuple(dict.fromkeys(
+            p + sep for r in roots if r for p in (r, r.replace("\\", "/")) for sep in ("/", "\\")
+        ))
         def relative(key: str) -> str:
-            if not key.startswith(prefix):
-                return key
-            return key[len(prefix):].replace(os.sep, "/")
+            for prefix in prefixes:
+                if key.startswith(prefix):
+                    return key[len(prefix):].replace("\\", "/")
+            return key
         changed = False
         for cache in (self.quality, self.transcripts):
-            for key in [k for k in cache._data if k.startswith(prefix)]:
+            for key in [k for k in cache._data if k.startswith(prefixes)]:
                 cache._data[relative(key)] = cache._data.pop(key)
                 cache.mark_changed()
                 changed = True
-        old_favorites = {k for k in self.favorites._keys if k.startswith(prefix)}
+        old_favorites = {k for k in self.favorites._keys if k.startswith(prefixes)}
         if old_favorites:
             self.favorites._keys = {relative(k) if k in old_favorites else k for k in self.favorites._keys}
+            self.favorites._rebuild_index()
             changed = True
         if changed:
             self._dirty = True
@@ -269,10 +274,14 @@ class Library:
             self._blobs = {rel: b for rel, b in self._blobs.items() if rel in found}
             # Forget what belongs to files that are gone (deleted by hand, moved away) - but never
             # on a scan that lost most of the library (a share half-mounted): that is not "gone".
+            # Favorites are never pruned on the initial startup scan (known is empty): a changed
+            # recordings folder or an upgrade path mismatch must never silently wipe the user's stars.
             if found and len(found) * 2 >= len(known):
                 valid = {r.key for r in found.values()}
-                dropped = self.quality.prune(valid) + self.transcripts.prune(valid) + self.favorites.prune(valid)
-                self._dirty = self._dirty or dropped > 0
+                dropped = self.quality.prune(valid) + self.transcripts.prune(valid)
+                if known:
+                    dropped += self.favorites.prune(valid)
+                self._dirty = self._dirty or dropped > 0 or self.favorites.changed
         self._dir_mtimes = mtimes
 
     def add_file(self, path: Path) -> None:

@@ -32,7 +32,7 @@ def load_channels() -> list[Channel]:
 def save_channels(channels: list[Channel]) -> None:
     buf = io.StringIO(newline="")
     writer = csv.writer(buf)
-    writer.writerow(["freq_hz", "name", "modulation", "enabled", "folder", "weight", "ch833"])
+    writer.writerow(["freq_hz", "name", "modulation", "enabled", "folder", "weight", "ch833", "overrides"])
     for ch in channels:
         writer.writerow(ch.to_row())
     atomic_write_text(CHANNELS_CSV, buf.getvalue())

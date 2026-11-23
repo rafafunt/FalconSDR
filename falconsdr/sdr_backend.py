@@ -69,6 +69,11 @@ class SdrBackend(ABC):
 
     label = "unknown"
     gain_range_db: tuple[float, float] = DEFAULT_GAIN_RANGE_DB
+    antennas: tuple[str, ...] = ()
+
+    def set_antenna(self, antenna: str) -> None:
+        """Selects an antenna port on multi-port receivers (no-op when unsupported)."""
+        pass
 
 
 # Bias-tee powers the antenna input - only when the user switched it on for
@@ -111,7 +116,7 @@ class SoapyBackend(SdrBackend):
     label = "soapysdr"
 
     def __init__(self, driver: str, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
-                 bias_tee: bool = False):
+                 bias_tee: bool = False, antenna: str = ""):
         if not HAVE_SOAPY:
             raise RuntimeError("The python3-soapysdr module is not installed")
         self._wait_for_reopen_cooldown()
@@ -151,6 +156,15 @@ class SoapyBackend(SdrBackend):
                     self._gain_steps = _R82XX_GAINS_DB
             except Exception:
                 pass
+            try:
+                self.antennas = tuple(str(a) for a in (self.device.listAntennas(SOAPY_SDR_RX, 0) or ()))
+            except Exception:
+                self.antennas = ()
+            if antenna:
+                try:
+                    self.device.setAntenna(SOAPY_SDR_RX, 0, antenna)
+                except Exception:
+                    pass
             self.set_gain(gain_mode, gain_db)
             try:
                 self.stream = self.device.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32, [0], _soapy_stream_args(self.sample_rate))
@@ -183,6 +197,13 @@ class SoapyBackend(SdrBackend):
     def set_frequency(self, freq_hz: float) -> None:
         self.device.setFrequency(SOAPY_SDR_RX, 0, freq_hz)
         # Some driver builds re-derive the bias-tee on retune - re-assert it.
+        self._apply_bias_tee()
+        self._flush_stream()
+
+    def set_antenna(self, antenna: str) -> None:
+        if not antenna:
+            return
+        self.device.setAntenna(SOAPY_SDR_RX, 0, antenna)
         self._apply_bias_tee()
         self._flush_stream()
 
@@ -923,7 +944,7 @@ def enumerate_devices() -> list[dict]:
 
 
 def open_real_backend(driver: str, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
-                      bias_tee: bool = False, async_read: bool = True) -> SdrBackend:
+                      bias_tee: bool = False, async_read: bool = True, antenna: str = "") -> SdrBackend:
     """Opens real hardware only - never falls back to SimulatedBackend.
 
     "auto" means an RTL-SDR: librtlsdr first, SoapySDR if that fails or isn't installed. A config saved
@@ -940,16 +961,16 @@ def open_real_backend(driver: str, device_args: str, sample_rate: float, gain_mo
     if driver == RTLSDR_NATIVE_DRIVER or (driver == "rtlsdr" and not HAVE_SOAPY):
         return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
     if driver and driver != "auto":
-        return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
+        return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee, antenna=antenna)
     if not HAVE_RTLSDR_NATIVE:
-        return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
+        return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee, antenna=antenna)
     try:
         return RtlSdrBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
     except Exception as native_exc:
         if not HAVE_SOAPY:
             raise
         try:
-            return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee)
+            return SoapyBackend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee, antenna=antenna)
         except Exception:
             raise native_exc
 
@@ -1160,6 +1181,8 @@ class AcquisitionThread:
                 try:
                     if kind == "freq":
                         self._backend.set_frequency(*args)
+                    elif kind == "antenna":
+                        self._backend.set_antenna(*args)
                     else:
                         self._backend.set_gain(*args)
                 except BaseException as exc:  # noqa: BLE001 - propagated to the waiting caller below
@@ -1254,6 +1277,9 @@ class AcquisitionThread:
     def set_gain(self, gain_mode: str, gain_db: float) -> None:
         self._submit_command("gain", (gain_mode, gain_db))
 
+    def set_antenna(self, antenna: str) -> None:
+        self._submit_command("antenna", (antenna,))
+
     def close(self) -> None:
         self._stop_evt.set()
         with self._cond:
@@ -1272,13 +1298,17 @@ class AcquisitionThread:
         return self._backend.gain_range_db
 
     @property
+    def antennas(self) -> tuple[str, ...]:
+        return getattr(self._backend, "antennas", ())
+
+    @property
     def stream_mtu(self):
         return getattr(self._backend, "stream_mtu", None)
 
 
 def create_backend(
     driver: str, device_args: str, sample_rate: float, gain_mode: str, gain_db: float,
-    debug_mode: bool = False, bias_tee: bool = False, async_read: bool = True,
+    debug_mode: bool = False, bias_tee: bool = False, async_read: bool = True, antenna: str = "",
 ) -> SdrBackend:
     if driver == "simulated":
         backend = SimulatedBackend(sample_rate)
@@ -1289,7 +1319,7 @@ def create_backend(
         # Simulate only in debug mode (gotcha 8): a device that failed to open
         # must show an error, not look like a working scan.
         try:
-            return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
+            return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read, antenna=antenna)
         except Exception:
             if not debug_mode:
                 raise
@@ -1298,4 +1328,4 @@ def create_backend(
             return backend
 
     # An explicitly chosen device that fails must always raise.
-    return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read)
+    return open_real_backend(driver, device_args, sample_rate, gain_mode, gain_db, bias_tee, async_read, antenna=antenna)

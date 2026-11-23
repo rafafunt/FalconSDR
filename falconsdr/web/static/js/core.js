@@ -138,6 +138,8 @@ const ICONS = {
   link: 'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1',
   clock: 'M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0M12 7v5l3 2',
   globe: 'M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18',
+  up: 'M18 15l-6-6-6 6',
+  down: 'M6 9l6 6 6-6',
 };
 
 export function icon(name, cls) {
@@ -289,9 +291,30 @@ export async function formDialog(title, fields, okLabel) {
 }
 
 // ---------------------------------------------------------------- formatting
+export function applyTheme(mode) {
+  const root = document.documentElement;
+  if (mode === 'dark' || mode === 'light') root.dataset.theme = mode;
+  else delete root.dataset.theme;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) {
+    const dark = mode === 'dark' || (mode !== 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    meta.content = dark ? '#000000' : '#f2f2f7';
+  }
+}
+
 export const prefs = {
   get utc() { return localStorage.getItem('utc') === '1'; },
   set utc(v) { localStorage.setItem('utc', v ? '1' : '0'); },
+  get theme() {
+    const v = localStorage.getItem('theme');
+    return v === 'dark' || v === 'light' ? v : 'auto';
+  },
+  set theme(v) {
+    const mode = v === 'dark' || v === 'light' ? v : 'auto';
+    if (mode === 'auto') localStorage.removeItem('theme');
+    else localStorage.setItem('theme', mode);
+    applyTheme(mode);
+  },
 };
 
 export function fmtMHz(hz, digits = 4) { return (hz / 1e6).toFixed(digits); }
