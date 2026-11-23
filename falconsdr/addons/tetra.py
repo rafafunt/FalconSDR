@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -99,6 +100,7 @@ class TetraSlotDecoder:
         self.source = ""
         self.encrypted = False
         self.events_seen = 0
+        self.last_voice_at = 0.0
         self._buf = np.zeros(0, dtype=np.float32)
         self._frac = 0.0
         self._events: list[dict] = []
@@ -108,10 +110,10 @@ class TetraSlotDecoder:
         self._iq_queue: queue.Queue[bytes | None] = queue.Queue(maxsize=16)
 
         argv = [str(exe), "--pipe", "--rate", str(TETRA_IQ_RATE), "--freq-hz", str(self.freq_hz)]
-        if codec_path:
-            cp = Path(codec_path).expanduser()
-            if cp.is_file():
-                argv += ["--codec", str(cp)]
+        cp = Path(codec_path).expanduser() if codec_path else None
+        self.has_codec = bool(cp is not None and cp.is_file())
+        if self.has_codec:
+            argv += ["--codec", str(cp)]
 
         self._proc = subprocess.Popen(
             argv,
@@ -170,6 +172,9 @@ class TetraSlotDecoder:
         if m == 0 or not take.any():
             return np.zeros(n, dtype=np.float32)
         return np.interp(np.arange(n) * (m / n), np.arange(m), take).astype(np.float32)
+
+    def has_active_voice(self, window_s: float = 3.0) -> bool:
+        return self.has_codec and self.last_voice_at > 0.0 and (time.monotonic() - self.last_voice_at) < window_s
 
     def drain_events(self) -> list[dict]:
         with self._lock:
@@ -238,6 +243,7 @@ class TetraSlotDecoder:
                     return
                 if pcm.size:
                     with self._lock:
+                        self.last_voice_at = time.monotonic()
                         self._buf = np.concatenate([self._buf, pcm])[-int(_MAX_BUFFER_S * _VOICE_RATE):]
             return
 

@@ -2,7 +2,7 @@
 // own modulation, priority weight, optional overrides and on/off) and the blacklist.
 import { carrierHz, confirmDialog, fmtChannel, fmtMHz, formDialog, h, icon, modal, mount, select, tabs, t, toast, typedAs833 } from '../core.js';
 import { S, cfg, loadSettings, on, patchConfig, saveBlacklist, saveChannels } from '../state.js';
-import { modLabel, modOptions } from './bands.js';
+import { isDigitalMod, modLabel, modOptions } from './bands.js';
 let tab = 'memory';
 
 const CH_OVERRIDES = [
@@ -219,7 +219,7 @@ export function channelsView(root) {
     const c = cfg();
     const freqIn = h('input', { type: 'number', step: 'any', value: ch ? fmtChannel(ch.freq_hz) : '' });
     const nameIn = h('input', { value: ch ? ch.name : '', placeholder: t('e.g. Downtown Tower') });
-    const modIn = select(modOptions(), ch ? ch.modulation : 'AM', () => {});
+    const modIn = select(modOptions(), ch ? ch.modulation : 'AM', () => syncAnalogOnly());
     const folderIn = select([['', t('(no folder)')], ...fl.map((f) => [f, f])], ch ? ch.folder : '', () => {});
     const weightIn = h('input', { type: 'number', step: 'any', min: 0, max: 20, value: ch ? ch.weight : 0 });
 
@@ -241,6 +241,19 @@ export function channelsView(root) {
     const nrModeIn = select([['', t('Global / band')], ['on', t('On')], ['off', t('Off')]], ch ? tri(ch.noise_reduction_enabled) : '', () => {});
     const nrStrIn = h('input', { type: 'number', step: 1, min: 0, max: 100, placeholder: String(Math.round(c.noise_reduction.strength * 100)), value: ch && ch.noise_reduction_strength != null ? Math.round(ch.noise_reduction_strength * 100) : '' });
 
+    const sqRow = h('div.fields',
+      h('label.field', t('Squelch'), sqModeIn),
+      h('label.field', t('Squelch offset (dB)'), sqOffIn));
+    const nrRow = h('div.fields',
+      h('label.field', t('Noise reduction'), nrModeIn),
+      h('label.field', t('Noise reduction strength (%)'), nrStrIn));
+    const syncAnalogOnly = () => {
+      const hide = isDigitalMod(modIn.value);
+      sqRow.classList.toggle('hidden', hide);
+      nrRow.classList.toggle('hidden', hide);
+    };
+    syncAnalogOnly();
+
     const ovOpen = !!(ch && hasChannelOverrides(ch));
     const form = h('form.col', { onsubmit: (e) => { e.preventDefault(); form.closest('.modal-back').querySelector('.actions button.primary').click(); } },
       h('label.field', t('Frequency (MHz)'), freqIn, h('span.hint', t('Airband: type the channel as published, e.g. 126.805'))),
@@ -258,12 +271,8 @@ export function channelsView(root) {
             h('label.field', t('Channel bandwidth (kHz)'), bwIn),
             h('label.field', t('Trigger level (dBFS)'), trigIn),
             h('label.field', t('Hold after a transmission (s)'), lingerIn)),
-          h('div.fields',
-            h('label.field', t('Squelch'), sqModeIn),
-            h('label.field', t('Squelch offset (dB)'), sqOffIn)),
-          h('div.fields',
-            h('label.field', t('Noise reduction'), nrModeIn),
-            h('label.field', t('Noise reduction strength (%)'), nrStrIn)))));
+          sqRow,
+          nrRow)));
 
     const ok = await modal(isNew ? t('Add channel') : t('Edit channel'), form, [[t('Cancel'), false, 'ghost'], [isNew ? t('Add') : t('Save'), true, 'primary']]);
     if (!ok) return;

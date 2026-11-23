@@ -1481,6 +1481,57 @@ class TetraDecoderTest(unittest.TestCase):
         self.assertEqual(errors[0][0], 403)
         app.controller.addons.configure.assert_not_called()
 
+    def test_tetra_scanner_integration_visit_cap_recording_limit_and_reflections(self) -> None:
+        import time
+        from types import SimpleNamespace
+        from falconsdr.channelizer import ScanWindow
+        from falconsdr.config import AppConfig
+        from falconsdr.models import Modulation
+        from falconsdr.scanner_engine import ScannerEngine, _TETRA_SCAN_VISIT_S
+
+        cfg = AppConfig()
+        cfg.recording.enabled = True
+        cfg.recording.max_concurrent_recordings = 2
+        eng = ScannerEngine(cfg, [], [])
+        # Two windows -> multi-window scan mode
+        w1 = ScanWindow(center_hz=391_000_000, freqs=[390_337_500, 392_037_500])
+        w2 = ScanWindow(center_hz=426_000_000, freqs=[426_087_500, 426_112_500])
+        eng._default_lane.windows = [w1, w2]
+        eng._channel_mod_map = {
+            390_337_500: Modulation.TETRA,
+            392_037_500: Modulation.TETRA,
+            392_237_500: Modulation.TETRA,
+            121_500_000: Modulation.AM,
+        }
+
+        def fake_tetra_slot(freq, age_s, active_voice=False, has_codec=False):
+            tetra = SimpleNamespace(has_codec=has_codec, has_active_voice=lambda: active_voice)
+            return SimpleNamespace(
+                freq_hz=freq, modulation=Modulation.TETRA, tetra=tetra, data_decoder=None,
+                opened_at=time.monotonic() - age_s, level_history=[-35.0] * 30,
+            )
+
+        # 1. Codec-less TETRA slots must NOT consume max_concurrent_recordings (2).
+        eng._slots[390_337_500] = fake_tetra_slot(390_337_500, age_s=1.0)
+        eng._slots[392_037_500] = fake_tetra_slot(392_037_500, age_s=1.0)
+        self.assertFalse(eng._at_recording_capacity(392_237_500))  # 3rd TETRA slot allowed
+        self.assertFalse(eng._at_recording_capacity(121_500_000))  # voice channel still allowed!
+
+        # 2. Multi-window TETRA visit completes after _TETRA_SCAN_VISIT_S, unless Held or active voice.
+        self.assertFalse(eng._tetra_visit_done())
+        eng._slots[390_337_500].opened_at = time.monotonic() - (_TETRA_SCAN_VISIT_S + 0.5)
+        self.assertTrue(eng._tetra_visit_done())
+        eng._hold = True
+        self.assertFalse(eng._tetra_visit_done())
+        eng._hold = False
+        eng._slots[390_337_500] = fake_tetra_slot(390_337_500, age_s=_TETRA_SCAN_VISIT_S + 1.0, active_voice=True, has_codec=True)
+        self.assertFalse(eng._tetra_visit_done())
+
+        # Single-window scan stays parked indefinitely on TETRA.
+        eng._slots[390_337_500] = fake_tetra_slot(390_337_500, age_s=_TETRA_SCAN_VISIT_S + 5.0)
+        eng._default_lane.windows = [w1]
+        self.assertFalse(eng._tetra_visit_done())
+
 
 if __name__ == "__main__":
     unittest.main()

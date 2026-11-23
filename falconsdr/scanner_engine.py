@@ -56,6 +56,13 @@ MAX_VFO_CHANNELS = 20_000
 # Channels closer than this to an active WFM slot are its own sidebands
 # (a broadcast station is ~200 kHz wide; same-area stations sit >=200 kHz apart).
 _WFM_GUARD_HZ = 200_000
+# A TETRA carrier is ~22 kHz wide: guard ±18 kHz so a 12.5 kHz grid doesn't
+# open duplicate slots on sidebands, while real adjacent 25 kHz carriers both open.
+_TETRA_GUARD_HZ = 18_000
+# TETRA base stations transmit 24/7 (MCCH): during multi-window scanning, visit
+# signalling-only TETRA slots for ~4 s (~3.9 multiframes) then move on unless Held.
+_TETRA_SCAN_VISIT_S = 4.0
+_MAX_TETRA_SLOTS = 8
 
 # Reflection detection (_detect_reflections): a strong channel can produce a
 # correlated, 10-25 dB weaker copy on another channel of the same window
@@ -1581,10 +1588,14 @@ class ScannerEngine(threading.Thread):
                 wfm_active = [
                     s.freq_hz for s in self._slots.values() if s.modulation == Modulation.WFM
                 ]
+                tetra_active = [
+                    s.freq_hz for s in self._slots.values() if s.modulation == Modulation.TETRA
+                ]
                 candidate_freqs = [
                     f for f, ok in zip(window.freqs, not_blacklisted)
                     if ok and f not in self._slots
                     and not any(abs(f - w) < _WFM_GUARD_HZ for w in wfm_active)
+                    and not any(abs(f - t) < _TETRA_GUARD_HZ for t in tetra_active)
                     and not (self._shared and self._shared.taken_by_other(f, self))
                 ]
                 raw_powers: dict[int, float] = {}
@@ -1629,10 +1640,17 @@ class ScannerEngine(threading.Thread):
                         self.set_hold(False)
                     state = ScannerState.CALCULATE_NEXT_FREQ
                     self._emit_state(state)
+                elif self._tetra_visit_done():
+                    # Continuous 24/7 TETRA base station beacon(s) with no active clear voice:
+                    # release the window after _TETRA_SCAN_VISIT_S so multi-window scanning moves on.
+                    for f in list(self._slots.keys()):
+                        self._close_slot(f, reason="tetra_visit")
+                    state = ScannerState.CALCULATE_NEXT_FREQ
+                    self._emit_state(state)
                 elif cand_freq is not None:
-                    if self._at_recording_capacity():
+                    if self._at_recording_capacity(cand_freq):
                         now = time.monotonic()
-                        if now - self._capacity_logged.get(cand_freq, 0.0) > 30.0:
+                        if self._cand_records_audio(cand_freq) and now - self._capacity_logged.get(cand_freq, 0.0) > 30.0:
                             self._capacity_logged[cand_freq] = now
                             self.signals.log.emit(
                                 tr("Limit of {n} simultaneous recordings reached - {freq:.4f} MHz not recorded").format(
@@ -1857,8 +1875,12 @@ class ScannerEngine(threading.Thread):
         if len(slots) < 2 or len(slots) > _REFLECTION_MAX_SLOTS_CHECKED:
             return
         # Per-slot stats computed once, not once per pair.
+        # TETRA carriers are CRC-verified digital downlinks; two real carriers on the same
+        # mast can fade together and must not discard each other as reflections.
         prepared: dict[int, tuple[np.ndarray, float, float]] = {}
         for slot in slots:
+            if slot.modulation == Modulation.TETRA:
+                continue
             if len(slot.level_history) < _REFLECTION_MIN_OVERLAP_TICKS:
                 continue
             arr = np.array(slot.level_history)
@@ -1940,14 +1962,59 @@ class ScannerEngine(threading.Thread):
         if events and self.addons is not None:
             self.addons.publish_decoded(slot.data_addon, slot.freq_hz, events)
 
-    def _at_recording_capacity(self) -> bool:
+    def _has_multiple_windows(self) -> bool:
+        with self._lock:
+            n = len(self._default_lane.windows) + sum(len(l.windows) for l in self._priority_lanes)
+        return n > 1
+
+    def _tetra_visit_done(self) -> bool:
+        """True when all open slots are signalling-only TETRA beacons and the
+        multi-window visit budget has elapsed (so scanning moves on)."""
+        if self._hold or not self._slots or not self._has_multiple_windows():
+            return False
+        for slot in self._slots.values():
+            tetra = getattr(slot, "tetra", None)
+            if tetra is None or tetra.has_active_voice():
+                return False
+        oldest = min(s.opened_at for s in self._slots.values())
+        return (time.monotonic() - oldest) >= _TETRA_SCAN_VISIT_S
+
+    def _slot_records_audio(self, slot: _Slot) -> bool:
+        if self._is_silent_data(slot):
+            return False
+        tetra = getattr(slot, "tetra", None)
+        if tetra is not None and not tetra.has_codec:
+            return False
+        return True
+
+    def _has_tetra_codec(self) -> bool:
+        paths = getattr(self.config, "addons", None)
+        codec = str((paths.paths if paths is not None else {}).get("tetra_codec", "")).strip()
+        return bool(codec and Path(codec).expanduser().is_file())
+
+    def _cand_records_audio(self, freq_hz: int | None) -> bool:
+        if freq_hz is None:
+            return True
+        if self._channel_mod_map.get(freq_hz) == Modulation.TETRA and not self._has_tetra_codec():
+            return False
+        return True
+
+    def _at_recording_capacity(self, cand_freq: int | None = None) -> bool:
         """True when one more slot would exceed max_concurrent_recordings
         (0 = unlimited, gotcha 24). Only while auto-recording is on -
-        otherwise it would limit live listening too."""
+        otherwise it would limit live listening too. Purely signalling slots
+        (ACARS/APRS, TETRA without a speech codec) do not consume recording slots."""
+        if cand_freq is not None and self._channel_mod_map.get(cand_freq) == Modulation.TETRA:
+            tetra_open = sum(1 for s in self._slots.values() if getattr(s, "tetra", None) is not None)
+            if tetra_open >= _MAX_TETRA_SLOTS:
+                return True
+            if not self._has_tetra_codec():
+                return False
         limit = self.config.recording.max_concurrent_recordings
         if not self.config.recording.enabled or limit <= 0:
             return False
-        return len(self._slots) >= limit
+        rec_slots = sum(1 for s in self._slots.values() if self._slot_records_audio(s))
+        return rec_slots >= limit
 
     def _open_slot(self, freq_hz: int, window: ScanWindow, level_dbfs: float) -> None:
         if self._shared is not None and not self._shared.claim(freq_hz, self):
@@ -1995,8 +2062,8 @@ class ScannerEngine(threading.Thread):
         # already had it ("first heard" - only a strictly higher weight
         # actually takes over).
         weight = self._channel_weight_map.get(freq_hz, 0.0)
-        if self._is_silent_data(slot):
-            weight = -1.0                      # a data channel never takes the speaker from a voice channel
+        if self._is_silent_data(slot) or (slot.tetra is not None and not slot.tetra.has_codec):
+            weight = -1.0                      # a silent data/signalling channel never takes the speaker from a voice channel
         if self._primary_freq is None or weight > self._primary_weight:
             self._primary_freq = freq_hz
             self._primary_weight = weight
@@ -2030,7 +2097,7 @@ class ScannerEngine(threading.Thread):
             "opened_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         }
 
-        if self.config.recording.enabled:
+        if self.config.recording.enabled and self._slot_records_audio(slot):
             if self._disk_low():
                 slot.recording_failed = True
                 self._log_disk_trouble(tr("Less than 1 GB free on the recordings disk - not recording"))
@@ -2202,7 +2269,7 @@ class ScannerEngine(threading.Thread):
         if slot.freq_hz == self._primary_freq:
             # Manual recording follows the primary slot regardless of mute.
             self._feed_manual_recording(mono, freq_hz=slot.freq_hz)
-        if self.config.recording.enabled and not slot.recording_failed:
+        if self.config.recording.enabled and not slot.recording_failed and slot.recorder.is_writing:
             # Digital: only decoded voice makes a recording worth keeping (not an encrypted call's silence).
             try:
                 slot.recorder.write_audio(mono, real=not is_digital or bool(mono.any()))

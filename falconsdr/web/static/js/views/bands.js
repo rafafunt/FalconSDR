@@ -4,6 +4,7 @@ import { S, cfg } from '../state.js';
 
 export const MODULATIONS = ['AM', 'NFM', 'WFM', 'SSB', 'DMR', 'YSF', 'TETRA'];
 const DIGITAL = ['DMR', 'YSF'];
+export const isDigitalMod = (m) => ['DMR', 'YSF', 'TETRA'].includes(m);
 export const modLabel = (m) => (m === 'YSF' ? 'C4FM (YSF)' : m === 'TETRA' ? t('TETRA (experimental)') : m);
 
 // Digital voice is an optional add-on (Settings → Digital voice): until it is
@@ -94,7 +95,7 @@ export function bandEditor(b, save, rerender) {
     num(single ? t('Frequency (MHz)') : t('Start (MHz)'), (b.start_hz / 1e6).toFixed(4), (v) => { b.start_hz = Math.round(v * 1e6); if (single) b.stop_hz = b.start_hz; }),
     single ? null : num(t('Stop (MHz)'), (b.stop_hz / 1e6).toFixed(4), (v) => { b.stop_hz = Math.round(v * 1e6); }),
     single ? null : num(t('Step (kHz)'), b.step_hz / 1000, (v) => { b.step_hz = Math.round(v * 1000); }),
-    h('label.field', t('Modulation'), select(modOptions(), b.modulation, (v) => { b.modulation = v; save(); })),
+    h('label.field', t('Modulation'), select(modOptions(), b.modulation, (v) => { b.modulation = v; syncAnalogOnly(); save(); })),
     num(t('Priority weight'), b.weight, (v) => { b.weight = v; }, { min: 0, max: 20, step: 0.5, title: t('0 = normal. Higher = visited more often than other weighted bands (1 vs 2 = twice as often).') }));
   // Per-band overrides: unticked = follow the global setting. Values that
   // only make sense together (on/off + strength, mode + gain) share one tile.
@@ -120,26 +121,34 @@ export function bandEditor(b, save, rerender) {
   };
   const rangeInput = (key, min, max, step, fmt, scale = 1) => slider({ name: '', min, max, step, value: (b[key] ?? defaults[key]) * scale, format: fmt, oninput: (v) => { b[key] = v / scale; save(); } });
   const gainModes = [['manual', t('Manual')], ['auto', t('Auto (hardware)')], ['sw_auto', t('Auto (software)')]];
-  const overrides = h('div.overrides',
-    ov(['trigger_level_dbfs'], t('Trigger level'), () => rangeInput('trigger_level_dbfs', -90, 0, 1, (v) => `${v} dBFS`), `${c.trigger_level_dbfs} dBFS`),
-    ov(['squelch_enabled', 'squelch_offset_db'], t('Squelch'), (redraw) => {
+  const sqTile = ov(['squelch_enabled', 'squelch_offset_db'], t('Squelch'), (redraw) => {
       const on = b.squelch_enabled ?? defaults.squelch_enabled;
       const offset = rangeInput('squelch_offset_db', -40, 0, 1, (v) => `${v} dB`);
       offset.input.disabled = !on;
       return [toggle(t('On'), on, (v) => { b.squelch_enabled = v; save(); redraw(); }), offset];
-    }, c.squelch_enabled ? `${t('On')}, ${c.squelch_offset_db} dB` : t('Off')),
+    }, c.squelch_enabled ? `${t('On')}, ${c.squelch_offset_db} dB` : t('Off'));
+  const nrTile = ov(['noise_reduction_enabled', 'noise_reduction_strength'], t('Noise reduction'), (redraw) => {
+      const on = b.noise_reduction_enabled ?? defaults.noise_reduction_enabled;
+      const strength = rangeInput('noise_reduction_strength', 0, 100, 1, (v) => `${v}%`, 100);
+      strength.input.disabled = !on;
+      return [toggle(t('On'), on, (v) => { b.noise_reduction_enabled = v; save(); redraw(); }), strength];
+    }, c.noise_reduction.enabled ? `${t('On')}, ${Math.round(c.noise_reduction.strength * 100)}%` : t('Off'));
+  const syncAnalogOnly = () => {
+    const hide = isDigitalMod(b.modulation);
+    sqTile.classList.toggle('hidden', hide);
+    nrTile.classList.toggle('hidden', hide);
+  };
+  syncAnalogOnly();
+  const overrides = h('div.overrides',
+    ov(['trigger_level_dbfs'], t('Trigger level'), () => rangeInput('trigger_level_dbfs', -90, 0, 1, (v) => `${v} dBFS`), `${c.trigger_level_dbfs} dBFS`),
+    sqTile,
     ov(['tuning_time_ms'], t('Tuning time'), () => rangeInput('tuning_time_ms', 0, 1000, 10, (v) => `${v} ms`), `${c.timing.tuning_time_ms} ms`),
     ov(['linger_time_ms'], t('Hold after a transmission'), () => rangeInput('linger_time_ms', 0, 30000, 100, (v) => `${(v / 1000).toFixed(1)} s`), `${(c.timing.linger_time_ms / 1000).toFixed(1)} s`),
     ov(['gain_mode', 'gain_db'], t('Gain'), (redraw) => [
       select(gainModes, b.gain_mode ?? defaults.gain_mode, (v) => { b.gain_mode = v; save(); redraw(); }),
       (b.gain_mode ?? defaults.gain_mode) === 'auto' ? null : rangeInput('gain_db', 0, 50, 0.1, (v) => `${(+v).toFixed(1)} dB`),
     ], `${gainModes.find(([k]) => k === c.device.gain_mode)?.[1] ?? c.device.gain_mode}, ${c.device.gain_db} dB`),
-    ov(['noise_reduction_enabled', 'noise_reduction_strength'], t('Noise reduction'), (redraw) => {
-      const on = b.noise_reduction_enabled ?? defaults.noise_reduction_enabled;
-      const strength = rangeInput('noise_reduction_strength', 0, 100, 1, (v) => `${v}%`, 100);
-      strength.input.disabled = !on;
-      return [toggle(t('On'), on, (v) => { b.noise_reduction_enabled = v; save(); redraw(); }), strength];
-    }, c.noise_reduction.enabled ? `${t('On')}, ${Math.round(c.noise_reduction.strength * 100)}%` : t('Off')),
+    nrTile,
     (supportsAntennaSwitch(c.device.driver) || b.antenna) ? ov(['antenna'], t('Antenna input'), () => {
       const ants = knownAntennas();
       if (ants.length) {
