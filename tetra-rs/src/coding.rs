@@ -49,10 +49,9 @@ pub fn check_crc16(bits_with_crc: &[u8]) -> bool {
 }
 
 /// ETSI EN 300 392-2 Clause 8.2.5: 32-bit MAC scrambling sequence (open whitening derived from
-/// public MCC, MNC, and Base Station Colour Code; BSCH uses all-zeros = unscrambled).
+/// public MCC, MNC, and Base Station Colour Code; BSCH uses e=0 with c(31..32)=1).
 pub struct Scrambler {
     state: u32,
-    bypass: bool,
 }
 
 impl Scrambler {
@@ -64,20 +63,17 @@ impl Scrambler {
         // ETSI Clause 8.2.5.2: c(1..30) = e(1..30), c(31..32) = 1.
         // Bit 31 (MSB) corresponds to c(1), bit 0 (LSB) to c(32).
         let state = (e << 2) | 0b11;
-        Self { state, bypass: false }
+        Self { state }
     }
 
-    /// BSCH fixed all-zero scrambling sequence (no-op).
+    /// BSCH scrambling sequence (ETSI Clause 8.2.5.2: e = 0, c(31..32) = 1 -> state = 0b11).
     pub fn bsch_zero() -> Self {
-        Self { state: 0, bypass: true }
+        Self::from_mni(0, 0, 0)
     }
 
     /// Generates the next scrambling bit p(k) in {0, 1}.
     #[inline]
     pub fn next_bit(&mut self) -> u8 {
-        if self.bypass {
-            return 0;
-        }
         // ETSI Clause 8.2.5.2 polynomial:
         // 1 + X + X^2 + X^4 + X^5 + X^7 + X^8 + X^10 + X^11 + X^12 + X^16 + X^22 + X^23 + X^26 + X^32
         // With bit 0 = c(32) and bit 31 = c(1), tap X^k maps to bit (32 - k).
@@ -102,9 +98,6 @@ impl Scrambler {
 
     /// XORs hard bits in place.
     pub fn apply_hard(&mut self, bits: &mut [u8]) {
-        if self.bypass {
-            return;
-        }
         for b in bits.iter_mut() {
             *b ^= self.next_bit();
         }
@@ -113,9 +106,6 @@ impl Scrambler {
     /// Applies scrambling to soft LLRs (positive = bit 0, negative = bit 1):
     /// XOR with 1 negates the LLR sign.
     pub fn apply_soft(&mut self, llrs: &mut [f32]) {
-        if self.bypass {
-            return;
-        }
         for v in llrs.iter_mut() {
             if self.next_bit() != 0 {
                 *v = -*v;

@@ -229,7 +229,7 @@ impl SysinfoPdu {
     }
 
     pub fn parse(bits: &[u8]) -> Option<Self> {
-        if bits.len() < 122 {
+        if bits.len() < 124 {
             return None;
         }
         let mut r = BitReader::new(bits);
@@ -254,8 +254,9 @@ impl SysinfoPdu {
         let _rxlev_access_min = r.read_u32(4)?;
         let _access_param = r.read_u32(4)?;
         let _radio_dl_timeout = r.read_u32(4)?;
-        let _hyperframe_or_sc = r.read_u32(17)?;
-        let _option_field = r.read_u32(20)?;
+        let _hyperframe_or_sc = r.read_u32(17)?;   // 1-bit flag + 16-bit hyperframe/CCK
+        let _option_field_flag = r.read_u32(2)?;   // ETSI Table 21.65: 2-bit option type
+        let _option_field = r.read_u32(20)?;       // 20-bit option value
         let location_area = r.read_u32(14)? as u16;
         let _subscriber_class = r.read_u32(16)?;
         let bs_service = r.read_u32(12)?;
@@ -297,7 +298,8 @@ impl SysinfoPdu {
         w.write_u32(0, 4);  // rxlev_access_min
         w.write_u32(0, 4);  // access_param
         w.write_u32(0, 4);  // radio_dl_timeout
-        w.write_u32(0, 17); // hyperframe
+        w.write_u32(0, 17); // hyperframe flag + 16-bit hyperframe
+        w.write_u32(0, 2);  // option_field_flag
         w.write_u32(0, 20); // option_field
         w.write_u32(self.location_area as u32, 14);
         w.write_u32(0xFFFF, 16); // subscriber_class
@@ -312,7 +314,6 @@ impl SysinfoPdu {
             bs_service |= 1 << 1;
         }
         w.write_u32(bs_service, 12);
-        w.pad_to(124);
         w.bits
     }
 }

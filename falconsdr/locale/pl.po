@@ -4007,3 +4007,9 @@ msgstr "FalconSDR nie zawiera kodeka mowy TETRA. Bez niego kanały sterujące, w
 
 msgid "Could not switch antenna to \"{antenna}\" ({error})"
 msgstr "Nie udało się przełączyć anteny na „{antenna}” ({error})"
+
+msgid "TETRA Europe 390-395 MHz (+12.5 kHz grid, experimental)"
+msgstr "TETRA Europa 390-395 MHz (siatka +12,5 kHz, eksperymentalne)"
+
+msgid "TETRA Europe 420-430 MHz (+12.5 kHz grid, experimental)"
+msgstr "TETRA Europa 420-430 MHz (siatka +12,5 kHz, eksperymentalne)"

@@ -49,9 +49,11 @@ pub struct TetraReceiver {
     cur_frame: u8,
     cur_multiframe: u8,
 
-    // Deduplication for periodic broadcast bursts (emit on change or every N bursts).
+    // Deduplication for periodic broadcast and encrypted MCCH bursts.
     last_sysinfo_sig: Option<(u16, u16, u8, u16, bool)>,
     sysinfo_bursts_since_emit: u32,
+    last_enc_sig: Option<(u8, u32, u8)>,
+    enc_bursts_since_emit: u32,
 
     slots: [SlotState; 4],
     vocoder: Option<ExternalVocoder>,
@@ -77,6 +79,8 @@ impl TetraReceiver {
             cur_multiframe: 1,
             last_sysinfo_sig: None,
             sysinfo_bursts_since_emit: 0,
+            last_enc_sig: None,
+            enc_bursts_since_emit: 0,
             slots: Default::default(),
             vocoder,
             stats: ReceiverStats::default(),
@@ -284,12 +288,18 @@ impl TetraReceiver {
                 self.slots[ts_idx].encrypted = true;
                 self.slots[ts_idx].active_voice = false;
                 let gssi = res.ssi.unwrap_or(0);
-                let line = format!(
-                    "{{\"type\":\"encrypted\",\"freq_hz\":{},\"ts\":{},\"gssi\":{},\"enc_mode\":{},\"mcc\":{},\"mnc\":{}}}",
-                    self.freq_hz, self.cur_timeslot, gssi, res.encryption_mode,
-                    self.mcc.unwrap_or(0), self.mnc.unwrap_or(0)
-                );
-                emit(&line);
+                let sig = (self.cur_timeslot, gssi, res.encryption_mode);
+                self.enc_bursts_since_emit += 1;
+                if self.last_enc_sig != Some(sig) || self.enc_bursts_since_emit >= 60 {
+                    self.last_enc_sig = Some(sig);
+                    self.enc_bursts_since_emit = 0;
+                    let line = format!(
+                        "{{\"type\":\"encrypted\",\"freq_hz\":{},\"ts\":{},\"gssi\":{},\"enc_mode\":{},\"mcc\":{},\"mnc\":{}}}",
+                        self.freq_hz, self.cur_timeslot, gssi, res.encryption_mode,
+                        self.mcc.unwrap_or(0), self.mnc.unwrap_or(0)
+                    );
+                    emit(&line);
+                }
                 return;
             }
 
