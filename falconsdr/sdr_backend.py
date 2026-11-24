@@ -1068,6 +1068,7 @@ class AcquisitionThread:
         self._chunks_dropped = 0
         self._read_slow_count = 0  # read() calls that took > one chunk's own duration
         self._read_max_s = 0.0
+        self.rt_priority = "unavailable"   # "ok" / "refused" once _boost_priority() ran (gotcha 29)
         self._chunk_duration_s = chunk_size / max(1.0, backend.sample_rate)
         self._health_reported_at = time.monotonic()
         # Wall time that no IQ covers. A sync read leaves the dongle with no transfer pending
@@ -1101,6 +1102,7 @@ class AcquisitionThread:
             tid = threading.get_native_id()
             os.sched_setscheduler(tid, os.SCHED_FIFO, os.sched_param(10))
         except (PermissionError, OSError) as exc:
+            self.rt_priority = "refused"
             if self._debug:
                 print(
                     f"[sdr-acquisition] real-time priority NOT granted ({exc}) - running at normal "
@@ -1108,12 +1110,26 @@ class AcquisitionThread:
                     flush=True,
                 )
         else:
+            self.rt_priority = "ok"
             if self._debug:
                 print("[sdr-acquisition] real-time priority: OK (SCHED_FIFO)", flush=True)
 
     @property
     def chunks_dropped(self) -> int:
         return self._chunks_dropped
+
+    def health(self) -> dict:
+        """The always-on counters for the UI's receiver-health card. Plain reads, never this thread's lock (gotcha 11)."""
+        stats = getattr(self._backend, "stream_stats", None)
+        stream_lost, stream_s = stats() if stats is not None else (0.0, 0.0)
+        return {
+            "backend": self._backend.label, "rt_priority": self.rt_priority,
+            "chunks_read": self._chunks_read, "chunks_dropped": self._chunks_dropped, "slow_reads": self._read_slow_count,
+            "chunk_ms": round(self._chunk_duration_s * 1000, 1), "read_max_ms": round(self._read_max_s * 1000, 1),
+            "queue": len(self._queue), "max_queued": self._max_queued,
+            "gap_s": round(self._iq_lost_s, 3), "steady_s": round(self._iq_streamed_s, 1),     # blocking reads, parked on a frequency
+            "stream_lost_s": round(stream_lost, 3), "stream_s": round(stream_s, 1),           # the current async stream (gotcha 54)
+        }
 
     _HEALTH_REPORT_INTERVAL_S = 20.0
 

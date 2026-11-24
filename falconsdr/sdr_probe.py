@@ -8,9 +8,14 @@ ghost peaks), what a retune costs, and whether samples are lost.
 from __future__ import annotations
 
 import json
+import os
+import re
 import platform
+import subprocess
 import sys
+import threading
 import time
+from collections import deque
 
 import numpy as np
 
@@ -19,6 +24,67 @@ from .config import AppConfig
 from .sdr_backend import HAVE_RTLSDR_NATIVE, HAVE_SOAPY, enumerate_devices, open_real_backend
 
 _NFFT = 4096
+_TIMEOUT_S = 180.0      # a full probe takes about a minute; a driver hung in a read must not keep the receiver forever
+_MAX_LINES = 400
+_STEP = re.compile(r"^Step (\d+)/(\d+)")
+_lock = threading.Lock()
+_state: dict = {"running": False, "lines": [], "code": None, "step": 0, "steps": 0, "started": 0.0}
+
+
+def state() -> dict:
+    """The UI's receiver test (Settings): running, its report so far, which step, the exit code when done."""
+    with _lock:
+        out = {**_state, "lines": list(_state["lines"])}
+    started = out.pop("started")
+    out["elapsed_s"] = round(time.monotonic() - started) if out["running"] else None
+    return out
+
+
+def start_in_background() -> None:
+    """Runs ``main.py --probe-sdr`` as a child: a crash or a hang in a driver costs the child, not the server
+    (gotcha 55). The caller makes sure the scanner and the add-ons have let go of the receiver."""
+    with _lock:
+        if _state["running"]:
+            from .i18n import tr
+            raise RuntimeError(tr("The receiver test is already running."))
+        _state.update(running=True, lines=[], code=None, step=0, steps=0, started=time.monotonic())
+    threading.Thread(target=_run_child, daemon=True, name="sdr-probe").start()
+
+
+def _run_child() -> None:
+    from .sdr_native import self_command
+    code = -1
+    # The report is stdout. Drivers and libraries write to stderr (librtlsdr's "Allocating 15 zero-copy buffers" at every
+    # retune, UHD, ALSA, avahi): noise next to the numbers, so only its tail is kept - and shown when the test failed.
+    driver_lines: deque[str] = deque(maxlen=30)
+    try:
+        proc = subprocess.Popen(self_command("--probe-sdr"), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
+                                env={**os.environ, "PYTHONUNBUFFERED": "1"},     # lines arrive as they are printed
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        watchdog = threading.Timer(_TIMEOUT_S, proc.kill)
+        watchdog.start()
+        errors = threading.Thread(target=lambda: driver_lines.extend(line.rstrip() for line in proc.stderr), daemon=True)
+        errors.start()
+        try:
+            for line in proc.stdout:
+                step = _STEP.match(line)
+                with _lock:
+                    if step:
+                        _state.update(step=int(step[1]), steps=int(step[2]))
+                    elif len(_state["lines"]) < _MAX_LINES:
+                        _state["lines"].append(line.rstrip())
+            code = proc.wait()
+            errors.join(5)
+        finally:
+            watchdog.cancel()
+    except OSError as exc:
+        driver_lines.append(f"Could not start the test: {exc}")
+    finally:
+        with _lock:
+            if code != 0 and driver_lines:
+                _state["lines"] += ["", "Driver messages (last lines):", *[line for line in driver_lines if line]]
+            _state.update(running=False, code=code)
 
 
 def _spectrum(iq: np.ndarray) -> np.ndarray:
@@ -49,6 +115,8 @@ def run(driver: str = "") -> int:
     rate = cfg.sample_rate_hz
     print(f"FalconSDR {__version__} | {platform.platform()} | Python {platform.python_version()} | SoapySDR: {HAVE_SOAPY} | pyrtlsdr: {HAVE_RTLSDR_NATIVE}")
     print(f"Devices found: {[d.get('label') or d.get('driver') for d in devices]}")
+    print(f"Settings: gain {cfg.gain_mode} {cfg.gain_db:g} dB, continuous reading {'on' if cfg.async_read else 'off'}, "
+          f"bias-T {'on' if cfg.bias_tee else 'off'}, extra receivers {len(cfg.extra_devices)}")
     print(f"Probing driver {drv!r} at {rate / 1e6:g} MS/s (stop the scanner first)")
     try:
         be = open_real_backend(drv, args, rate, "manual", 30.0)
@@ -58,6 +126,7 @@ def run(driver: str = "") -> int:
     chunk = int(rate * 0.03)
     result: dict = {"driver": drv, "backend": type(be).__name__, "rate_hz": rate, "version": __version__}
     try:
+        print("Step 1/4: gain steps", flush=True)     # the UI shows these as progress
         lo, hi = be.gain_range_db
         base = 98e6 if rate < 6e6 else 100e6
         be.set_frequency(base)
@@ -79,6 +148,7 @@ def run(driver: str = "") -> int:
             be.read(chunk)
 
         # 2. DC spike
+        print("Step 2/4: DC spike", flush=True)
         spec = np.mean([_spectrum(be.read(chunk)) for _ in range(20)], axis=0)
         mid = _NFFT // 2
         dc = float(spec[mid - 1:mid + 2].max() - np.median(spec))
@@ -86,6 +156,7 @@ def run(driver: str = "") -> int:
         result["dc_spike_db"] = round(dc, 1)
 
         # 3. stale blocks after a retune: classify each block by which window's spectrum it resembles
+        print("Step 3/4: retuning", flush=True)
         c1, c2 = base, base + max(4e6, 2 * rate)
 
         def settle(c):
@@ -119,6 +190,7 @@ def run(driver: str = "") -> int:
                           stale_blocks_max=int(max(stale)), first_clean_ms=round(float(np.mean(first_clean)), 1))
 
         # 4. throughput: 8 s of back-to-back reads
+        print("Step 4/4: lost samples", flush=True)
         settle(c1)
         lost0 = be.stream_stats()[0] if hasattr(be, "stream_stats") else 0.0
         reads, t_start = [], time.monotonic()

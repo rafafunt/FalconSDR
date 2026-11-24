@@ -307,6 +307,10 @@ Gotchas 1, 2 and 26 are retired (Qt UI, PortAudio playback) and their numbers ar
     `read_max_s`, printed every `_HEALTH_REPORT_INTERVAL_S` in debug mode) —
     `chunks_DROPPED` is the only place that can distinguish genuine data
     loss from mere timing jitter.
+    The same counters are always visible in Settings -> Receiver health
+    (`AcquisitionThread.health()`, `/api/health`); its "Test the receiver"
+    runs `--probe-sdr` as a child process (`sdr_probe.start_in_background`,
+    refused while the scanner or an add-on holds the receiver).
 31. **`_extend_edges()`/`extend_boundary_window()` must never fire for a frequency that is not part of a genuine multi-point
     band grid.** A Memory List point or a degenerate band with `start_hz == stop_hz` (the "Single frequency" button) would
     get up to ~28 fabricated candidate frequencies per side. Fixed with a `band_freqs` set (only bands with `start_hz !=

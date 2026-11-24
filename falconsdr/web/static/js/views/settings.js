@@ -4,7 +4,7 @@ import {
   api, confirmDialog, errorToast, fmtAgo, fmtBytes, fmtDate, fmtDuration, fmtMHz, formDialog, h, icon, lang, modal, mount, prefs, qs, seg, select, t, toast, toggle,
 } from '../core.js';
 import { S, cfg, confirmRecording, loadSettings, on, patchConfig, patchConfigNow } from '../state.js';
-import { decodersCard } from './addons.js';
+import { decodersCard, receiverName } from './addons.js';
 import { notifyCard } from './notify.js';
 import { modLabel, modOptions } from './bands.js';
 
@@ -24,6 +24,7 @@ const SECTIONS = [
   ['storage', () => t('Disk & retention')],
   ['connect', () => t('Connect to a server')],
   ['access', () => t('Access')],
+  ['receiver', () => t('Receiver health')],
   ['advanced', () => t('Advanced')],
 ];
 
@@ -515,6 +516,110 @@ export function settingsView(root, hash, scope = 'settings') {
         toggle('', localStorage.getItem('autolisten') !== '0', (v) => localStorage.setItem('autolisten', v ? '1' : '0'))));
   }
 
+  // ---------------------------------------------------------- receiver health + test (sdr_probe.py)
+  // Thresholds from issue #6: 0.78-2.16 % lost samples was an audible buzz.
+  const pct = (lost, of) => (of >= 10 ? (100 * lost) / of : null);
+  function verdict(r) {
+    const loss = Math.max(pct(r.gap_s, r.steady_s) ?? 0, pct(r.stream_lost_s, r.stream_s) ?? 0);
+    if (r.chunks_dropped > 0 || loss >= 1) return ['bad', t('Losing data')];
+    if (loss >= 0.3 || r.rt_priority === 'refused') return ['warn', t('Check')];
+    return ['good', t('OK')];
+  }
+  function healthLines(r) {
+    const loss = [pct(r.gap_s, r.steady_s), pct(r.stream_lost_s, r.stream_s)].filter((v) => v !== null);
+    return [
+      `${t('Lost IQ blocks')}: ${r.chunks_dropped} / ${r.chunks_read}`,
+      `${t('Lost samples')}: ${loss.length ? `${Math.max(...loss).toFixed(2)} %` : t('not measured yet')}`,
+      `${t('Slowest read')}: ${r.read_max_ms} ms (${t('one block')} ${r.chunk_ms} ms, ${t('slower')}: ${r.slow_reads})`,
+      `${t('Queue')}: ${r.queue} / ${r.max_queued}`,
+      r.rt_priority === 'unavailable' ? null : `${t('Real-time priority')}: ${r.rt_priority === 'ok' ? t('granted') : t('not granted - check “ulimit -r”')}`,
+    ].filter(Boolean);
+  }
+  let health = [], probe = { running: false, lines: [], code: null };
+  let lastHealth = null;   // [time, receivers]: the counters vanish when the scanner stops - which the test needs first
+  const healthBox = h('div.col', { style: { gap: '10px' } });
+  const report = h('textarea.mono.small', { readonly: true, rows: 10, style: { width: '100%', display: 'none' } });
+  const probeBtn = h('button', { onclick: startProbe }, t('Test the receiver'));
+  const copyBtn = h('button', { onclick: copyReport, style: { display: 'none' } }, t('Copy report'));
+  const issueBtn = h('button', { onclick: reportIssue, style: { display: 'none' } }, icon('external'), t('Report a problem'));
+  function reportText() {
+    const [when, rows] = health.length ? [null, health] : (lastHealth || [null, []]);
+    return [
+      `FalconSDR ${S.settings.version} · ${S.settings.mode}`,
+      ...(rows.length ? ['', when ? `While scanning (${when}):` : 'Scanning now:'] : []),
+      ...rows.flatMap((r) => [`${receiverName(r.receiver)} [${r.backend}]`, ...healthLines(r).map((l) => `  ${l}`)]),
+      ...(probe.lines.length ? ['', 'Receiver test (--probe-sdr):', ...probe.lines] : []),
+    ].join('\n');
+  }
+  function paintHealth() {
+    mount(healthBox, health.length ? health.map((r) => {
+      const [kind, label] = verdict(r);
+      return h('div', h('div.row', { style: { gap: '8px' } }, h('b', receiverName(r.receiver)), h(`span.chip.${kind}`, h('span.dot'), label)),
+        h('p.small.muted.mono', { style: { margin: '4px 0 0', whiteSpace: 'pre-line' } }, healthLines(r).join('\n')));
+    }) : h('p.muted', { style: { margin: 0 } }, t('Shown while the scanner is running.')));
+    probeBtn.disabled = probe.running;
+    probeBtn.textContent = !probe.running ? t('Test the receiver')
+      : probe.steps ? t('Testing… step {n} of {m} · {s} s', { n: probe.step, m: probe.steps, s: probe.elapsed_s })
+        : t('Starting the test… {s} s', { s: probe.elapsed_s ?? 0 });
+    const shown = probe.running || probe.lines.length > 0;
+    report.style.display = shown ? '' : 'none';
+    copyBtn.style.display = issueBtn.style.display = shown || health.length ? '' : 'none';
+    if (shown) report.value = probe.lines.join('\n');
+  }
+  async function loadHealth() {
+    try {
+      health = (await api.get('/api/health')).receivers;
+      if (health.length) lastHealth = [new Date().toLocaleTimeString(), health];
+    } catch { return; }
+    if (!dead) paintHealth();
+  }
+  let probeTimer = null;
+  async function startProbe() {
+    try { probe = await api.post('/api/probe'); } catch (e) { errorToast(e); return; }
+    paintHealth();
+    startProbeWatch();
+  }
+  function startProbeWatch() {   // also when the page opens while a test runs
+    clearInterval(probeTimer);
+    probeTimer = setInterval(async () => {   // every second while it runs: the step and the seconds move
+      try { probe = await api.get('/api/probe'); } catch { return; }
+      if (!probe.running) clearInterval(probeTimer);
+      if (!dead) paintHealth();
+    }, 1000);
+    timers.push(probeTimer);
+  }
+  // GitHub's issue form (.github/ISSUE_TEMPLATE/receiver.yml) takes the report as a URL parameter; nothing is sent
+  // until the user submits it there. A URL over ~8 kB is refused, so a long report is cut (Copy report has it all).
+  function reportIssue() {
+    let report = reportText();
+    if (report.length > 5000) report = `${report.slice(0, 5000)}\n[... cut - paste the rest from "Copy report"]`;
+    const url = `https://github.com/rafafunt/FalconSDR/issues/new?${new URLSearchParams({ template: 'receiver.yml', report })}`;
+    window.open(url, '_blank', 'noopener');
+  }
+  function copyReport() {
+    const text = reportText();
+    // navigator.clipboard needs HTTPS or localhost; the UI is often plain http://IP (gotcha 40): copy a selection then.
+    const viaSelection = () => {
+      const tmp = h('textarea', { style: { position: 'fixed', opacity: '0' } });
+      tmp.value = text;
+      document.body.append(tmp);
+      tmp.select();
+      const ok = document.execCommand('copy');
+      tmp.remove();
+      if (!ok) throw new Error('copy');
+    };
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).catch(viaSelection)
+      .then(() => toast(t('Copied'), 'good'), () => toast(t('Could not copy - select the text and copy it by hand.'), 'bad'));
+  }
+  function renderReceiver() {
+    mount(body('receiver'),
+      healthBox,
+      setting(t('Test the receiver'), t('Stop the scanner first. Measures the gain steps, retuning and lost samples in about a minute. “Report a problem” opens a bug report on GitHub with this report filled in - nothing is sent until you submit it there.'),
+        h('div.row.wrap', probeBtn, copyBtn, issueBtn)),
+      report);
+    paintHealth();
+  }
+
   // ---------------------------------------------------------- advanced
   function renderAdvanced() {
     mount(body('advanced'),
@@ -574,9 +679,14 @@ export function settingsView(root, hash, scope = 'settings') {
       return;
     }
     renderRecording(); renderAddonsSignpost(); renderStorage(); renderConnect(); renderAccess();
-    renderLocation(); renderPresets(); renderAppearance(); renderAdvanced();
+    renderLocation(); renderPresets(); renderAppearance(); renderReceiver(); renderAdvanced();
   }
   renderAll();
+  if (scope === 'settings') {
+    loadHealth();
+    api.get('/api/probe').then((p) => { probe = p; if (!dead) paintHealth(); if (p.running) startProbeWatch(); }, () => {});
+    timers.push(setInterval(loadHealth, 2000));
+  }
   // Every second while something is going on with a computer (so a click shows its effect), else every 3 s.
   let pollTick = 0;
   if (scope === 'addons') timers.push(setInterval(() => { pollTick += 1; if (fastPoll || pollTick % 3 === 0) loadWorkers(); }, 1000));

@@ -1,0 +1,40 @@
+name: Reception or receiver problem
+description: Noise, buzzing, gaps, wrong pitch, no signal, a receiver that will not open or crashes.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you hear or see, on which frequency and modulation, and since when (e.g. after an update).
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: Where FalconSDR runs
+      options:
+        - Windows
+        - macOS
+        - Linux (.deb / AppImage / rpm)
+        - Linux (from source)
+        - Raspberry Pi
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: receiver
+    attributes:
+      label: Receiver and antenna
+      placeholder: e.g. RTL-SDR Blog V4, quarter-wave ground plane
+  - type: textarea
+    id: report
+    attributes:
+      label: Receiver report
+      description: Settings -> Receiver health -> "Report a problem" fills this in. Without it - "Test the receiver", then "Copy report".
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: A short recording (drag a .wav/.mp3 into this box, zipped if GitHub refuses it), a screenshot.

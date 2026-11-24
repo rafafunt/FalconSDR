@@ -1127,8 +1127,30 @@ class IqUncoveredTimeTest(unittest.TestCase):
                 thread.read(1000)
             self.assertGreaterEqual(thread._iq_lost_s, 0.07)   # the hiccup...
             self.assertLess(thread._iq_lost_s, 0.15)           # ...but neither the retune nor its slow first read
+            health = thread.health()                           # what Settings -> Receiver health shows
+            self.assertEqual((health["backend"], health["chunks_dropped"], health["stream_s"]), ("fake", 0, 0.0))
+            self.assertGreater(health["gap_s"], 0.0)
         finally:
             thread.close()
+
+
+class ProbeRunTest(unittest.TestCase):
+    def test_runs_the_probe_as_a_child_and_keeps_its_output(self) -> None:
+        from unittest import mock
+        import sys
+        from falconsdr import sdr_native, sdr_probe
+        child = [sys.executable, "-c", "import sys; print('Probing'); print('Step 1/4: gain'); "
+                 "print('Allocating 15 zero-copy buffers', file=sys.stderr); print('RESULT {}')"]
+        with mock.patch.object(sdr_native, "self_command", lambda *a: child):
+            sdr_probe.start_in_background()
+            with self.assertRaises(RuntimeError):   # one at a time: both would open the same receiver
+                sdr_probe.start_in_background()
+            deadline = time.monotonic() + 10
+            while sdr_probe.state()["running"] and time.monotonic() < deadline:
+                time.sleep(0.05)
+        # Steps are progress, driver chatter on stderr is left out of a report that succeeded.
+        self.assertEqual(sdr_probe.state(), {"running": False, "lines": ["Probing", "RESULT {}"], "code": 0,
+                                             "step": 1, "steps": 4, "elapsed_s": None})
 
 
 class DumpsChunkedTest(unittest.TestCase):
@@ -2550,6 +2572,8 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(self._status(url + "/api/scanner/stop", "POST"), 403)
         self.assertEqual(self._status(url + "/api/scanner/stop", "POST", {"X-FalconSDR": "1"}), 200)
         self.assertEqual(self._status(url + "/api/live", headers={"Host": "evil.example:80"}), 403)
+        client = self._serve("client", "")    # its status holds the server's password
+        self.assertEqual(self._status(client + "/api/client/status", headers={"Host": "evil.example:80"}), 403)
 
 
 

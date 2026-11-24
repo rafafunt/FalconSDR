@@ -4061,3 +4061,75 @@ msgstr "Pokaż wszystko"
 
 msgid "Probably no speech (data or noise)"
 msgstr "Prawdopodobnie bez mowy (dane lub szum)"
+
+msgid "Receiver health"
+msgstr "Stan odbiornika"
+
+msgid "Losing data"
+msgstr "Gubi dane"
+
+msgid "Check"
+msgstr "Sprawdź"
+
+msgid "Lost IQ blocks"
+msgstr "Utracone bloki IQ"
+
+msgid "Lost samples"
+msgstr "Utracone próbki"
+
+msgid "not measured yet"
+msgstr "jeszcze niezmierzone"
+
+msgid "Slowest read"
+msgstr "Najwolniejszy odczyt"
+
+msgid "one block"
+msgstr "jeden blok"
+
+msgid "slower"
+msgstr "wolniejszych"
+
+msgid "Queue"
+msgstr "Kolejka"
+
+msgid "Real-time priority"
+msgstr "Priorytet czasu rzeczywistego"
+
+msgid "granted"
+msgstr "przyznany"
+
+msgid "not granted - check “ulimit -r”"
+msgstr "nieprzyznany - sprawdź „ulimit -r”"
+
+msgid "Test the receiver"
+msgstr "Przetestuj odbiornik"
+
+msgid "Copy report"
+msgstr "Kopiuj raport"
+
+msgid "Shown while the scanner is running."
+msgstr "Widoczne, gdy skaner działa."
+
+msgid "Testing… step {n} of {m} · {s} s"
+msgstr "Testowanie… krok {n} z {m} · {s} s"
+
+msgid "Starting the test… {s} s"
+msgstr "Uruchamianie testu… {s} s"
+
+msgid "Copied"
+msgstr "Skopiowano"
+
+msgid "Could not copy - select the text and copy it by hand."
+msgstr "Nie udało się skopiować - zaznacz tekst i skopiuj go ręcznie."
+
+msgid "Stop the scanner first. Measures the gain steps, retuning and lost samples in about a minute. “Report a problem” opens a bug report on GitHub with this report filled in - nothing is sent until you submit it there."
+msgstr "Najpierw zatrzymaj skaner. W około minutę mierzy kroki wzmocnienia, przestrajanie i utracone próbki. „Zgłoś problem” otwiera zgłoszenie błędu na GitHubie z wypełnionym raportem - nic nie zostanie wysłane, dopóki go tam nie zatwierdzisz."
+
+msgid "The receiver test is still running - wait for it to finish."
+msgstr "Test odbiornika jeszcze trwa - poczekaj, aż się skończy."
+
+msgid "The receiver test is already running."
+msgstr "Test odbiornika już trwa."
+
+msgid "Report a problem"
+msgstr "Zgłoś problem"

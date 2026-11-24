@@ -765,13 +765,15 @@ class Library:
         cfg = self.config.recording
         if cfg.retention_days <= 0 and cfg.retention_max_gb <= 0:
             return []
-        with self._lock:
-            recs = sorted(self._recs.items(), key=lambda kv: kv[1].dt_utc)
-            eligible = [
-                (rel, r) for rel, r in recs
-                if not (cfg.retention_keep_favorites and r.is_favorite)
-                and not (cfg.retention_require_mirrored and rel not in self._mirrored)
-            ]
+        with self._lock:   # sort outside the lock: add_file() on the scan thread waits for it (gotcha 50)
+            recs = list(self._recs.items())
+            mirrored = set(self._mirrored)
+        recs.sort(key=lambda kv: kv[1].dt_utc)
+        eligible = [
+            (rel, r) for rel, r in recs
+            if not (cfg.retention_keep_favorites and r.is_favorite)
+            and not (cfg.retention_require_mirrored and rel not in mirrored)
+        ]
         victims: list[str] = []
         if cfg.retention_days > 0:
             cutoff = datetime.now(timezone.utc) - timedelta(days=cfg.retention_days)
