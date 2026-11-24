@@ -58,6 +58,9 @@ def can_install(addon_id: str) -> bool:
     if addon_id == "tetra":
         from . import tetra
         return tetra.can_build_tetra()
+    if addon_id == "tetra_codec":
+        from . import tetra_codec
+        return tetra_codec.can_install()
     if addon_id == "vdl2":
         return sys.platform != "win32"
     return addon_id == "rtl_433" and _rtl433_asset() is not None
@@ -68,6 +71,9 @@ def install_dir(addon_id: str) -> Path:
 
 
 def state(addon_id: str) -> dict:
+    if addon_id == "tetra_codec":
+        from . import tetra_codec
+        return tetra_codec.install_state()
     if addon_id == "tetra":
         from . import tetra
         return tetra.install_state()
@@ -77,6 +83,10 @@ def state(addon_id: str) -> dict:
 
 
 def start(addon_id: str) -> None:
+    if addon_id == "tetra_codec":
+        from . import tetra_codec
+        tetra_codec.start()
+        return
     if addon_id == "tetra":
         from . import tetra
         tetra.start_build()
@@ -91,6 +101,10 @@ def start(addon_id: str) -> None:
 
 
 def uninstall(addon_id: str) -> None:
+    if addon_id == "tetra_codec":
+        from . import tetra_codec
+        tetra_codec.uninstall()
+        return
     if addon_id == "tetra":
         from . import tetra
         tetra.uninstall_tetra()

@@ -1535,3 +1535,21 @@ class TetraDecoderTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TetraCodecExtractTest(unittest.TestCase):
+    def test_extract_keeps_only_lowercased_c_code_files(self) -> None:
+        import tempfile
+        import zipfile
+        from falconsdr.addons import tetra_codec
+        with tempfile.TemporaryDirectory() as d:
+            z = Path(d) / "c.zip"
+            with zipfile.ZipFile(z, "w") as zf:
+                zf.writestr("C-CODE/SDEC_TET.C", "a")
+                zf.writestr("C-CODE/../evil.c", "b")        # a path that tries to leave the folder
+                zf.writestr("AMR-CODE/x.c", "c")            # not needed
+            out = Path(d) / "out"
+            out.mkdir()
+            tetra_codec._extract(z, out)
+            self.assertEqual([p.name for p in out.iterdir()], ["sdec_tet.c"])
+            self.assertFalse((Path(d) / "evil.c").exists())

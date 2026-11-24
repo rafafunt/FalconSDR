@@ -987,3 +987,19 @@ protocol: console errors + screenshots, desktop and ~390 px wide). Verified
 working combos: real RTL-SDR via `SoapyBackend`/`RtlSdrBackend`, and full
 state-machine + WAV recording + browser UI + worker (transcription, mirror,
 upload) via `SimulatedBackend`.
+
+60. **TETRA in packaged builds, and its speech codec** (`addons/tetra.py`, `addons/tetra_codec.py`, `tetra-rs/`). Every package
+    (Windows ZIP/setup, macOS, .deb, .rpm, AppImage) carries our own `falconsdr-tetra` (Rust, no dependencies) built from
+    `tetra-rs/` and the codec front end `tetra-rs/codec/falconsdr_sdecoder.c`, both laid out **as in the repository**
+    (`tetra-rs/target/release/`, `tetra-rs/codec/`) via `--add-data`, so `_REPO_TETRA_DIR` finds them in the bundle without a
+    special case (`linux-tetra.sh`, `build.ps1`, `macos.yml`; `--self-test` `tetra_decoder` fails a build that lacks them; the
+    Linux `build-in-docker.sh` scripts install cargo - Debian 11 via rustup, so the binary keeps the old-glibc rule of gotcha 35).
+    **The speech codec itself (ETSI EN 300 395-2 ACELP) is never in the repo or a package**: one click in Add-ons -> TETRA
+    downloads ETSI's `en_30039502v010301p0.zip` from etsi.org on the user's computer (pinned SHA-256; etsi.org answers 403 to
+    urllib's default User-Agent), changes `typedef long Word32` to `int` (64-bit), and compiles it with our front end (ETSI's own
+    `sdecoder` works on files and prints to stdout, which would corrupt the PCM stream; ours is stdin 138 x s16 -> stdout 240 x s16
+    and moves anything the library prints to stderr). A C compiler is needed: cc/gcc/clang, else on Windows TinyCC (0.9.27 win64
+    zip from its authors, pinned, LGPL - not bundled), else a message with the install command and link. ETSI's IPR policy gives
+    implementers a free copyright licence for software in a standard (Directives 9.2) and **no patent licence** - the UI says so;
+    do not bundle or redistribute the codec without asking ETSI. Verified on Linux: TinyCC and gcc builds give byte-identical
+    output (50 frames). **Never run on Windows/macOS**; real-air speech is untested. `codec_path` (Advanced) overrides the built one.

@@ -34,7 +34,7 @@ channel (weight -1 in the primary choice).
   Rust (`falconsdr-tetra`, GPL-3.0-or-later): π/4-DQPSK RRC demodulator, Gardner timing, 4th-power AFC,
   burst synchronizer, RM(30,14), 16-state RCPC Viterbi, BSCH/BNCH/MAC-RESOURCE/CMCE/SDS/LIP parsers. Strictly
   clear-mode: encrypted slots (`encryption_mode != 0`, E2EE, cell AIE) are flagged and muted, never decrypted.
-  Optional external ACELP vocoder can be supplied by the user via `--codec <path>` (never bundled).
+  The ACELP speech codec is ETSI's code, never bundled: one click in the TETRA card downloads it from etsi.org and compiles it on the user's computer (`addons/tetra_codec.py`); `--codec <path>` takes any program with the same stdin/stdout protocol.
 * `addons/events.py` - `EventHub`: a ring in memory plus one JSON-lines file per day (`CONFIG_DIR/addons`).
 * `addons/external.py` - `ExternalRunner` (process, stdout lines, stderr tail) and the parsers of what
   rtl_433 and dumpvdl2 print.

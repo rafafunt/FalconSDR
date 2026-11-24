@@ -10,6 +10,8 @@ BuildArch:      x86_64
 BuildRequires:  python3 >= 3.10
 BuildRequires:  python3-pip
 BuildRequires:  binutils
+BuildRequires:  cargo
+BuildRequires:  gcc
 BuildRequires:  systemd-rpm-macros
 # Runtime: self-contained /opt bundle (RTL-SDR; HackRF/Airspy natively). ffmpeg is optional
 # (MP3 output falls back to the bundled imageio-ffmpeg binary, system one wins).
@@ -59,6 +61,8 @@ python3 -m venv .rpm-venv
 .rpm-venv/bin/pip install --quiet -r requirements.txt pyinstaller
 source packaging/linux-native-libs.sh
 collect_native_libs soft
+source packaging/linux-tetra.sh
+build_tetra "$PWD"
 .rpm-venv/bin/pyinstaller \
   --name %{name} \
   --onedir \
@@ -71,6 +75,7 @@ collect_native_libs soft
   --collect-data imageio_ffmpeg \
   --collect-all pip \
   "${NATIVE_ARGS[@]}" \
+  "${TETRA_ARGS[@]}" \
   --distpath dist \
   --workpath build-pyinstaller \
   --specpath build-pyinstaller \

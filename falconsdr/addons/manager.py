@@ -268,7 +268,10 @@ class AddonManager:
                 "error": self.last_error if self.last_error.startswith(spec.id + ":") else "",
             }
             if spec.id == "tetra":
+                from . import tetra_codec
                 entry["codec_path"] = str(cfg.paths.get("tetra_codec", ""))
+                entry["codec_installed"] = tetra_codec.codec_executable() is not None
+                entry["codec_install"] = tetra_codec.install_state() if tetra_codec.can_install() else None
             out.append(entry)
         return out
 

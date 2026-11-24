@@ -110,6 +110,9 @@ class TetraSlotDecoder:
         self._iq_queue: queue.Queue[bytes | None] = queue.Queue(maxsize=16)
 
         argv = [str(exe), "--pipe", "--rate", str(TETRA_IQ_RATE), "--freq-hz", str(self.freq_hz)]
+        if not codec_path:      # the codec FalconSDR built from ETSI's source, if the user installed it
+            from .tetra_codec import codec_executable
+            codec_path = str(codec_executable() or "")
         cp = Path(codec_path).expanduser() if codec_path else None
         self.has_codec = bool(cp is not None and cp.is_file())
         if self.has_codec:

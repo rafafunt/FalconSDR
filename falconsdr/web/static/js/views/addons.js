@@ -64,13 +64,36 @@ export function decodersCard(box) {
     if (!dead) render();
   }
 
+  // The TETRA speech codec: ETSI's own code, fetched from etsi.org and compiled here - never shipped by FalconSDR.
+  function codecInstall(a) {
+    const st = a.codec_install;
+    if (!st) return null;
+    const parts = [];
+    if (a.codec_installed) {
+      parts.push(h('div.row.wrap', h('span.chip.good', t('Speech codec installed')),
+        h('button.ghost.danger', { onclick: () => act('/api/addons/uninstall', { id: 'tetra_codec' }) }, icon('trash'), t('Remove the codec'))));
+    } else {
+      parts.push(h('p.faint.small', { style: { margin: 0 } },
+        t('Clear (unencrypted) calls need ETSI\'s speech codec. FalconSDR does not contain it: one click downloads it from etsi.org to this computer and compiles it here (a C compiler is needed). ETSI publishes this code for implementers of TETRA, but that covers the code only, not patents - the codec may be patented in your country, check before you use it. Encrypted calls are never decoded.')),
+        h('div.row.wrap',
+          st.running ? h('span.chip.accent.live', h('span.dot'), t('Installing…'))
+            : h('button.primary', { onclick: () => act('/api/addons/install', { id: 'tetra_codec' }) }, icon('download'), t('Download the speech codec from ETSI'))));
+    }
+    if (st.log && st.log.length && !a.codec_installed) parts.push(h('pre.msg-detail', st.log.join('\n')));
+    if (st.error) parts.push(h('span', { style: { color: 'var(--red)' } }, t('Installation failed: {error}', { error: st.error })));
+    if (st.hint) parts.push(h('div.col', { style: { gap: '4px' } },
+      h('span.small', t('Install what the build needs first (this needs administrator rights, so FalconSDR does not run it):')), h('code', st.hint)));
+    if (st.link) parts.push(h('a', { href: st.link, target: '_blank', rel: 'noopener' }, st.link));
+    return h('div.col', { style: { gap: '8px', margin: '8px 0' } }, ...parts);
+  }
+
   async function load() {
     try { rows = (await api.get('/api/addons')).addons; } catch { return; }
     if (dead) return;
     const a = document.activeElement;
     const editing = box.contains(a) && ['INPUT', 'SELECT', 'SUMMARY'].includes(a.tagName);   // a refresh would wipe what is being typed
     if (!busy && !editing) render();
-    if (rows.some((r) => r.install && r.install.running)) { clearInterval(timer); timer = setInterval(load, 1500); } else { clearInterval(timer); timer = setInterval(load, 3000); }
+    if (rows.some((r) => (r.install && r.install.running) || (r.codec_install && r.codec_install.running))) { clearInterval(timer); timer = setInterval(load, 1500); } else { clearInterval(timer); timer = setInterval(load, 3000); }
   }
 
   function frequencyEditor(a) {
@@ -203,6 +226,7 @@ export function decodersCard(box) {
     } else if (!external) {
       if (a.id === 'tetra') {
         parts.push(h('p.faint.small', { style: { margin: 0 } }, t('Clear-mode only: encrypted networks and calls are detected and muted, never decrypted. You can also choose TETRA directly as the modulation of any band or Memory List channel.')));
+        parts.push(codecInstall(a));
       }
       if (a.enabled || a.id === 'tetra') {
         if (a.id !== 'tetra') {

@@ -1522,6 +1522,9 @@ msgstr "własne ustawienia"
 msgid "Back to scanning everything"
 msgstr "Wróć do skanowania wszystkiego"
 
+msgid "Drag to change the order"
+msgstr "Przeciągnij, aby zmienić kolejność"
+
 msgid "Scan only this band for now"
 msgstr "Skanuj na razie tylko to pasmo"
 
@@ -4013,3 +4016,39 @@ msgstr "TETRA Europa 390-395 MHz (siatka +12,5 kHz, eksperymentalne)"
 
 msgid "TETRA Europe 420-430 MHz (+12.5 kHz grid, experimental)"
 msgstr "TETRA Europa 420-430 MHz (siatka +12,5 kHz, eksperymentalne)"
+
+msgid "Speech codec installed"
+msgstr "Kodek mowy zainstalowany"
+
+msgid "Remove the codec"
+msgstr "Usuń kodek"
+
+msgid "Download the speech codec from ETSI"
+msgstr "Pobierz kodek mowy z ETSI"
+
+msgid "Clear (unencrypted) calls need ETSI's speech codec. FalconSDR does not contain it: one click downloads it from etsi.org to this computer and compiles it here (a C compiler is needed). ETSI publishes this code for implementers of TETRA, but that covers the code only, not patents - the codec may be patented in your country, check before you use it. Encrypted calls are never decoded."
+msgstr "Rozmowy jawne (niezaszyfrowane) wymagają kodeka mowy ETSI. FalconSDR go nie zawiera: jedno kliknięcie pobiera go z etsi.org na ten komputer i kompiluje tutaj (potrzebny kompilator C). ETSI udostępnia ten kod implementatorom TETRA, ale dotyczy to samego kodu, nie patentów - kodek może być opatentowany w Twoim kraju, sprawdź to, zanim go użyjesz. Rozmowy szyfrowane nigdy nie są dekodowane."
+
+msgid "A C compiler (gcc or clang) was not found."
+msgstr "Nie znaleziono kompilatora C (gcc ani clang)."
+
+msgid "The codec front end (tetra-rs/codec/) is not present in this installation."
+msgstr "W tej instalacji brakuje nakładki kodeka (tetra-rs/codec/)."
+
+msgid "A C compiler is needed to build the codec and none was found. Install one (below), then try again."
+msgstr "Do zbudowania kodeka potrzebny jest kompilator C, a żadnego nie znaleziono. Zainstaluj go (poniżej) i spróbuj ponownie."
+
+msgid "Could not download from etsi.org ({error}). Check the internet connection and try again."
+msgstr "Nie udało się pobrać z etsi.org ({error}). Sprawdź połączenie z internetem i spróbuj ponownie."
+
+msgid "The file from etsi.org is not the version FalconSDR was tested with, so it was not used."
+msgstr "Plik z etsi.org nie jest wersją, z którą testowano FalconSDR, więc go nie użyto."
+
+msgid "Building the codec failed. The last lines are above; you can also build it yourself from ETSI's code and enter the program's path below."
+msgstr "Zbudowanie kodeka się nie powiodło. Ostatnie linie są wyżej; możesz też zbudować go samodzielnie z kodu ETSI i wpisać ścieżkę programu poniżej."
+
+msgid "Could not download a small C compiler ({error}). Check the internet connection, or install one yourself (below) and try again."
+msgstr "Nie udało się pobrać małego kompilatora C ({error}). Sprawdź połączenie z internetem albo zainstaluj kompilator samodzielnie (poniżej) i spróbuj ponownie."
+
+msgid "The compiler download is not the version FalconSDR was tested with, so it was not used."
+msgstr "Pobrany kompilator nie jest wersją, z którą testowano FalconSDR, więc go nie użyto."

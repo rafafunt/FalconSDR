@@ -46,6 +46,8 @@ mkdir -p "$BUILD"
 # libhackrf + libairspy (BSD-3-Clause): HackRF/Airspy without SoapySDR - build-in-docker.sh installs the packages.
 source "$SCRIPT_DIR/../linux-native-libs.sh"
 collect_native_libs strict
+source "$SCRIPT_DIR/../linux-tetra.sh"
+build_tetra "$REPO_ROOT"
 (
   cd "$REPO_ROOT"
   # Absolute source paths for --add-data - PyInstaller resolves a relative
@@ -100,6 +102,7 @@ collect_native_libs strict
     --collect-data tzdata \
     --collect-data pyrtlsdrlib     --collect-data imageio_ffmpeg     --collect-all pip \
     "${NATIVE_ARGS[@]}" \
+    "${TETRA_ARGS[@]}" \
     --distpath "$BUILD/dist" \
     --workpath "$BUILD/work" \
     --specpath "$BUILD" \
