@@ -2828,7 +2828,9 @@ class RecorderTest(unittest.TestCase):
 
 class LevelingTest(unittest.TestCase):
     """Demodulator output level: the same loudness whatever the signal strength or modulation (gotchas 25, 57)."""
-    FS, BLK = 2_400_000, 72_000   # 30 ms blocks
+    # The level logic works on the audio after the first decimation, so 0.6 MS/s tests it as well as 2.4 MS/s did (checked: the
+    # same mutants - no AGC, no carrier tracking - still fail it), in a quarter of the time.
+    FS, BLK = 600_000, 18_000     # 30 ms blocks
 
     def _out(self, mod, carrier_db, depth=0.6, dev=3000.0, secs=8, noise_db=-75.0, floor_db=-66.0):
         import numpy as np
@@ -2859,14 +2861,14 @@ class LevelingTest(unittest.TestCase):
     def test_am_level_does_not_depend_on_the_carrier(self) -> None:
         from falconsdr.models import Modulation
         # The recordings from the receiver differed by 27 dB inside the airband alone (distance).
-        levels = [self._speech_db(self._out(Modulation.AM, db)[1], 1, 8) for db in (-60, -45, -30, -15)]
+        levels = [self._speech_db(self._out(Modulation.AM, db, secs=4)[1], 1, 4) for db in (-60, -45, -30, -15)]
         self.assertLess(max(levels) - min(levels), 1.0, levels)
 
     def test_weak_and_strong_voices_end_up_equally_loud(self) -> None:
         from falconsdr.models import Modulation
         cases = [(Modulation.AM, dict(carrier_db=-50, depth=0.15)), (Modulation.AM, dict(carrier_db=-30, depth=0.9)),
                  (Modulation.NFM, dict(carrier_db=-40, dev=600.0)), (Modulation.NFM, dict(carrier_db=-20, dev=5000.0))]
-        levels = [self._speech_db(self._out(mod, **kw)[1], 4, 8) for mod, kw in cases]
+        levels = [self._speech_db(self._out(mod, secs=5, **kw)[1], 3, 5) for mod, kw in cases]
         self.assertLess(max(levels) - min(levels), 4.0, levels)    # was ~24 dB between AM and NFM
 
     def test_a_loud_burst_never_clips(self) -> None:

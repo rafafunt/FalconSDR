@@ -32,6 +32,13 @@ python3 -m unittest tests/test_core.py tests/test_addons.py
 python3 main.py --probe-sdr [driver]   # with the scanner stopped: measures a real receiver (gotcha 55)
 ```
 
+**Running tests without waste** (the suite is ~25 s; measured 2026-11-24): run what the change touches
+(`python3 -m unittest tests.test_addons.AcarsTest`) and the full suite once before a commit - not after a change that cannot
+reach Python (docs, `pl.po`, packaging scripts, JS: `node --check` / `bash -n` are the checks there). Pipe the output through
+`tail`: a green run is one line. Do not write a test that needs real time (sleeps, 2.4 MS/s signals) when a small one shows
+the same failure - `LevelingTest` went from 24 s to 5 s at a quarter of the sample rate and the same two mutants (no AGC, no
+carrier tracking) still fail it. A regression test names the bug it pins: keep those, cut duplicates.
+
 `numpy`, `scipy`, `pyrtlsdr`/`pyrtlsdrlib`, `tzdata` —
 `pip install -r requirements.txt`. `SoapySDR` needs system packages on Linux
 (see `requirements.txt`). No SDR hardware/library at all, with

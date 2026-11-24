@@ -1,8 +1,18 @@
 name: CI
 
+# A push to a branch with an open pull request used to run everything twice (push + pull_request); documentation-only
+# changes ran the whole suite on two systems. Now: pushes to master, pull requests, nothing for *.md / docs.
 on:
   push:
+    branches: [master]
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+
+# A newer push to the same branch makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -19,7 +29,7 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - run: python -m compileall -q main.py falconsdr tests
-      - run: python -m unittest tests/test_core.py tests/test_addons.py -v
+      - run: python -m unittest tests/test_core.py tests/test_addons.py
       - if: runner.os == 'Linux'
         run: |
           for f in falconsdr/web/static/js/*.js falconsdr/web/static/js/views/*.js demo/site/sw.js; do node --check "$f"; done
