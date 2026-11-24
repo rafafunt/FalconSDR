@@ -295,6 +295,12 @@ td.pick input, th.pick input { width: 18px; height: 18px; cursor: pointer; }
 .band:first-of-type { border-top: 0; }
 .band.disabled .band-main .grow { opacity: .45; }
 .band.solo .title { color: var(--accent); }
+.band { position: relative; }
+.band.dragging { opacity: .5; }
+.band.drop-before::before, .band.drop-after::after { content: ''; position: absolute; left: 0; right: 0; height: 2px; background: var(--accent); }
+.band.drop-before::before { top: -1px; } .band.drop-after::after { bottom: -1px; }
+button.grip { cursor: grab; touch-action: none; margin-right: -6px; color: var(--secondary); }
+button.grip:active { cursor: grabbing; }
 .band-main { display: flex; align-items: center; gap: 10px; }
 .band-main .title { font-weight: 600; }
 .band-main .range { font: 13px var(--mono); color: var(--secondary); }

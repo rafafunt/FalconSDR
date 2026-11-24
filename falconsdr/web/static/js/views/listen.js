@@ -573,12 +573,66 @@ export function listenView(root) {
   }
 
   const expanded = new Set();
+
+  // Moves a band; the solo choice is an index on the server, so it follows the band.
+  async function moveBand(from, to) {
+    const bands = cfg().bands;
+    if (from === to || to < 0 || to >= bands.length) return;
+    const solo = S.live && S.live.solo_band;
+    const soloBand = solo != null ? bands[solo] : null;
+    bands.splice(to, 0, bands.splice(from, 1)[0]);
+    expanded.clear();
+    await patchConfig({ bands });
+    if (soloBand) api.post('/api/scanner/solo', { band: bands.indexOf(soloBand) }).catch(errorToast);
+    renderBands();
+    const grip = bandsBody.querySelectorAll('.grip')[to];
+    if (grip && document.activeElement === document.body) grip.focus();
+  }
+
+  // Drag by the handle with pointer events (mouse and touch alike); arrows move it from the keyboard.
+  function bandGrip(i) {
+    let gap = null;
+    const row = () => grip.closest('.band');   // the row does not exist yet while its parts are built
+    const rows = () => [...bandsBody.querySelectorAll('.band')];
+    const clear = () => rows().forEach((r) => r.classList.remove('drop-before', 'drop-after'));
+    const grip = h('button.icon.ghost.grip', {
+      title: t('Drag to change the order'),
+      onpointerdown: (e) => {
+        if (e.button) return;
+        grip.setPointerCapture(e.pointerId);
+        row().classList.add('dragging');
+        gap = i;
+      },
+      onpointermove: (e) => {
+        if (gap === null) return;
+        const all = rows();
+        gap = all.findIndex((r) => { const b = r.getBoundingClientRect(); return e.clientY < b.top + b.height / 2; });
+        if (gap < 0) gap = all.length;
+        clear();
+        if (gap < all.length) all[gap].classList.add('drop-before'); else all[all.length - 1].classList.add('drop-after');
+      },
+      onpointerup: () => {
+        if (gap === null) return;
+        const to = gap > i ? gap - 1 : gap;
+        gap = null; clear(); row().classList.remove('dragging');
+        moveBand(i, to);
+      },
+      onpointercancel: () => { gap = null; clear(); row().classList.remove('dragging'); },
+      onkeydown: (e) => {
+        const d = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
+        if (d) { e.preventDefault(); moveBand(i, i + d); }
+      },
+    }, icon('grip'));
+    return grip;
+  }
+
   function bandRow(b, i) {
     const save = () => patchConfig({ bands: cfg().bands });
     const solo = S.live && S.live.solo_band === i;
     const custom = hasOverrides(b);
     const row = h('div.band', { class: (b.enabled ? '' : 'disabled') + (solo ? ' solo' : '') },
       h('div.band-main',
+        cfg().bands.length > 1 ? bandGrip(i) : null,
         h('label.switch', h('input', {
           type: 'checkbox', checked: b.enabled, disabled: scheduleLocked(),
           title: scheduleLocked() ? t('Schedule mode is on') : t('Scan this band'),
