@@ -138,19 +138,15 @@ def _acars_block(text: bytes, registration: str = ".SP-LWA", label: str = "H1", 
     return chars + bytes([crc & 0xFF, crc >> 8])
 
 
-def _acars_audio(block: bytes, mapping: str) -> np.ndarray:
+def _acars_audio(block: bytes, start_level: int = 1) -> np.ndarray:
+    """NRZI like the real thing: the 1200 Hz tone flips the bit level, 2400 Hz keeps it."""
     from falconsdr.addons import acars
     head = [b for c in (0x2B, 0x2A, acars.SYN, acars.SYN, acars.SOH) for b in acars.char_bits(acars.with_parity(c))]
     bits = [1] * 16 + head + [b for byte in block for b in acars.char_bits(byte)] + [b for b in acars.char_bits(acars.DEL)]
-    tones, tone = [], 1
+    tones, level = [], start_level
     for b in bits:
-        if mapping == "direct":
-            tone = b
-        elif mapping == "inverted":
-            tone = 1 - b
-        elif mapping == "diff":              # no change = 1
-            tone = tone if b else 1 - tone
-        tones.append(tone)
+        tones.append(1 if b == level else 0)
+        level = b
     freqs = _per_symbol([2400.0 if t else 1200.0 for t in tones], 2400)
     return np.concatenate([np.zeros(300, np.float32), _fm(freqs), np.zeros(300, np.float32)])
 
@@ -165,15 +161,27 @@ def _decode_acars(audio: np.ndarray, **kw) -> list[dict]:
 
 
 class AcarsTest(unittest.TestCase):
-    def test_a_block_is_decoded_whatever_the_tone_mapping(self) -> None:
+    def test_a_block_is_decoded_whatever_level_the_stream_starts_at(self) -> None:
         block = _acars_block(b"M01AAB1234HELLO FROM THE COCKPIT\r\n")
-        for mapping in ("direct", "inverted", "diff"):
-            ev = _decode_acars(_acars_audio(block, mapping))
-            self.assertEqual(len(ev), 1, mapping)
+        for level in (0, 1):
+            ev = _decode_acars(_acars_audio(block, level))
+            self.assertEqual(len(ev), 1, level)
             e = ev[0]
-            self.assertTrue(e["crc_ok"], mapping)
-            self.assertEqual((e["registration"], e["label"], e["msg_no"], e["flight"]), ("SP-LWA", "H1", "M01A", "AB1234"), mapping)
+            self.assertTrue(e["crc_ok"], level)
+            self.assertEqual((e["registration"], e["label"], e["msg_no"], e["flight"]), ("SP-LWA", "H1", "M01A", "AB1234"), level)
             self.assertIn("HELLO FROM THE COCKPIT", e["text"])
+
+    def test_a_real_burst_from_131_825_mhz_is_decoded(self) -> None:
+        # 0.25 s of audio recorded by a real receiver (a short acknowledgement block). The synthetic signals
+        # above once agreed with a wrong tone mapping, so the real thing has to stay in the tests.
+        import wave
+        from pathlib import Path
+        with wave.open(str(Path(__file__).parent / "data" / "acars_real_131825.wav")) as w:
+            audio = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float32) / 32768
+        ev = _decode_acars(audio)
+        self.assertEqual(len(ev), 1)
+        self.assertTrue(ev[0]["crc_ok"])
+        self.assertEqual((ev[0]["registration"], ev[0]["flight"]), ("TC-JHM", "TK07DB"))
 
     def test_noise_and_a_damaged_block_give_nothing(self) -> None:
         rng = np.random.default_rng(3)
@@ -181,10 +189,10 @@ class AcarsTest(unittest.TestCase):
         block = bytearray(_acars_block(b"M01AAB1234TEXT"))
         parity = bytearray(block)
         parity[20] ^= 0x01                                       # a character with a parity error: not a block
-        self.assertEqual(_decode_acars(_acars_audio(bytes(parity), "direct"), check_crc=False), [])
+        self.assertEqual(_decode_acars(_acars_audio(bytes(parity)), check_crc=False), [])
         block[-1] ^= 0x01                                        # only the check sequence is wrong
-        self.assertEqual(_decode_acars(_acars_audio(bytes(block), "direct")), [])
-        shown = _decode_acars(_acars_audio(bytes(block), "direct"), check_crc=False)    # kept when asked (diagnostics)
+        self.assertEqual(_decode_acars(_acars_audio(bytes(block))), [])
+        shown = _decode_acars(_acars_audio(bytes(block)), check_crc=False)    # kept when asked (diagnostics)
         self.assertEqual((len(shown), shown[0]["crc_ok"]), (1, False))
 
     def test_crc16_matches_the_known_check_value(self) -> None:

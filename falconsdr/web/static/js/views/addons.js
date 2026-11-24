@@ -245,7 +245,7 @@ export function decodersCard(box) {
         }
         parts.push(h('div.row.wrap', h('span.faint.small', t('Channels heard: {slots} · messages decoded: {events}', { slots: a.stats.slots, events: a.stats.events })),
           h('a', { href: '#/messages' }, t('Open Messages'))));
-        if (a.experimental) parts.push(h('p.faint.small', { style: { margin: 0 } }, t('Only tested on synthetic signals so far. If channels are heard but nothing is decoded, please report it.')));
+        if (a.experimental) parts.push(h('p.faint.small', { style: { margin: 0 } }, t('Experimental, tested on few real signals so far. If channels are heard but nothing is decoded, please report it.')));
         if (a.id === 'tetra') {
           const codecInput = h('input', { value: a.codec_path || '', placeholder: t('Optional path to external ACELP speech codec helper'), style: { width: '320px' } });
           parts.push(h('details.addon-advanced', h('summary', t('Advanced')),

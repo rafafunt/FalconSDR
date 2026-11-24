@@ -3,9 +3,10 @@
 Written from the public description of the format (ARINC 618 framing as documented by the open
 implementations): pre-key of ones, "+*", SYN SYN, SOH, 7-bit characters with odd parity sent least
 significant bit first, a block check sequence (CRC-16) and DEL. Nothing here is taken from another
-decoder's source. The mapping of tones to bits is tried in four ways at once (direct, inverted and the
-same after differential decoding) and the one whose preamble matches wins, so the decoder does not
-depend on a polarity assumption."""
+decoder's source. The data is NRZI-coded: the 1200 Hz tone flips the bit and 2400 Hz keeps it, so the bits
+are the running XOR of the tones. The level the stream starts at is unknown, so both polarities are tried at
+once and the one whose preamble matches wins. (Checked on real bursts recorded at 131.825 MHz: the direct
+tone-to-bit mappings an earlier version tried never gave a valid parity or CRC, this one decodes them.)"""
 from __future__ import annotations
 
 import numpy as np
@@ -16,7 +17,7 @@ AUDIO_RATE = 12500
 BAUD = 2400
 SOH, STX, ETX, ETB, SYN, DEL = 0x01, 0x02, 0x03, 0x17, 0x16, 0x7F
 MAX_TEXT = 260            # a block holds up to 220 characters of text; the rest is header and suffix
-_HYPOTHESES = ("direct", "inverted", "diff", "diff_inverted")
+_HYPOTHESES = ("nrzi", "nrzi_inverted")
 
 
 def with_parity(char: int) -> int:
@@ -112,7 +113,7 @@ class AcarsDecoder:
         self._check_crc = check_crc
         self._hist = {h: 0 for h in _HYPOTHESES}
         self._frames: dict[str, _Frame | None] = {h: None for h in _HYPOTHESES}
-        self._last_tone = 0
+        self._state = 0           # the NRZI level
         self._count = 0
 
     def reset(self) -> None:
@@ -120,19 +121,20 @@ class AcarsDecoder:
         self._clock.reset()
         self._hist = {h: 0 for h in _HYPOTHESES}
         self._frames = {h: None for h in _HYPOTHESES}
-        self._last_tone = 0
+        self._state = 0
         self._count = 0
 
     def feed(self, audio: np.ndarray) -> list[dict]:
         freq = self._disc.process(audio)
-        tones = self._clock.process((freq > 0).astype(np.int8))   # 1 = the higher (2400 Hz) tone
+        return self.feed_tones(self._clock.process((freq > 0).astype(np.int8)))   # 1 = the higher (2400 Hz) tone
+
+    def feed_tones(self, tones: list[int]) -> list[dict]:
+        """One tone decision per symbol (1 = 2400 Hz, 0 = 1200 Hz) in, decoded blocks out."""
         events: list[dict] = []
         for tone in tones:
             self._count += 1
-            bits = {"direct": tone, "inverted": 1 - tone,
-                    "diff": 1 if tone == self._last_tone else 0,
-                    "diff_inverted": 0 if tone == self._last_tone else 1}
-            self._last_tone = tone
+            self._state ^= 1 - tone       # NRZI: 1200 Hz flips the level, 2400 Hz keeps it
+            bits = {"nrzi": self._state, "nrzi_inverted": 1 - self._state}
             for name, bit in bits.items():
                 self._hist[name] = ((self._hist[name] << 1) | bit) & _PREAMBLE_MASK
                 frame = self._frames[name]

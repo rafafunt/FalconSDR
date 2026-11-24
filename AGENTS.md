@@ -908,9 +908,14 @@ catalog loads; wrap them in a function called at point of use
     recorded, no "discarded" log line) unless `listen_to_data`. A data slot has primary weight -1: it never takes the
     speaker from a voice channel. A decoder exception drops that decoder, never the scanner. They work only
     while the scanner visits the window - a bonus, not full reception (a dedicated dongle or an external program
-    for that). **ACARS is unvalidated on real signals**: the receiver's recordings (noise reduction + MP3, 0.2-0.5 s
-    bursts) gave clean bit timing but no mapping with valid parity; decoders try four tone-to-bit mappings and the
-    CRC decides. Check live (Add-ons -> "channels heard" vs "messages decoded") before trusting it. APRS is checked
+    for that). **ACARS data is NRZI** (found 2026-11-24 on 40 real bursts recorded at 131.825 MHz in Aug-Sep 2026; for months it
+    decoded nothing): the 1200 Hz tone flips the bit level, 2400 Hz keeps it, so bits = the running XOR of the tones
+    (`AcarsDecoder`: `nrzi`/`nrzi_inverted`, the start level is unknown). The old direct/"diff" mappings never produced
+    a valid parity - the synthetic tests had been written to match the wrong mapping, hence `tests/data/acars_real_131825.wav`
+    (a real 0.25 s block) stays in `AcarsTest`. 6 of those 59 recordings decode with a valid CRC (A6-/TC-/SP-/SU- aircraft,
+    positions near Rzeszow); the rest are bursts with the start cut off (the scanner stops after the onset, the preamble is
+    ~25 ms) or too noisy - offline timing search gave no more, so the demodulator is not the limit; the old recordings are
+    post noise-reduction. Not yet seen live on the receiver (re-check "channels heard" vs "messages decoded"). APRS is checked
     against aprslib (dev only). External programs (rtl_433, dumpvdl2): `Controller.run_addon` stops the scanner,
     `ExternalRunner` takes the dongle, `stop_addon` resumes scanning; `_start` refuses while one runs. **Never bundle
     or link them, never port their code** (rtl_433 is GPL-2.0): they are separate programs, which is what keeps the

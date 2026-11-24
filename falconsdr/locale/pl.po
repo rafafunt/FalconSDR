@@ -2843,8 +2843,8 @@ msgstr "Podczas skanowania transmisja na jednym z tych kanałów jest tu dekodow
 msgid "Channels heard: {slots} · messages decoded: {events}"
 msgstr "Usłyszane kanały: {slots} · odczytane wiadomości: {events}"
 
-msgid "Only tested on synthetic signals so far. If channels are heard but nothing is decoded, please report it."
-msgstr "Na razie testowane tylko na sygnałach syntetycznych. Jeśli kanały są słyszane, a nic się nie dekoduje, zgłoś to."
+msgid "Experimental, tested on few real signals so far. If channels are heard but nothing is decoded, please report it."
+msgstr "Eksperymentalne, na razie sprawdzone na niewielu prawdziwych sygnałach. Jeśli kanały są słyszane, a nic się nie dekoduje, zgłoś to."
 
 msgid "Path of the program"
 msgstr "Ścieżka programu"
