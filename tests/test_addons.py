@@ -220,6 +220,18 @@ class HubTest(unittest.TestCase):
         again = EventHub(folder, keep_days=7)                     # what is on disk comes back
         self.assertEqual([e["summary"] for e in again.since(0)], ["one", "two"])
 
+    def test_earlier_days_come_back_after_a_restart_not_only_today(self) -> None:
+        import json
+        from datetime import date, timedelta
+        from pathlib import Path
+        from falconsdr.addons.events import EventHub
+        folder = Path(tempfile.mkdtemp(dir=_HOME))
+        for back, text in ((3, "three days ago"), (1, "yesterday")):
+            day = folder / f"events-{(date.today() - timedelta(days=back)).isoformat()}.jsonl"
+            day.write_text(json.dumps({"addon": "acars", "ts": 1.0, "summary": text}) + "\n", encoding="utf-8")
+        hub = EventHub(folder, keep_days=7)                        # nothing received today
+        self.assertEqual([e["summary"] for e in hub.since(0)], ["three days ago", "yesterday"])
+
 
 class ManagerTest(unittest.TestCase):
     def _manager(self):

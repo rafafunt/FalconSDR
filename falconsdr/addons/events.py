@@ -21,17 +21,21 @@ class EventHub:
         self._link_ring: deque[dict] = deque(maxlen=600)    # link-layer frames flood the ring: they get a small one of their own
         self._next_id = int(time.time() * 1000)      # a page open across a restart must not wait for the new numbers to pass its old ones
         self._pruned_on: date | None = None
-        self._load_today()
+        self._load_recent()
 
-    def _load_today(self) -> None:
+    def _load_recent(self) -> None:
+        """The last keep_days of messages go back into the ring: after a restart (or a quiet day) the page still shows its history."""
         if self._dir is None:
             return
-        path = self._dir / f"events-{date.today().isoformat()}.jsonl"
-        try:
-            with path.open("r", encoding="utf-8", errors="replace") as f:
-                lines = deque(f, maxlen=self._ring.maxlen)
-        except OSError:
-            return
+        lines: deque[str] = deque(maxlen=self._ring.maxlen)
+        today = date.today()
+        for back in range(self._keep_days, -1, -1):
+            path = self._dir / f"events-{(today - timedelta(days=back)).isoformat()}.jsonl"
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as f:
+                    lines.extend(f)
+            except OSError:
+                continue
         for line in lines:
             try:
                 event = json.loads(line)

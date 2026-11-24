@@ -4052,3 +4052,9 @@ msgstr "Nie udało się pobrać małego kompilatora C ({error}). Sprawdź połą
 
 msgid "The compiler download is not the version FalconSDR was tested with, so it was not used."
 msgstr "Pobrany kompilator nie jest wersją, z którą testowano FalconSDR, więc go nie użyto."
+
+msgid "Nothing in this time range, but {n} older messages are stored."
+msgstr "W tym przedziale czasu nic nie ma, ale zapisanych jest {n} starszych wiadomości."
+
+msgid "Show everything"
+msgstr "Pokaż wszystko"

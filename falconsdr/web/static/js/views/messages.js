@@ -288,7 +288,12 @@ export function messagesView(root) {
     drawChips(rows.filter((e) => passes(e) && e.ts * 1000 > clearedAt));
     drawToolbar();
     if (!base.length) {
-      mount(list, h('div.empty', rows.length ? t('Nothing matches the filters.') : t('Nothing decoded yet. Turn an add-on on in Add-ons and scan a band that contains its channels.')));
+      // Something was received, only not in the chosen time range: say so and offer the way out.
+      const older = range && !filter && !query && !freq ? rows.filter((e) => passes(e) && e.ts * 1000 > clearedAt).length : 0;
+      mount(list, older
+        ? h('div.empty', h('p', t('Nothing in this time range, but {n} older messages are stored.', { n: older })),
+          h('button.primary', { onclick: () => { range = 0; rangeSel.value = '0'; setPrefS('msgRange', '0'); draw(); } }, t('Show everything')))
+        : h('div.empty', rows.length ? t('Nothing matches the filters.') : t('Nothing decoded yet. Turn an add-on on in Add-ons and scan a band that contains its channels.')));
       return;
     }
     if (filter === 'rtl_433') { mount(list, sensorCards(base)); return; }
