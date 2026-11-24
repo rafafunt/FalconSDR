@@ -519,35 +519,39 @@ export function settingsView(root, hash, scope = 'settings') {
   // ---------------------------------------------------------- receiver health + test (sdr_probe.py)
   // Thresholds from issue #6: 0.78-2.16 % lost samples was an audible buzz.
   const pct = (lost, of) => (of >= 10 ? (100 * lost) / of : null);
-  function verdict(r) {
+  // `tr` = t on screen; the copied/GitHub report passes English (an issue is read by the maintainer, in English).
+  const english = (s) => s;
+  function verdict(r, tr = t) {
     const loss = Math.max(pct(r.gap_s, r.steady_s) ?? 0, pct(r.stream_lost_s, r.stream_s) ?? 0);
-    if (r.chunks_dropped > 0 || loss >= 1) return ['bad', t('Losing data')];
-    if (loss >= 0.3 || r.rt_priority === 'refused') return ['warn', t('Check')];
-    return ['good', t('OK')];
+    if (r.chunks_dropped > 0 || loss >= 1) return ['bad', tr('Losing data')];
+    if (loss >= 0.3 || r.rt_priority === 'refused') return ['warn', tr('Check')];
+    return ['good', tr('OK')];
   }
-  function healthLines(r) {
+  function healthLines(r, tr = t) {
     const loss = [pct(r.gap_s, r.steady_s), pct(r.stream_lost_s, r.stream_s)].filter((v) => v !== null);
     return [
-      `${t('Lost IQ blocks')}: ${r.chunks_dropped} / ${r.chunks_read}`,
-      `${t('Lost samples')}: ${loss.length ? `${Math.max(...loss).toFixed(2)} %` : t('not measured yet')}`,
-      `${t('Slowest read')}: ${r.read_max_ms} ms (${t('one block')} ${r.chunk_ms} ms, ${t('slower')}: ${r.slow_reads})`,
-      `${t('Queue')}: ${r.queue} / ${r.max_queued}`,
-      r.rt_priority === 'unavailable' ? null : `${t('Real-time priority')}: ${r.rt_priority === 'ok' ? t('granted') : t('not granted - check “ulimit -r”')}`,
+      `${tr('Lost IQ blocks')}: ${r.chunks_dropped} / ${r.chunks_read}`,
+      `${tr('Lost samples')}: ${loss.length ? `${Math.max(...loss).toFixed(2)} %` : tr('not measured yet')}`,
+      `${tr('Slowest read')}: ${r.read_max_ms} ms (${tr('one block')} ${r.chunk_ms} ms, ${tr('slower')}: ${r.slow_reads})`,
+      `${tr('Queue')}: ${r.queue} / ${r.max_queued}`,
+      r.rt_priority === 'unavailable' ? null : `${tr('Real-time priority')}: ${r.rt_priority === 'ok' ? tr('granted') : tr('not granted - check “ulimit -r”')}`,
     ].filter(Boolean);
   }
-  let health = [], probe = { running: false, lines: [], code: null };
+  let health = [], system = '', probe = { running: false, lines: [], code: null };
   let lastHealth = null;   // [time, receivers]: the counters vanish when the scanner stops - which the test needs first
   const healthBox = h('div.col', { style: { gap: '10px' } });
   const report = h('textarea.mono.small', { readonly: true, rows: 10, style: { width: '100%', display: 'none' } });
   const probeBtn = h('button', { onclick: startProbe }, t('Test the receiver'));
   const copyBtn = h('button', { onclick: copyReport, style: { display: 'none' } }, t('Copy report'));
-  const issueBtn = h('button', { onclick: reportIssue, style: { display: 'none' } }, icon('external'), t('Report a problem'));
+  const issueBtn = h('button', { onclick: reportIssue }, icon('external'), t('Report a problem'));
   function reportText() {
     const [when, rows] = health.length ? [null, health] : (lastHealth || [null, []]);
     return [
-      `FalconSDR ${S.settings.version} · ${S.settings.mode}`,
+      `FalconSDR ${S.settings.version} · ${S.settings.mode} mode`,
+      `System: ${system}`,
       ...(rows.length ? ['', when ? `While scanning (${when}):` : 'Scanning now:'] : []),
-      ...rows.flatMap((r) => [`${receiverName(r.receiver)} [${r.backend}]`, ...healthLines(r).map((l) => `  ${l}`)]),
+      ...rows.flatMap((r) => [`Receiver ${r.receiver + 1} [${r.backend}]: ${verdict(r, english)[1]}`,
+        ...healthLines(r, english).map((l) => `  ${l}`)]),
       ...(probe.lines.length ? ['', 'Receiver test (--probe-sdr):', ...probe.lines] : []),
     ].join('\n');
   }
@@ -563,13 +567,14 @@ export function settingsView(root, hash, scope = 'settings') {
         : t('Starting the test… {s} s', { s: probe.elapsed_s ?? 0 });
     const shown = probe.running || probe.lines.length > 0;
     report.style.display = shown ? '' : 'none';
-    copyBtn.style.display = issueBtn.style.display = shown || health.length ? '' : 'none';
+    copyBtn.style.display = shown || health.length ? '' : 'none';
+    issueBtn.disabled = probe.running;
     if (shown) report.value = probe.lines.join('\n');
   }
   async function loadHealth() {
     try {
-      health = (await api.get('/api/health')).receivers;
-      if (health.length) lastHealth = [new Date().toLocaleTimeString(), health];
+      ({ receivers: health, system } = await api.get('/api/health'));
+      if (health.length) lastHealth = [new Date().toTimeString().slice(0, 8), health];
     } catch { return; }
     if (!dead) paintHealth();
   }
@@ -579,18 +584,45 @@ export function settingsView(root, hash, scope = 'settings') {
     paintHealth();
     startProbeWatch();
   }
-  function startProbeWatch() {   // also when the page opens while a test runs
+  function startProbeWatch(onDone) {   // also when the page opens while a test runs
     clearInterval(probeTimer);
     probeTimer = setInterval(async () => {   // every second while it runs: the step and the seconds move
       try { probe = await api.get('/api/probe'); } catch { return; }
-      if (!probe.running) clearInterval(probeTimer);
+      if (!probe.running) { clearInterval(probeTimer); if (onDone) onDone(); }
       if (!dead) paintHealth();
     }, 1000);
     timers.push(probeTimer);
   }
+  // From the "Report a problem" question: stops the scanner for the test and starts it again afterwards.
+  async function testForReport() {
+    const wasRunning = !!(S.live && S.live.running);
+    try {
+      if (wasRunning) await api.post('/api/scanner/stop');
+      for (let tries = 0; ; tries += 1) {   // the receiver is free only once every engine has finished
+        try { probe = await api.post('/api/probe'); break; } catch (e) {
+          if (tries >= 30 || dead) throw e;
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+    } catch (e) { errorToast(e); if (wasRunning) api.post('/api/scanner/start').catch(() => {}); return; }
+    paintHealth();
+    startProbeWatch(async () => {
+      if (wasRunning) await api.post('/api/scanner/start').catch(errorToast);
+      toast(t('Test finished - now click “Report a problem”.'), 'good');
+    });
+  }
   // GitHub's issue form (.github/ISSUE_TEMPLATE/receiver.yml) takes the report as a URL parameter; nothing is sent
   // until the user submits it there. A URL over ~8 kB is refused, so a long report is cut (Copy report has it all).
-  function reportIssue() {
+  async function reportIssue() {
+    // A report without the test's measurements is the kind that needs a round of questions - offer the test first.
+    if (probe.code === null) {
+      const choice = await modal(t('Test the receiver first?'), h('div.col', { style: { gap: '10px' } },
+        h('p', t('The test measures your receiver in about a minute and answers most of the questions we would otherwise have to ask you. It helps us the most.')),
+        S.live && S.live.running ? h('p.small.muted', t('The scanner stops for the test and starts again afterwards.')) : null),
+      [[t('Cancel'), null, 'ghost'], [t('Report without the test'), 'skip'], [t('Test the receiver first'), 'test', 'primary']]);
+      if (choice === 'test') { testForReport(); return; }
+      if (choice !== 'skip') return;
+    }
     let report = reportText();
     if (report.length > 5000) report = `${report.slice(0, 5000)}\n[... cut - paste the rest from "Copy report"]`;
     const url = `https://github.com/rafafunt/FalconSDR/issues/new?${new URLSearchParams({ template: 'receiver.yml', report })}`;

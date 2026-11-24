@@ -12,16 +12,34 @@ body:
   - type: dropdown
     id: system
     attributes:
-      label: Where FalconSDR runs
+      label: System of the computer the receiver is plugged into
       options:
         - Windows
         - macOS
-        - Linux (.deb / AppImage / rpm)
-        - Linux (from source)
+        - Linux
         - Raspberry Pi
         - Other
     validations:
       required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How FalconSDR was installed
+      options:
+        - Windows installer
+        - Windows portable ZIP
+        - macOS app
+        - Linux .deb
+        - Linux AppImage
+        - Linux .rpm
+        - From source (git clone / pip)
+        - Don't know
+  - type: input
+    id: system_version
+    attributes:
+      label: System version (optional)
+      description: The report below already has it when attached. Otherwise, if you can.
+      placeholder: e.g. Windows 11 24H2, macOS 15.1 on M2, Ubuntu 24.04, Raspberry Pi OS 64-bit on a Pi 4
   - type: input
     id: receiver
     attributes:
