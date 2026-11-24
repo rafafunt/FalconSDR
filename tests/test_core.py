@@ -544,14 +544,18 @@ class RtlTcpTest(unittest.TestCase):
 
     def test_bias_tee_on_last_and_off_on_close(self) -> None:
         server = _FakeRtlTcp()
+
+        def last_command(expected):   # the fake server's thread may still be reading (slow Windows runners): wait, don't sleep
+            deadline = time.monotonic() + 3.0
+            while server.commands[-1:] != [expected] and time.monotonic() < deadline:
+                time.sleep(0.02)
+            return server.commands[-1]
         backend = self._backend(server, bias_tee=True)
         try:
-            time.sleep(0.1)
-            self.assertEqual(server.commands[-1], (0x0E, 1))
+            self.assertEqual(last_command((0x0E, 1)), (0x0E, 1))
         finally:
             backend.close()
-        time.sleep(0.2)
-        self.assertEqual(server.commands[-1], (0x0E, 0))
+        self.assertEqual(last_command((0x0E, 0)), (0x0E, 0))
         server.close()
 
     def test_a_rate_the_dongle_cannot_do_is_refused_before_connecting(self) -> None:
