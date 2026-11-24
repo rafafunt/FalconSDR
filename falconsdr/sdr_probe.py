@@ -102,7 +102,7 @@ def run(driver: str = "") -> int:
     devices = enumerate_devices()
     if driver:
         match = [d for d in devices if d.get("driver") == driver]
-        if not match and driver not in ("auto", "rtlsdr", "rtlsdr_native", "rtl_tcp", "hackrf", "hackrf_native", "airspy", "airspy_native"):
+        if not match and driver not in ("auto", "rtlsdr", "rtlsdr_native", "rtl_tcp", "hackrf", "hackrf_native", "airspy", "airspy_native", "sdrplay", "sdrplay_native"):
             print(f"No such driver: {driver}. Available: {sorted({d.get('driver') for d in devices})}")
             return 2
         pick = match[0] if match else {"driver": driver}

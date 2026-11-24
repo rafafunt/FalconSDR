@@ -112,7 +112,8 @@ receiver at [falconsdr.com](https://falconsdr.com).
 | RTL-SDR (incl. RTL-SDR Blog V3/V4) | built in on Linux, Windows and macOS |
 | HackRF, Airspy | built in on Windows, `.deb`, `.rpm`, AppImage and (since 1.4.1) macOS (experimental) |
 | An RTL-SDR on another computer | over the network through its `rtl_tcp` server (since 1.5.0, see [Network receiver](#network-receiver-rtl_tcp)) |
-| SDRplay, LimeSDR, USRP, … | through SoapySDR, Linux source install (not tested) |
+| SDRplay RSP1/1A/1B/2/duo/dx/dx-R2 | through the free SDRplay API, installed once from [sdrplay.com](https://www.sdrplay.com/api/) - Windows, Linux, macOS (experimental, **untested on a real RSP**) |
+| LimeSDR, USRP, … | through SoapySDR, Linux source install (not tested) |
 
 An RTL-SDR is opened through librtlsdr; on Linux from source also through
 SoapySDR - choose under *SDR device → Access method*. HackRF and Airspy work
@@ -122,6 +123,15 @@ libairspy*); on Linux from source they work
 through [SoapySDR](https://github.com/pothosware/SoapySDR) with the matching
 module, or through the same built-in access once `libhackrf0` / `libairspy0`
 are installed.
+
+An **SDRplay** receiver needs the *SDRplay API* (version 3.15 or newer) from
+[sdrplay.com/api](https://www.sdrplay.com/api/): it installs the driver (no
+Zadig on Windows) and a background service, and FalconSDR loads it from there -
+nothing else to set up. Plugged in without it, the Listen page says so and links
+to the download. Pick a 6 MHz capture width (5 MHz of filter); the RSP is
+listed as *Access method → SDRplay API*, and on Linux with SoapySDRPlay3 also
+through SoapySDR. A report from a real RSP (*Settings → Receiver health → Test
+the receiver → Report a problem*) is very welcome.
 
 HackRF captures 2-20 MHz (the default 2.4 MHz is the safest start); an Airspy
 only the fixed widths its board has (for instance 2.5 and 10 MHz on an Airspy
@@ -141,7 +151,7 @@ tested yet - reports are welcome.
 
 **Testing a receiver:** stop the scanner and run `falconsdr --probe-sdr`
 (from source: `python main.py --probe-sdr`; add `hackrf_native` / `hackrf` /
-`airspy_native` / `airspy` to pick the way it is opened, or `rtl_tcp` to
+`airspy_native` / `airspy` / `sdrplay_native` to pick the way it is opened, or `rtl_tcp` to
 measure the server whose address is saved on the Listen page; on Windows the output
 goes to `%USERPROFILE%\.config\FalconSDR\falconsdr.log`). It measures the
 gain steps, the DC spike, how many blocks after a retune still hold the old

@@ -536,6 +536,7 @@ export function settingsView(root, hash, scope = 'settings') {
       `${tr('Slowest read')}: ${r.read_max_ms} ms (${tr('one block')} ${r.chunk_ms} ms, ${tr('slower')}: ${r.slow_reads})`,
       `${tr('Queue')}: ${r.queue} / ${r.max_queued}`,
       r.rt_priority === 'unavailable' ? null : `${tr('Real-time priority')}: ${r.rt_priority === 'ok' ? tr('granted') : tr('not granted - check “ulimit -r”')}`,
+      ...Object.entries(r.extra || {}).map(([k, v]) => `${k}: ${v}`),   // a backend's own figures (SDRplay: model, API, overloads)
     ].filter(Boolean);
   }
   let health = [], system = '', probe = { running: false, lines: [], code: null };

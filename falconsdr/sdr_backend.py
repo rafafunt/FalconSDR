@@ -916,7 +916,7 @@ def _read_serial(lib, index: int) -> str:
 #: Per hardware family: the driver values that open it - the one tried first, then the other ways.
 #: RTL-SDR is native first (librtlsdr, the path used and measured most); HackRF/Airspy go through
 #: SoapySDR first and have the experimental native backend (sdr_native.py) as the alternative.
-_NATIVE_ONLY_FAMILIES = {"hackrf_native": "hackrf", "airspy_native": "airspy"}
+_NATIVE_ONLY_FAMILIES = {"hackrf_native": "hackrf", "airspy_native": "airspy", "sdrplay_native": "sdrplay"}
 
 
 def device_family(driver: str) -> str:
@@ -928,7 +928,8 @@ def device_family(driver: str) -> str:
 
 
 def device_method(driver: str) -> str:
-    return {RTLSDR_NATIVE_DRIVER: "librtlsdr", RTLTCP_DRIVER: "rtl_tcp", "hackrf_native": "libhackrf", "airspy_native": "libairspy"}.get(driver, "soapy")
+    return {RTLSDR_NATIVE_DRIVER: "librtlsdr", RTLTCP_DRIVER: "rtl_tcp", "hackrf_native": "libhackrf", "airspy_native": "libairspy",
+            "sdrplay_native": "sdrplay_api"}.get(driver, "soapy")
 
 
 def enumerate_devices() -> list[dict]:
@@ -954,6 +955,9 @@ def open_real_backend(driver: str, device_args: str, sample_rate: float, gain_mo
     silently."""
     if driver == RTLTCP_DRIVER:
         return RtlTcpBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee)
+    if driver == "sdrplay_native" or (driver == "sdrplay" and not HAVE_SOAPY):     # the SDRplay API (sdr_sdrplay.py)
+        from .sdr_sdrplay import SdrplayBackend
+        return SdrplayBackend(device_args, sample_rate, gain_mode, gain_db, bias_tee, antenna)
     if driver in _NATIVE_ONLY_FAMILIES or (driver in ("hackrf", "airspy") and not HAVE_SOAPY):
         from . import sdr_native
         cls = sdr_native.HackRfBackend if driver.startswith("hackrf") else sdr_native.AirspyBackend
@@ -1129,6 +1133,7 @@ class AcquisitionThread:
             "queue": len(self._queue), "max_queued": self._max_queued,
             "gap_s": round(self._iq_lost_s, 3), "steady_s": round(self._iq_streamed_s, 1),     # blocking reads, parked on a frequency
             "stream_lost_s": round(stream_lost, 3), "stream_s": round(stream_s, 1),           # the current async stream (gotcha 54)
+            "extra": dict(getattr(self._backend, "extra_health", dict)()),                  # a backend's own figures (SDRplay)
         }
 
     _HEALTH_REPORT_INTERVAL_S = 20.0

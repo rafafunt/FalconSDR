@@ -591,15 +591,18 @@ class AirspyBackend(_NativeStreamBackend):
 
 
 def enumerate_here() -> dict:
-    """What libhackrf/libairspy report, asked IN THIS PROCESS: {"hackrf": loads, "airspy": loads, "devices": [...]}.
-    The server must not do this itself - see native_status()."""
-    devices = HackRfBackend.enumerate_devices() + AirspyBackend.enumerate_devices()
-    return {"hackrf": hackrf_library() is not None, "airspy": airspy_library() is not None, "devices": devices}
+    """What libhackrf/libairspy and the SDRplay API report, asked IN THIS PROCESS: {"hackrf": loads, "airspy": loads,
+    "sdrplay": {"loads", "version", "error"}, "devices": [...]}. The server must not do this itself - see native_status()
+    (a wedged SDRplay service must not hang the server either)."""
+    from . import sdr_sdrplay
+    devices = HackRfBackend.enumerate_devices() + AirspyBackend.enumerate_devices() + sdr_sdrplay.enumerate_devices()
+    return {"hackrf": hackrf_library() is not None, "airspy": airspy_library() is not None,
+            "sdrplay": sdr_sdrplay.api_status(), "devices": devices}
 
 
 _status_lock = threading.Lock()
 _status: tuple[float, dict] | None = None
-_EMPTY_STATUS = {"hackrf": False, "airspy": False, "devices": []}
+_EMPTY_STATUS = {"hackrf": False, "airspy": False, "sdrplay": {"loads": False, "version": "", "error": ""}, "devices": []}
 
 
 def self_command(*args: str) -> list[str]:
@@ -626,7 +629,8 @@ def native_status(max_age_s: float = 15.0) -> dict:
                              timeout=15, stdin=subprocess.DEVNULL,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
         data = json.loads(next(line for line in reversed(out.splitlines()) if line.startswith("{")))
-        status = {"hackrf": bool(data["hackrf"]), "airspy": bool(data["airspy"]), "devices": list(data["devices"])}
+        status = {"hackrf": bool(data["hackrf"]), "airspy": bool(data["airspy"]), "devices": list(data["devices"]),
+                  "sdrplay": dict(data.get("sdrplay") or _EMPTY_STATUS["sdrplay"])}
     except (OSError, subprocess.SubprocessError, StopIteration, ValueError, KeyError, TypeError):
         status = dict(_EMPTY_STATUS)
     with _status_lock:
@@ -634,23 +638,49 @@ def native_status(max_age_s: float = 15.0) -> dict:
     return status
 
 
-# USB ids of receivers that need more than the built-in RTL-SDR path (Linux; sysfs needs no library).
+# USB ids of receivers that need more than the built-in RTL-SDR path; "*" = every product of that vendor.
 _USB_IDS = {("1d50", "6089"): "hackrf", ("1d50", "604b"): "hackrf", ("1d50", "cc15"): "hackrf",
-            ("1d50", "60a1"): "airspy", ("03eb", "800c"): "airspyhf"}
+            ("1d50", "60a1"): "airspy", ("03eb", "800c"): "airspyhf", ("1df7", "*"): "sdrplay"}
 
 
-def usb_receivers_seen() -> list[str]:
-    """Families of plugged-in receivers, from /sys/bus/usb - so the UI can say "a HackRF is plugged in but
-    nothing can drive it" instead of an empty device list (issue #9). Other systems: unknown, empty."""
-    found: set[str] = set()
+def usb_family(vid: str, pid: str) -> str:
+    return _USB_IDS.get((vid, pid)) or _USB_IDS.get((vid, "*"), "")
+
+
+def _usb_ids_linux() -> list[tuple[str, str]]:
+    out = []
     try:
         for dev in Path("/sys/bus/usb/devices").iterdir():
             try:
-                ids = ((dev / "idVendor").read_text().strip().lower(), (dev / "idProduct").read_text().strip().lower())
+                out.append(((dev / "idVendor").read_text().strip().lower(), (dev / "idProduct").read_text().strip().lower()))
             except OSError:
                 continue
-            if ids in _USB_IDS:
-                found.add(_USB_IDS[ids])
     except OSError:
         pass
-    return sorted(found)
+    return out
+
+
+def _usb_ids_windows() -> list[tuple[str, str]]:
+    """Present USB devices from the configuration manager (cfgmgr32, no driver needed): "USB\\VID_1DF7&PID_3010\\..."."""
+    import re
+    cfg = ctypes.WinDLL("cfgmgr32")
+    flags = 0x2 | 0x100        # CM_GETIDLIST_FILTER_ENUMERATOR | CM_GETIDLIST_FILTER_PRESENT
+    size = ctypes.c_ulong(0)
+    if cfg.CM_Get_Device_ID_List_SizeW(ctypes.byref(size), "USB", flags) != 0 or size.value == 0:
+        return []
+    buf = ctypes.create_unicode_buffer(size.value)
+    if cfg.CM_Get_Device_ID_ListW("USB", buf, size, flags) != 0:
+        return []
+    ids = ctypes.wstring_at(ctypes.addressof(buf), size.value).split("\0")
+    return [(m[1].lower(), m[2].lower()) for i in ids if (m := re.search(r"VID_([0-9A-Fa-f]{4})&PID_([0-9A-Fa-f]{4})", i))]
+
+
+def usb_receivers_seen() -> list[str]:
+    """Families of plugged-in receivers, from /sys/bus/usb (Linux) or the configuration manager (Windows) - so the UI
+    can say "a HackRF / an SDRplay is plugged in but nothing can drive it" instead of an empty list (issue #9). macOS:
+    unknown, empty."""
+    try:
+        ids = _usb_ids_windows() if sys.platform == "win32" else _usb_ids_linux()
+    except (OSError, AttributeError, ValueError):
+        ids = []
+    return sorted({f for vid, pid in ids if (f := usb_family(vid, pid))})
