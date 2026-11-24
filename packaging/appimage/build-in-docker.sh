@@ -11,7 +11,9 @@ cd "$(dirname "$0")/../.."
 # Python fetches appimagetool: bullseye's curl update is gone from the mirrors.
 # libhackrf0/libairspy0 are bundled (AGENTS.md gotcha 55); FALCONSDR_REQUIRE_NATIVE_LIBS=1: a missing one fails the build.
 docker run --rm -e FALCONSDR_REQUIRE_NATIVE_LIBS=1 -v "$PWD":/src -w /src python:3.12-slim-bullseye sh -ec "
-    apt-get update -qq && apt-get install -y -qq binutils file libhackrf0 libairspy0 gcc curl ca-certificates >/dev/null
+    # Debian 11 left the mirrors for archive.debian.org (deb.debian.org answered 404 for its security pool, 2026-11).
+    printf 'deb http://archive.debian.org/debian bullseye main\\ndeb http://archive.debian.org/debian-security bullseye-security main\\n' > /etc/apt/sources.list
+    apt-get -o Acquire::Check-Valid-Until=false update -qq && apt-get install -y -qq binutils file libhackrf0 libairspy0 gcc curl ca-certificates >/dev/null
     curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
     . \$HOME/.cargo/env
     python3 -c 'import urllib.request, sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \

@@ -6,7 +6,9 @@
 set -eu
 cd "$(dirname "$0")/../.."
 docker run --rm -e FALCONSDR_REQUIRE_NATIVE_LIBS=1 -v "$PWD":/src -w /src python:3.12-slim-bullseye sh -ec "
-    apt-get update -qq && apt-get install -y -qq binutils libhackrf0 libairspy0 gcc curl ca-certificates >/dev/null
+    # Debian 11 left the mirrors for archive.debian.org (deb.debian.org answered 404 for its security pool, 2026-11).
+    printf 'deb http://archive.debian.org/debian bullseye main\\ndeb http://archive.debian.org/debian-security bullseye-security main\\n' > /etc/apt/sources.list
+    apt-get -o Acquire::Check-Valid-Until=false update -qq && apt-get install -y -qq binutils libhackrf0 libairspy0 gcc curl ca-certificates >/dev/null
     curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
     . \$HOME/.cargo/env
     packaging/linux-deb/build.sh
