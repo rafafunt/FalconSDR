@@ -152,6 +152,8 @@ function defaultConfig() {
   c.legal_disclaimer = { launch_seen_languages: langs, recording_seen_languages: langs };
   c.squelch_enabled = true;
   c.squelch_offset_db = -3;
+  // The question would stack on the demo's welcome dialog, and there is nothing to update here: Settings -> Updates says so.
+  c.updates = { check: true };
   return c;
 }
 
@@ -510,7 +512,9 @@ function simState() {
 function startScanner() {
   if (sim.running) return;
   if (ax.running) throw new Error(tr('An add-on is using the receiver - stop it first.'));
+  if (probeState().running) throw new Error(tr('The receiver test is still running - wait for it to finish.'));
   sim.running = true;
+  sim.runSince = nowS();       // Settings -> Receiver health counts from here
   sim.firstStart ??= nowS();
   rebuild(true);
   const devs = [st.config.device, ...(st.config.device.extra_devices || [])];
@@ -880,6 +884,7 @@ function live(since = Infinity) {
     spectrum: spectrum(), log: log.filter((e) => e.id > since), audio_rate: RATE,
     demo_birdie: !!(primary && primary.src.birdie),
     addon: ax.running || '', addons: ax.running ? [{ id: ax.running, receiver: 0 }] : [], addon_since: ax.since, notify_seq: ax.seq, schedule_now: axScheduleNow(),
+    update: '',     // the demo always is the newest version
   };
 }
 
@@ -890,7 +895,8 @@ function settings() {
     // Like Controller.devices(): the network entry carries the typed address while it is the chosen one, or the UI loses it.
     devices: DEVICES.map((d) => ({ driver: d.driver, args: d.driver === 'rtl_tcp' && st.config.device.driver === 'rtl_tcp' ? st.config.device.device_args || '' : '', label: tr(d.label), rate: d.rate })),
     languages: FX.languages,
-    capabilities: { addon_messages: true, ffmpeg: true, transcription_installed: true, digital: false, platform: 'linux', autostart: null },
+    capabilities: { addon_messages: true, ffmpeg: true, transcription_installed: true, digital: false, platform: 'linux', autostart: null,
+      soapy: false, usb_seen: [], native: { hackrf: false, airspy: false, sdrplay: { loads: false, version: '', error: '' } } },
     curated: FX.curated, mode: 'local', password_set: false,
   };
 }
@@ -911,6 +917,74 @@ function presetId(label) {
 }
 
 const notInDemo = () => { throw new Error(tr('Not available in the online demo - download FalconSDR to use it.')); };
+
+// ------------------------------------------------------------------ receiver health, receiver test, updates (1.7.0)
+const DEMO_SYSTEM = 'FalconSDR online demo - simulated receiver, the figures are made up';
+
+// Like AcquisitionThread.health(): a healthy simulated receiver, counting from the scanner's start.
+function health() {
+  if (!sim.running) return { receivers: [], system: DEMO_SYSTEM };
+  const s = Math.max(0, nowS() - (sim.runSince || nowS()));
+  const devs = [st.config.device, ...(st.config.device.extra_devices || [])];
+  return {
+    system: DEMO_SYSTEM,
+    receivers: sim.tuners.map((T) => ({
+      receiver: T.k, backend: (devs[T.k] && devs[T.k].driver) || 'demo-rtl', rt_priority: 'ok',
+      chunks_read: Math.floor(s / 0.03), chunks_dropped: 0, slow_reads: Math.floor(s / 9), chunk_ms: 30,
+      read_max_ms: Math.round((31 + 4 * Math.random()) * 10) / 10, queue: 0, max_queued: 64,
+      gap_s: 0, steady_s: Math.round(s * 0.4), stream_lost_s: 0, stream_s: 0, extra: {},
+    })),
+  };
+}
+
+// Like main.py --probe-sdr run by sdr_probe.py: steps and lines appear over ~10 s, computed when asked (no timers).
+const probe = { running: false, started: 0, lines: [], code: null, step: 0, steps: 0 };
+function probeScript() {
+  const dev = DEVICES.find((d) => d.driver === st.config.device.driver) || DEVICES[0];
+  const rate = dev.rate / 1e6;
+  const g = st.config.device;
+  return [
+    [0.4, 0, [`FalconSDR ${FX.version} | ${DEMO_SYSTEM}`, `Devices found: ['${dev.label}']`,
+      `Settings: gain ${g.gain_mode} ${g.gain_db} dB, continuous reading ${g.async_read ? 'on' : 'off'}, bias-T ${g.bias_tee ? 'on' : 'off'}, extra receivers ${(g.extra_devices || []).length}`,
+      `Probing driver '${dev.driver}' at ${rate} MS/s (stop the scanner first)`]],
+    [1.0, 1, []],
+    [3.2, 2, ['Noise floor (dBFS) per requested gain: {5.0: -52.1, 12.4: -51.8, 19.8: -50.9, 27.3: -48.6, 34.7: -45.2, 42.2: -41.7}']],
+    [4.0, 3, ['DC spike at the window centre: +2.3 dB over the median floor']],
+    [7.5, 4, ['Retune: set_frequency() 61 ms; blocks of the OLD window afterwards: mean 0.00, max 0; time to the first clean block 94 ms']],
+    [10.0, 4, [`Throughput: 8.01 s of IQ in 8.01 s of wall time; read() max 38 ms (chunk 30 ms); reported lost 0.000 s`,
+      `RESULT {"driver": "${dev.driver}", "rate_hz": ${dev.rate}, "version": "${FX.version}", "demo": true, "lost_seconds": 0.0}`]],
+  ];
+}
+function probeState() {
+  if (probe.running) {
+    const t = nowS() - probe.started;
+    const script = probeScript();
+    probe.lines = [];
+    for (const [at, step, lines] of script) {
+      if (t < at) break;
+      probe.lines.push(...lines);
+      if (step) { probe.step = step; probe.steps = 4; }
+    }
+    if (t >= script[script.length - 1][0]) { probe.running = false; probe.code = 0; }
+  }
+  return { running: probe.running, lines: [...probe.lines], code: probe.code, step: probe.step, steps: probe.steps,
+    elapsed_s: probe.running ? Math.round(nowS() - probe.started) : null };
+}
+function startProbe() {
+  if (sim.running || ax.running) throw new Error(tr('Stop the scanner first'));
+  if (probe.running) throw new Error(tr('The receiver test is already running.'));
+  Object.assign(probe, { running: true, started: nowS(), lines: [], code: null, step: 0, steps: 0 });
+  return probeState();
+}
+
+// Like updates.UpdateChecker.status(): the demo is built from the newest release.
+function updatesStatus() {
+  return {
+    check: st.config.updates ? st.config.updates.check : true, current: FX.version, kind: 'source',
+    latest: { version: FX.version, notes: '', url: 'https://github.com/rafafunt/FalconSDR/releases/latest', published: '' },
+    available: false, action: null, checked_at: Date.now() / 1000, error: '', install: { state: 'idle', progress: 0, error: '' },
+  };
+}
 
 // ------------------------------------------------------------------ add-ons (simulated)
 // Fictional traffic in the shapes the real decoders produce (build.py runs the program's own parsers for rtl_433 and APRS;
@@ -1402,6 +1476,12 @@ const ROUTES = {
   'POST /api/notify/save': async (req) => axNotifySave(await body(req)),
   'POST /api/notify/test': () => ({ error: tr('Not available in the online demo - download FalconSDR to use it.') }),
   'GET /api/settings': () => settings(),
+  'GET /api/health': () => health(),
+  'GET /api/probe': () => probeState(),
+  'POST /api/probe': () => startProbe(),
+  'GET /api/updates': () => updatesStatus(),
+  'POST /api/updates/check': () => updatesStatus(),
+  'POST /api/updates/install': notInDemo,
   'POST /api/config': async (req) => {
     const patch = await body(req);
     mergePatch(st.config, patch);

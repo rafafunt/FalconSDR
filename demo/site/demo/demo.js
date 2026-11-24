@@ -23,6 +23,7 @@ const TEXT = {
       'Try other bands (FM radio, marine, military…), a lower Trigger level, or the 10 MHz receiver in “SDR device”.',
       'Turn on “Auto-record transmissions”, then look at Recordings and Statistics.',
       'Messages and Add-ons hold simulated ACARS, VDL2, APRS and sensor traffic - turn an add-on on or press Run for live messages, and try a notification rule.',
+      'Settings → Receiver health shows how the receiver is doing; stop the scanner and try “Test the receiver”.',
     ],
     real: 'For real radio: download FalconSDR (Windows, macOS, Linux) and plug in an RTL-SDR receiver. Changes made here stay in this browser.',
     start: 'Start the demo',
@@ -38,6 +39,9 @@ const TEXT = {
     licenseText: 'Licence text',
     privacy: 'Privacy',
     birdie: '{freq} MHz is most likely a birdie: interference made by the receiver itself, a steady carrier with nothing on it. The scanner would sit on it forever. “{skip}” only moves on - it comes back on the next pass. “{bl}” gets rid of it for good (undo in Channels → Blacklist).',
+    reportTitle: 'Report a problem',
+    reportText: 'In the app this opens a GitHub issue with your receiver\'s report filled in. Here the receiver is simulated, so there is nothing real to report - if something in the demo itself looks wrong, tell us in Discussions.',
+    reportOpen: 'Open Discussions',
   },
   pl: {
     long: 'Demo online na symulowanym odbiorniku - wszystkie sygnały i dźwięki są tu sztuczne. Żeby słuchać prawdziwego radia, pobierz FalconSDR i podłącz odbiornik RTL-SDR.',
@@ -53,6 +57,7 @@ const TEXT = {
       'Wypróbuj inne pasma (radio FM, morskie, wojskowe…), niższy próg wyzwalania albo odbiornik 10 MHz w „Urządzenie SDR”.',
       'Włącz „Automatycznie nagrywaj transmisje”, a potem zajrzyj do Nagrań i Statystyk.',
       'Wiadomości i Dodatki mają symulowany ruch ACARS, VDL2, APRS i czujników - włącz dodatek lub naciśnij Uruchom, żeby zobaczyć wiadomości na żywo, i wypróbuj regułę powiadomień.',
+      'Ustawienia → Stan odbiornika pokazują, jak radzi sobie odbiornik; zatrzymaj skaner i wypróbuj „Przetestuj odbiornik”.',
     ],
     real: 'Do prawdziwego radia: pobierz FalconSDR (Windows, macOS, Linux) i podłącz odbiornik RTL-SDR. Zmiany zrobione tutaj zostają w tej przeglądarce.',
     start: 'Uruchom demo',
@@ -68,10 +73,23 @@ const TEXT = {
     licenseText: 'Tekst licencji',
     privacy: 'Prywatność',
     birdie: '{freq} MHz to najpewniej birdie: zakłócenie wytwarzane przez sam odbiornik, stała nośna bez żadnej treści. Skaner stałby na nim w nieskończoność. „{skip}” tylko przechodzi dalej - przy następnym obiegu wróci. „{bl}” usuwa go na dobre (cofniesz w Kanały → Czarna lista).',
+    reportTitle: 'Zgłoś problem',
+    reportText: 'W programie otwiera to zgłoszenie na GitHubie z wypełnionym raportem Twojego odbiornika. Tutaj odbiornik jest symulowany, więc nie ma czego zgłaszać - jeśli coś w samym demo wygląda źle, napisz nam w Dyskusjach.',
+    reportOpen: 'Otwórz Dyskusje',
   },
 };
 const guess = (navigator.language || 'en').slice(0, 2);
 const L = () => TEXT[S.settings ? lang : guess] || TEXT.en;
+
+// "Report a problem" (Settings -> Receiver health) would file a GitHub issue about a simulated receiver: explain instead.
+const openWindow = window.open.bind(window);
+window.open = (url, ...rest) => {
+  if (!/github\.com\/rafafunt\/FalconSDR\/issues\/new/.test(String(url))) return openWindow(url, ...rest);
+  const x = L();
+  modal(x.reportTitle, x.reportText, [[x.cancel, null, 'ghost'], [x.reportOpen, true, 'primary']])
+    .then((go) => { if (go) openWindow(`${SOURCE}/discussions`, '_blank', 'noopener'); });
+  return null;
+};
 
 const banner = document.getElementById('demo-banner');
 function renderBanner() {
