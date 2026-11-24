@@ -28,12 +28,12 @@ from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
-from .. import autostart, digital_voice, i18n, military_presets
+from .. import autostart, digital_voice, i18n, military_presets, sdr_probe
 from ..addons import install as installer
 from ..addons.external import list_rtl433_protocols
 from ..addons.sensors import metrics as sensor_metrics
 from ..config import AppConfig
-from ..controller import Controller, channel_dict, channel_from_dict
+from ..controller import Controller, _opt_float, channel_dict, channel_from_dict
 from ..military_presets import BandPreset
 from ..models import BlacklistEntry
 
@@ -107,10 +107,6 @@ def list_dirs(path: str) -> dict:
     }
 
 
-def _float_or_none(value: Optional[str]) -> Optional[float]:
-    return float(value) if value not in (None, "") else None
-
-
 def make_handler(app: App):
     ctl = app.controller
     lib = ctl.library if ctl is not None else None
@@ -169,9 +165,9 @@ def make_handler(app: App):
             url = urlparse(self.path)
             path, query = url.path, parse_qs(url.query)
             try:
-                if (app.mode == "local" and not app.token
+                if (app.mode in ("local", "client") and not app.token
                         and _host_without_port(self.headers.get("Host", "")) not in _LOOPBACK_HOSTS):
-                    return self._error(403, "Forbidden")  # localhost-only UI: refuse DNS-rebinding hosts
+                    return self._error(403, "Forbidden")  # localhost-only UI: refuse DNS-rebinding hosts (client mode holds the server's password)
                 if method in ("POST", "PUT") and self.headers.get("X-FalconSDR") != "1":
                     # A custom header forces a CORS preflight this server never
                     # answers, so other websites can't trigger actions (CSRF).
@@ -429,6 +425,14 @@ def make_handler(app: App):
                     return
             self._json(ctl.notify_state())
 
+        def health(self, _query: dict) -> None:
+            self._json({"receivers": ctl.health()})
+
+        def probe(self, _query: dict) -> None:
+            if self.command == "POST":
+                ctl.probe()
+            self._json(sdr_probe.state())
+
         def reset(self, _query: dict) -> None:
             ctl.reset_to_defaults()
             self._json({"ok": True})
@@ -473,8 +477,8 @@ def make_handler(app: App):
             return {
                 "sel": [s for s in query.get("sel", []) if s],
                 "q": str(_qs(query, "q", "")),
-                "since": _float_or_none(_qs(query, "since")),
-                "until": _float_or_none(_qs(query, "until")),
+                "since": _opt_float(_qs(query, "since")),
+                "until": _opt_float(_qs(query, "until")),
                 "min_quality": float(_qs(query, "minq", 0) or 0),
             }
 
@@ -677,7 +681,7 @@ def make_handler(app: App):
             length = int(self.headers.get("Content-Length") or -1)
             if length < 0:
                 raise ValueError("Content-Length required")
-            if target.exists() and target.stat().st_size == length:
+            if target.exists():  # never overwrite a recording the server already has
                 remaining = length
                 while remaining > 0:
                     chunk = self.rfile.read(min(1 << 20, remaining))
@@ -726,6 +730,9 @@ def make_handler(app: App):
         ("POST", "/api/presets/import"): Handler.preset_import,
         ("POST", "/api/disclaimer"): Handler.disclaimer,
         ("POST", "/api/reset"): Handler.reset,
+        ("GET", "/api/health"): Handler.health,
+        ("GET", "/api/probe"): Handler.probe,
+        ("POST", "/api/probe"): Handler.probe,
         ("POST", "/api/access"): Handler.access,
         ("POST", "/api/quit"): Handler.quit,
         ("POST", "/api/autostart"): Handler.autostart,

@@ -23,7 +23,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from . import __version__, antenna_range, autostart, digital_voice, i18n, military_presets, schedule, storage
+from . import __version__, antenna_range, autostart, digital_voice, i18n, military_presets, schedule, sdr_probe, storage
 from .audio_transcode import ffmpeg_available
 from .config import DEFAULT_RECORDINGS_DIR, AppConfig, ScheduleEntry, VfoRangeConfig, _from_dict
 from .models import BlacklistEntry, Channel, Modulation, snap_airband_hz
@@ -233,6 +233,8 @@ class Controller:
             self._start()
 
     def _start(self) -> None:
+        if sdr_probe.state()["running"]:
+            raise RuntimeError(i18n.tr("The receiver test is still running - wait for it to finish."))
         devices = self._devices()
         held = {k for k in self._held if k < len(devices)}
         if held and len(held) >= len(devices):
@@ -591,6 +593,18 @@ class Controller:
                         q.put_nowait(pcm16)
                     except (queue.Empty, queue.Full):
                         pass
+
+    def health(self) -> list[dict]:
+        """Acquisition counters of every receiver that is open now (Settings -> Receiver health)."""
+        with self._lock:
+            engines = list(self._engines)
+        return [{"receiver": k, **h} for k, engine in enumerate(engines) if (h := engine.health()) is not None]
+
+    def probe(self) -> None:
+        """Starts the receiver test - only while nothing holds the receiver."""
+        if self.live()["running"] or self.addons.running_external:
+            raise RuntimeError(i18n.tr("Stop the scanner first"))
+        sdr_probe.start_in_background()
 
     def subscribe_audio(self) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=_AUDIO_QUEUE_SIZE)

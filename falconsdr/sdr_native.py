@@ -602,6 +602,13 @@ _status: tuple[float, dict] | None = None
 _EMPTY_STATUS = {"hackrf": False, "airspy": False, "devices": []}
 
 
+def self_command(*args: str) -> list[str]:
+    """This program run again as a child with ``args`` (a frozen build's executable is the app itself, gotcha 35)."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, *args]
+    return [sys.executable, str(Path(__file__).resolve().parent.parent / "main.py"), *args]
+
+
 def native_status(max_age_s: float = 15.0) -> dict:
     """enumerate_here() answered by a child process (``main.py --list-native-sdr``), cached for a few seconds.
 
@@ -614,10 +621,8 @@ def native_status(max_age_s: float = 15.0) -> dict:
     with _status_lock:
         if _status is not None and time.monotonic() - _status[0] < max_age_s:
             return _status[1]
-    cmd = [sys.executable, "--list-native-sdr"] if getattr(sys, "frozen", False) else \
-        [sys.executable, str(Path(__file__).resolve().parent.parent / "main.py"), "--list-native-sdr"]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        out = subprocess.run(self_command("--list-native-sdr"), capture_output=True, text=True, encoding="utf-8", errors="replace",
                              timeout=15, stdin=subprocess.DEVNULL,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
         data = json.loads(next(line for line in reversed(out.splitlines()) if line.startswith("{")))

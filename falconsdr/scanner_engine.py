@@ -802,6 +802,11 @@ class ScannerEngine(threading.Thread):
         except (PermissionError, OSError):
             pass
 
+    def health(self) -> dict | None:
+        """The acquisition counters (AcquisitionThread.health), None while no receiver is open."""
+        backend = self._backend
+        return backend.health() if backend is not None and hasattr(backend, "health") else None
+
     def _checkpoint_once(self, msg: str) -> None:
         """_checkpoint() once per run() - for points inside the per-tick loop."""
         if msg not in self._logged_checkpoints:
