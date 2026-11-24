@@ -19,9 +19,9 @@ A device already plugged in at install time still needs a replug.
 
 ## Known limitations of this build (by design, not bugs)
 
-- **RTL-SDR, plus HackRF and Airspy natively (experimental)** - `libhackrf` and `libairspy` are bundled.
-  SoapySDR-based hardware (LimeSDR,
-  SDRplay, USRP/UHD) isn't available - same reason as the .deb: SoapySDR
+- **RTL-SDR, plus HackRF, Airspy and SDRplay natively (experimental)** - `libhackrf` and `libairspy` are bundled,
+  SDRplay RSPs use the SDRplay API installed from sdrplay.com. SoapySDR-only hardware (LimeSDR,
+  USRP/UHD) isn't available - same reason as the .deb: SoapySDR
   is a system C library with its own plugin architecture that doesn't
   freeze into a single bundle. That hardware needs the regular
   `pip install -r requirements.txt` install instead (see the main README).

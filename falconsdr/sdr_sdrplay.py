@@ -259,6 +259,7 @@ _lib_tried = False
 _lib_lock = threading.Lock()
 _api_users = 0
 _api_version: float | None = None
+_load_error = ""        # a library that is there but would not load (e.g. a packaged build's libraries clash with it)
 
 
 def _library_candidates() -> list[str]:
@@ -288,7 +289,7 @@ def _library_candidates() -> list[str]:
 
 def sdrplay_library() -> ctypes.CDLL | None:
     """The installed SDRplay API library with its prototypes declared, or None."""
-    global _lib, _lib_tried
+    global _lib, _lib_tried, _load_error
     with _lib_lock:
         if _lib_tried:
             return _lib
@@ -296,7 +297,9 @@ def sdrplay_library() -> ctypes.CDLL | None:
         for name in _library_candidates():
             try:
                 lib = ctypes.CDLL(name)
-            except OSError:
+            except OSError as exc:
+                if os.path.isabs(name) and os.path.exists(name) and not _load_error:
+                    _load_error = f"The SDRplay API at {name} could not be loaded: {exc}"
                 continue
             try:
                 P = c.POINTER
@@ -365,7 +368,7 @@ def api_status() -> dict:
     """{"loads": bool, "version": "3.15" or "", "error": ""} - for the device list and the Listen page."""
     lib = sdrplay_library()
     if lib is None:
-        return {"loads": False, "version": "", "error": ""}
+        return {"loads": False, "version": "", "error": _load_error}
     try:
         version = _api_acquire(lib)
     except RuntimeError as exc:
@@ -419,8 +422,8 @@ class SdrplayBackend(_NativeStreamBackend):
                  antenna: str = ""):
         lib = sdrplay_library()
         if lib is None:
-            raise RuntimeError(f"The SDRplay API is not installed - install it from {API_DOWNLOAD_URL} (free, once; "
-                               "it brings the driver and a service), then start scanning again")
+            raise RuntimeError(_load_error or f"The SDRplay API is not installed - install it from {API_DOWNLOAD_URL} (free, "
+                               "once; it brings the driver and a service), then start scanning again")
         lo, hi = SAMPLE_RATES_HZ
         if not lo <= sample_rate <= hi:
             raise RuntimeError(f"SDRplay receivers capture 2 to 10 MS/s here - set the capture width to 2..10 MHz "

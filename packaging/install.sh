@@ -276,7 +276,7 @@ main() {
     install_aur
   else
     tag="$(release_tag)"
-    [ -n "$tag" ] || die "couldn't find the latest release (GitHub API) - set FALCONSDR_VERSION=v1.6.0 or similar"
+    [ -n "$tag" ] || die "couldn't find the latest release (GitHub API) - set FALCONSDR_VERSION=v1.7.0 or similar"
     if have_apt; then install_deb "$tag"
     elif have_dnf || have_zypper; then install_rpm "$tag"
     else install_appimage "$tag"; return; fi

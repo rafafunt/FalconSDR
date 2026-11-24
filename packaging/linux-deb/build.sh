@@ -170,25 +170,26 @@ Conflicts: smartscanatc
 Replaces: smartscanatc
 Maintainer: rafafunt <rafafunt@gmail.com>
 Description: Wideband SDR ATC/radio scanner (self-contained build)
- Scans a radio band with an RTL-SDR (or a HackRF or Airspy, experimental)
- and records audio only for transmissions the scanner actually stops on.
+ Scans a radio band (default: airband 118-136 MHz) and records audio only
+ for transmissions the scanner actually stops on. Recordings are searchable,
+ scored for speech and can be transcribed; decoders for ACARS, APRS, VDL2
+ and rtl_433 sensors, notifications (ntfy, Telegram, webhooks, MQTT), a
+ schedule and several receivers at once are built in.
  .
  The interface runs in the web browser (http://127.0.0.1:8765), which the
  app opens on start; other devices on the network can use it too when run
- with --server.
+ with --server. It can check GitHub for new versions if you allow it.
  .
  This is a self-contained ("fat") build: its own Python runtime and all
- pip-installable dependencies (numpy, scipy, pyrtlsdrlib) are bundled in
- /opt/$PKG - nothing from the system Python is required. RTL-SDR hardware
- works out of the box; HackRF and Airspy work through the bundled libhackrf
- and libairspy (experimental: a HackRF One has been confirmed on real
- hardware, an Airspy has not). MP3 output uses a bundled ffmpeg (a system
- ffmpeg is used when present), and the optional speech-to-text transcription
- can be installed from the app's Settings.
+ pip-installable dependencies are bundled in /opt/$PKG - nothing from the
+ system Python is required. RTL-SDR works out of the box, also over the
+ network (rtl_tcp); HackRF and Airspy through the bundled libhackrf and
+ libairspy, SDRplay RSPs through the SDRplay API installed from sdrplay.com
+ (all three experimental). MP3 output uses a bundled ffmpeg (a system ffmpeg
+ is used when present); speech-to-text can be installed from the app.
  .
- Not included in this build: SoapySDR-based hardware (LimeSDR, SDRplay, USRP
- - needs a normal pip/source install instead). See
- /usr/share/doc/$PKG/packaging-README.md.
+ Not included: SoapySDR-only hardware (LimeSDR, USRP - needs a source
+ install). See /usr/share/doc/$PKG/packaging-README.md.
 CONTROL
 
 echo "-- 4/5: building the package --"

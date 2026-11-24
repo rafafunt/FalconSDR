@@ -11,9 +11,10 @@
 # leaks into the bundle by accident.
 #
 # What this build does NOT include, on purpose (same tradeoff as the .deb):
-#   - SoapySDR support (LimeSDR/SDRplay/USRP/...) - RTL-SDR via the bundled
-#     pyrtlsdrlib backend, plus HackRF/Airspy via the bundled libhackrf/
-#     libairspy (AGENTS.md gotcha 55), are the supported hardware.
+#   - SoapySDR support (LimeSDR/USRP/...) - RTL-SDR via the bundled
+#     pyrtlsdrlib backend, HackRF/Airspy via the bundled libhackrf/
+#     libairspy (AGENTS.md gotcha 55) and SDRplay via the user-installed
+#     SDRplay API (gotcha 62) are the supported hardware.
 #   - MP3 recording output works via the bundled imageio-ffmpeg binary, or
 #     a system `ffmpeg` on PATH when present (weak dependency).
 set -euo pipefail
@@ -128,10 +129,11 @@ Requires:       /usr/bin/udevadm
 Recommends:     ffmpeg
 
 %description
-Scans a radio band with an RTL-SDR (or a HackRF or Airspy, experimental)
-and records audio only for transmissions the scanner actually stops on.
-Self-contained bundle in /opt/$PKG; SoapySDR-only hardware (LimeSDR,
-SDRplay, USRP) needs a source install.
+Scans a radio band and records audio only for transmissions the scanner
+actually stops on: RTL-SDR (also over rtl_tcp), HackRF/Airspy (bundled
+libraries) and SDRplay (SDRplay API from sdrplay.com) - the last three
+experimental. Self-contained bundle in /opt/$PKG; SoapySDR-only hardware
+(LimeSDR, USRP) needs a source install.
 
 %files
 /opt/$PKG/

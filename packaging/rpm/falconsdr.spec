@@ -1,5 +1,5 @@
 Name:           falconsdr
-Version:        1.6.0
+Version:        1.7.0
 Release:        1%{?dist}
 Summary:        Wideband SDR ATC/radio scanner (self-contained build)
 License:        GPL-3.0-or-later
@@ -28,25 +28,26 @@ Requires:       /usr/bin/udevadm
 Requires(post): /usr/bin/udevadm
 
 %description
-Scans a radio band with an RTL-SDR (or a HackRF or Airspy, experimental)
-and records audio only for transmissions the scanner actually stops on.
+Scans a radio band (default: airband 118-136 MHz) and records audio only
+for transmissions the scanner actually stops on. Recordings are searchable,
+scored for speech and can be transcribed; decoders for ACARS, APRS, VDL2
+and rtl_433 sensors, notifications (ntfy, Telegram, webhooks, MQTT), a
+schedule and several receivers at once are built in.
 
 The interface runs in the web browser (http://127.0.0.1:8765), which the
 app opens on start; other devices on the network can use it too when run
-with --server.
+with --server. It can check GitHub for new versions if you allow it.
 
 This is a self-contained ("fat") build: its own Python runtime and all
-pip-installable dependencies (numpy, scipy, pyrtlsdrlib) are bundled in
-/opt/%{name} - nothing from the system Python is required. RTL-SDR
-hardware works out of the box; HackRF and Airspy work through the bundled
-libhackrf and libairspy (experimental: a HackRF One has been confirmed on
-real hardware, an Airspy has not). MP3 output uses a bundled ffmpeg (a
-system ffmpeg is used when present), and the optional speech-to-text
-transcription can be installed from the app's Settings.
+pip-installable dependencies are bundled in /opt/%{name} - nothing from the
+system Python is required. RTL-SDR works out of the box, also over the
+network (rtl_tcp); HackRF and Airspy through the bundled libhackrf and
+libairspy, SDRplay RSPs through the SDRplay API installed from sdrplay.com
+(all three experimental). MP3 output uses a bundled ffmpeg (a system ffmpeg
+is used when present); speech-to-text can be installed from the app.
 
-Not included in this build: SoapySDR-based hardware (LimeSDR, SDRplay,
-USRP - needs a normal pip/source install instead).
-See /usr/share/doc/%{name}/packaging-README.md.
+Not included: SoapySDR-only hardware (LimeSDR, USRP - needs a source
+install). See /usr/share/doc/%{name}/packaging-README.md.
 
 %prep
 %autosetup -n FalconSDR-%{version}
@@ -126,6 +127,9 @@ fi
 %{_modprobedir}/blacklist-rtl-dvb.conf
 
 %changelog
+* Tue Nov 24 2026 rafafunt - 1.7.0-1
+- 1.7.0: update check (asked once, a reminder per new version, one-click update for the Windows installer and the AppImage), receiver health and a receiver test in Settings with a ready bug report, SDRplay receivers through the SDRplay API (experimental), a speech-aware recording quality score, security fixes (client mode, worker uploads).
+
 * Mon Nov 16 2026 rafafunt - 1.6.0-1
 - 1.6.0: add-ons (ACARS, APRS, VDL2, rtl_433 sensors) with a Messages page and statistics, notifications with rules (ntfy, Telegram, Discord and other webhooks, MQTT), a schedule per receiver, evened-out loudness, extra dongles with the same choices as the first, automatic recovery from a crashing RTL-SDR stream.
 
