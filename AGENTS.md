@@ -32,12 +32,9 @@ python3 -m unittest tests/test_core.py tests/test_addons.py
 python3 main.py --probe-sdr [driver]   # with the scanner stopped: measures a real receiver (gotcha 55)
 ```
 
-**Running tests without waste** (the suite is ~25 s; measured 2026-11-24): run what the change touches
-(`python3 -m unittest tests.test_addons.AcarsTest`) and the full suite once before a commit - not after a change that cannot
-reach Python (docs, `pl.po`, packaging scripts, JS: `node --check` / `bash -n` are the checks there). Pipe the output through
-`tail`: a green run is one line. Do not write a test that needs real time (sleeps, 2.4 MS/s signals) when a small one shows
-the same failure - `LevelingTest` went from 24 s to 5 s at a quarter of the sample rate and the same two mutants (no AGC, no
-carrier tracking) still fail it. A regression test names the bug it pins: keep those, cut duplicates.
+**Running tests without waste** (suite ~25 s): run the class a change touches; the full suite once before a commit, not after
+edits that cannot reach Python (docs, `pl.po`, JS, packaging scripts: `node --check` / `bash -n`). Pipe through `tail`. No new test
+that needs real time or 2.4 MS/s signals when a small one fails the same way. Keep regression tests, cut duplicates.
 
 `numpy`, `scipy`, `pyrtlsdr`/`pyrtlsdrlib`, `tzdata` —
 `pip install -r requirements.txt`. `SoapySDR` needs system packages on Linux
@@ -915,14 +912,9 @@ catalog loads; wrap them in a function called at point of use
     recorded, no "discarded" log line) unless `listen_to_data`. A data slot has primary weight -1: it never takes the
     speaker from a voice channel. A decoder exception drops that decoder, never the scanner. They work only
     while the scanner visits the window - a bonus, not full reception (a dedicated dongle or an external program
-    for that). **ACARS data is NRZI** (found 2026-11-24 on 40 real bursts recorded at 131.825 MHz in Aug-Sep 2026; for months it
-    decoded nothing): the 1200 Hz tone flips the bit level, 2400 Hz keeps it, so bits = the running XOR of the tones
-    (`AcarsDecoder`: `nrzi`/`nrzi_inverted`, the start level is unknown). The old direct/"diff" mappings never produced
-    a valid parity - the synthetic tests had been written to match the wrong mapping, hence `tests/data/acars_real_131825.wav`
-    (a real 0.25 s block) stays in `AcarsTest`. 6 of those 59 recordings decode with a valid CRC (A6-/TC-/SP-/SU- aircraft,
-    positions near Rzeszow); the rest are bursts with the start cut off (the scanner stops after the onset, the preamble is
-    ~25 ms) or too noisy - offline timing search gave no more, so the demodulator is not the limit; the old recordings are
-    post noise-reduction. Not yet seen live on the receiver (re-check "channels heard" vs "messages decoded"). APRS is checked
+    for that). **ACARS data is NRZI**: the 1200 Hz tone flips the bit, 2400 Hz keeps it (bits = running XOR of the tones, both start levels tried).
+    The old direct mappings decoded nothing for months and the synthetic tests had been written to match them: keep
+    `tests/data/acars_real_131825.wav` (a real block). Bursts with a cut-off start (the scanner stops after the onset) cannot decode. APRS is checked
     against aprslib (dev only). External programs (rtl_433, dumpvdl2): `Controller.run_addon` stops the scanner,
     `ExternalRunner` takes the dongle, `stop_addon` resumes scanning; `_start` refuses while one runs. **Never bundle
     or link them, never port their code** (rtl_433 is GPL-2.0): they are separate programs, which is what keeps the
@@ -983,6 +975,13 @@ catalog loads; wrap them in a function called at point of use
     (`list_rtl433_protocols`); `-R` means "only these", so the defaults are named again. wM-Bus (868.95 MHz) needs
     `-s 1200k` (set automatically). Unrun on real utility meters/TPMS - tested with synthetic JSON lines only.
 
+60. **TETRA ships in every package; its speech codec never does** (`addons/tetra.py`, `addons/tetra_codec.py`, `tetra-rs/`).
+    Our own `falconsdr-tetra` and `tetra-rs/codec/falconsdr_sdecoder.c` are bundled laid out as in the repo (`--add-data`, see
+    `linux-tetra.sh`, `build.ps1`, `macos.yml`; `--self-test` fails a build without them). The ACELP codec is ETSI's: one click
+    downloads `en_30039502v010301p0.zip` from etsi.org on the user's computer (pinned SHA-256, needs a User-Agent), builds it with
+    our front end (cc/gcc/clang, else TinyCC on Windows). ETSI's licence covers the code, not patents: never bundle or redistribute
+    it. Linux builds only; Windows/macOS and real-air speech untested.
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch
@@ -999,19 +998,3 @@ protocol: console errors + screenshots, desktop and ~390 px wide). Verified
 working combos: real RTL-SDR via `SoapyBackend`/`RtlSdrBackend`, and full
 state-machine + WAV recording + browser UI + worker (transcription, mirror,
 upload) via `SimulatedBackend`.
-
-60. **TETRA in packaged builds, and its speech codec** (`addons/tetra.py`, `addons/tetra_codec.py`, `tetra-rs/`). Every package
-    (Windows ZIP/setup, macOS, .deb, .rpm, AppImage) carries our own `falconsdr-tetra` (Rust, no dependencies) built from
-    `tetra-rs/` and the codec front end `tetra-rs/codec/falconsdr_sdecoder.c`, both laid out **as in the repository**
-    (`tetra-rs/target/release/`, `tetra-rs/codec/`) via `--add-data`, so `_REPO_TETRA_DIR` finds them in the bundle without a
-    special case (`linux-tetra.sh`, `build.ps1`, `macos.yml`; `--self-test` `tetra_decoder` fails a build that lacks them; the
-    Linux `build-in-docker.sh` scripts install cargo - Debian 11 via rustup, so the binary keeps the old-glibc rule of gotcha 35).
-    **The speech codec itself (ETSI EN 300 395-2 ACELP) is never in the repo or a package**: one click in Add-ons -> TETRA
-    downloads ETSI's `en_30039502v010301p0.zip` from etsi.org on the user's computer (pinned SHA-256; etsi.org answers 403 to
-    urllib's default User-Agent), changes `typedef long Word32` to `int` (64-bit), and compiles it with our front end (ETSI's own
-    `sdecoder` works on files and prints to stdout, which would corrupt the PCM stream; ours is stdin 138 x s16 -> stdout 240 x s16
-    and moves anything the library prints to stderr). A C compiler is needed: cc/gcc/clang, else on Windows TinyCC (0.9.27 win64
-    zip from its authors, pinned, LGPL - not bundled), else a message with the install command and link. ETSI's IPR policy gives
-    implementers a free copyright licence for software in a standard (Directives 9.2) and **no patent licence** - the UI says so;
-    do not bundle or redistribute the codec without asking ETSI. Verified on Linux: TinyCC and gcc builds give byte-identical
-    output (50 frames). **Never run on Windows/macOS**; real-air speech is untested. `codec_path` (Advanced) overrides the built one.
