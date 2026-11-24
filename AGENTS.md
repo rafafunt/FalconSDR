@@ -139,9 +139,10 @@ Gotchas 1, 2 and 26 are retired (Qt UI, PortAudio playback) and their numbers ar
    held in `_pending_silence`) rather than being skipped — flushed if real
    audio follows (genuine mid-transmission pause), discarded on close if not
    (trailing tail trimmed). `analyze_wav()` excludes exact-zero-RMS windows
-   from its noise-floor/SNR calc for this reason. Quality-score caches
-   (`QualityCache`/`TranscriptionCache`, keyed by path+size+mtime) don't
-   auto-invalidate when scoring logic changes — invalidate them by hand.
+   from its noise-floor/SNR calc for this reason. Quality scoring is
+   versioned: change `analyze_wav`'s logic -> bump `audio_analysis.ANALYSIS_VERSION` and the library re-measures older results in the
+   background (newest first; they show until replaced). `TranscriptionCache` has no version: invalidate it by hand. The score is
+   envelope SNR x speech probability (`SPEECH_B*`, fitted on Whisper-labelled recordings); it ranks speech vs no speech (AUC 0.89), not how good the speech is.
 7. **In `Demodulator.demod()`, mix-to-baseband → decimate → AM/FM-demod, in
    that order** — `resample_poly`'s anti-alias filter is what rejects
    neighbouring channels in a wideband capture.

@@ -249,6 +249,7 @@ td.pick input, th.pick input { width: 18px; height: 18px; cursor: pointer; }
 .q.hi { color: var(--green); background: color-mix(in srgb, var(--green-fill) 14%, transparent); }
 .q.mid { color: var(--orange); background: color-mix(in srgb, var(--orange-fill) 14%, transparent); }
 .q.lo { color: var(--red); background: color-mix(in srgb, var(--red-fill) 12%, transparent); }
+.q.nospeech { color: var(--secondary); box-shadow: inset 0 0 0 1px var(--separator); }
 
 /* ---- listen: the radio stack (signature) ------------------------------------------ */
 .hero { background: var(--instrument); color: #e8e8ea; box-shadow: inset 0 0 0 1px var(--instrument-line); padding: 20px 22px; gap: 14px; }

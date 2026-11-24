@@ -3395,6 +3395,53 @@ class Discussion16FeaturesTest(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         self.assertIn("BAD_PORT", logs[0])
 
+class QualityScoreTest(_LibCase):
+    FS = 12500
+
+    def _write(self, name: str, samples) -> Path:
+        import wave
+        import numpy as np
+        path = self.root / "2026-01-01" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(self.FS)
+            w.writeframes(np.clip(samples, -32768, 32767).astype("<i2").tobytes())
+        return path
+
+    def test_a_loud_wideband_data_burst_does_not_score_like_speech(self) -> None:
+        """A clean, loud, flat-spectrum burst between quiet gaps (a data transmission's buzz) has a high envelope SNR."""
+        import numpy as np
+        from falconsdr.playback import audio_analysis as aa
+        rng = np.random.default_rng(7)
+        x = rng.normal(0, 60, self.FS * 3)
+        x[self.FS // 2:self.FS * 2] = rng.normal(0, 6000, self.FS * 3 // 2)
+        path = self._write("2026-01-01_00-00-00_136975.wav", x)
+        quality = aa.analyze_wav(path)
+        self.assertGreater(quality.snr_db, 25.0)           # the old score would have rewarded exactly this
+        self.assertLess(quality.speech_prob, 0.25)
+        self.assertLess(quality.quality_score, 30.0)
+
+    def test_results_of_an_older_scoring_version_are_measured_again_newest_first(self) -> None:
+        import numpy as np
+        from falconsdr.playback import audio_analysis as aa
+        from falconsdr.playback.models import QualityMetrics
+        t = np.arange(self.FS * 2) / self.FS
+        voice = (0.3 * np.sin(2 * np.pi * 650 * t) + 0.2 * np.sin(2 * np.pi * 1350 * t)) * 32767
+        for name in ("2026-01-01_00-00-01_131000.wav", "2026-01-01_00-00-02_132000.wav"):
+            self._write(name, voice)
+        self.lib.rescan()
+        recs = list(self.lib._recs.values())
+        for rec in recs:                                    # what an old cache holds: a score and no version
+            rec.quality = QualityMetrics(10, 100, 20, 0, 12.0, 2.0)
+        self.lib._analyze_some(budget_s=30)
+        for rec in recs:
+            self.assertEqual(rec.quality.version, aa.ANALYSIS_VERSION)
+            self.assertGreater(rec.quality.quality_score, 50.0)
+            self.assertEqual(self.lib.quality.get(rec.key).version, aa.ANALYSIS_VERSION)
+        before = [r.quality for r in recs]
+        self.lib._analyze_some(budget_s=30)                 # current results are left alone
+        self.assertEqual([r.quality for r in recs], before)
+
 
 if __name__ == "__main__":
     unittest.main()

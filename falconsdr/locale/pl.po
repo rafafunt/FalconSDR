@@ -4058,3 +4058,6 @@ msgstr "W tym przedziale czasu nic nie ma, ale zapisanych jest {n} starszych wia
 
 msgid "Show everything"
 msgstr "Pokaż wszystko"
+
+msgid "Probably no speech (data or noise)"
+msgstr "Prawdopodobnie bez mowy (dane lub szum)"

@@ -3,9 +3,14 @@
 Recordings come from a squelch-triggered scanner: the file spans from the
 moment noise opens to when it closes. So there's usually background (noise/
 carrier) audible, plus - when someone's transmitting - a voice clearly
-louder than that background. We score transmission quality as exactly that
-ratio of signal level to background level (SNR), additionally penalizing
-clipping and suspiciously short squelch "bursts".
+louder than that background. The score is that signal-to-background ratio
+(SNR) times the probability that the signal is speech at all (data bursts and
+hiss are loud and clean but are not a transmission worth listening to), minus
+a penalty for clipping and for suspiciously short squelch "bursts".
+
+Measured on 88k library recordings against Whisper's verdict (2026-11-24): this
+separates speech from no-speech with AUC ~0.88 (the SNR alone: 0.71); it does
+not rank how good the speech is - nothing tried did (AUC ~0.64 vs low-confidence).
 """
 from __future__ import annotations
 
@@ -25,7 +30,13 @@ from falconsdr.playback.models import QualityMetrics
 WINDOW_SEC = 0.05          # window for computing the RMS envelope
 NOISE_PERCENTILE = 15      # envelope percentile treated as the background level
 SIGNAL_PERCENTILE = 92     # envelope percentile treated as the signal level
-SNR_FOR_100 = 30.0         # SNR (dB) corresponding to a score of 100
+SNR_FOR_100 = 40.0         # SNR (dB) corresponding to a score of 100 (30 saturated: 44 % of all files scored exactly 100)
+# Bump when the scoring changes: cached results with an older version are re-measured in the background (index.py).
+ANALYSIS_VERSION = 2
+# Speech probability = sigmoid(B0 + B_FLAT * ln(flatness + 0.001) + B_BAND * band_db), fitted on 900 recordings labelled by
+# Whisper (speech vs no speech; 5-fold CV AUC 0.884). flatness = spectral flatness of 300-3000 Hz in the louder half of the
+# windows (speech is peaky, hiss and wideband data are flat); band_db = 300-3000 Hz vs >3400 Hz density, 75th percentile.
+SPEECH_B0, SPEECH_B_FLAT, SPEECH_B_BAND = -5.857, -1.342, 0.0962
 CLIP_THRESHOLD_FRAC = 0.975  # threshold (as a fraction of full scale) considered clipping
 CLIP_PENALTY_SCALE = 300.0
 SHORT_RECORDING_SEC = 1.0
@@ -156,6 +167,7 @@ def analyze_wav(path: Path) -> QualityMetrics:
     rms_parts: list[np.ndarray] = []
     clip_parts: list[np.ndarray] = []   # clipped samples per window
     spec_snr_parts: list[np.ndarray] = []  # voice-band vs high-band density ratio (dB) per window
+    flat_parts: list[np.ndarray] = []      # spectral flatness of the voice band per window
     n_frames, window_len, framerate_seen = 0, 0, 0
     voice_mask = high_mask = None
     try:
@@ -183,14 +195,16 @@ def analyze_wav(path: Path) -> QualityMetrics:
                 v_dens = np.mean(psd[:, voice_mask], axis=1)
                 h_dens = np.mean(psd[:, high_mask], axis=1)
                 spec_snr_parts.append(10.0 * np.log10(np.maximum(v_dens, 1e-12) / np.maximum(h_dens, 1e-12)))
+                voice_psd = np.maximum(psd[:, voice_mask], 1e-12)
+                flat_parts.append(np.exp(np.mean(np.log(voice_psd), axis=1)) / np.mean(voice_psd, axis=1))
     except Exception:
-        return QualityMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, readable=False)
+        return QualityMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, readable=False, version=ANALYSIS_VERSION)
 
     # Duration from the bytes actually read: ffmpeg writing to a pipe puts a
     # placeholder (0x7FFFFFFF) in the header's frame count (gotcha 19).
     duration_sec = n_frames / framerate_seen if n_frames else 0.0
     if not n_frames:
-        return QualityMetrics(0.0, 0.0, 0.0, 0.0, 0.0, duration_sec)
+        return QualityMetrics(0.0, 0.0, 0.0, 0.0, 0.0, duration_sec, version=ANALYSIS_VERSION)
 
     rms = np.concatenate(rms_parts)
     clipped = np.concatenate(clip_parts)
@@ -209,27 +223,29 @@ def analyze_wav(path: Path) -> QualityMetrics:
     eps = 1e-6
     envelope_snr_db = 20.0 * math.log10(max(signal_level, eps) / max(noise_floor, eps))
 
+    speech_prob = 1.0
+    snr_db = envelope_snr_db
     if spec_snr_parts:
         spec_snr = np.concatenate(spec_snr_parts)[real_mask]
-        # Focus on the louder half of non-silent windows (where speech lives, not the trailing hiss).
+        flatness = np.concatenate(flat_parts)[real_mask]
+        # Where speech lives: the louder half of the non-silent windows (not the trailing hiss).
         active = real_rms >= float(np.percentile(real_rms, 50))
-        speech_band_db = float(np.percentile(spec_snr[active], 75)) if active.any() else float(np.median(spec_snr))
-        # Broadband static + a single squelch pop has high envelope_snr_db but ~0 dB speech_band_db;
-        # continuous clean voice has low envelope_snr_db but high speech_band_db.
-        if speech_band_db < 3.0:
-            # Mostly broadband hiss: cap how much envelope spikes can inflate the score.
-            snr_db = min(envelope_snr_db, max(0.0, speech_band_db * 2.5))
+        if active.any():
+            band_db = float(np.percentile(spec_snr[active], 75))
+            flat_active = float(np.median(flatness[active]))
         else:
-            snr_db = max(envelope_snr_db, min(speech_band_db, SNR_FOR_100))
-    else:
-        snr_db = envelope_snr_db
+            band_db, flat_active = float(np.median(spec_snr)), float(np.median(flatness))
+        z = SPEECH_B0 + SPEECH_B_FLAT * math.log(flat_active + 1e-3) + SPEECH_B_BAND * band_db
+        speech_prob = 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, z))))
+        # A clean continuous voice has no quiet pause, so its envelope SNR is ~0 dB: the voice-band clarity stands in for it.
+        snr_db = max(envelope_snr_db, min(band_db, SNR_FOR_100))
 
     clipping_ratio = float(clipped[real_mask].sum() / (real_rms.size * window_len))
 
     snr_component = max(0.0, min(snr_db, SNR_FOR_100)) / SNR_FOR_100 * 100.0
     clip_penalty = min(clipping_ratio * CLIP_PENALTY_SCALE, 40.0)
     short_penalty = SHORT_RECORDING_PENALTY if duration_sec < SHORT_RECORDING_SEC else 0.0
-    quality_score = max(0.0, min(100.0, snr_component - clip_penalty - short_penalty))
+    quality_score = max(0.0, min(100.0, snr_component * speech_prob - clip_penalty - short_penalty))
 
     return QualityMetrics(
         noise_floor=noise_floor,
@@ -238,4 +254,6 @@ def analyze_wav(path: Path) -> QualityMetrics:
         clipping_ratio=clipping_ratio,
         quality_score=quality_score,
         duration_sec=duration_sec,
+        speech_prob=speech_prob,
+        version=ANALYSIS_VERSION,
     )

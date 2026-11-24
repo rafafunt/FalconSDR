@@ -411,8 +411,10 @@ export function fmtAgo(iso) {
   return t('{n} days ago', { n: Math.round(sec / 86400) });
 }
 
-export function qualityBadge(q) {
+// speech: 0-1 chance that the recording is speech (the library's analysis); low = a data burst or hiss, shown muted.
+export function qualityBadge(q, speech) {
   if (q === null || q === undefined) return h('span.q', '–');
+  if (typeof speech === 'number' && speech < 0.25) return h('span.q.nospeech', { title: t('Probably no speech (data or noise)') }, Math.round(q));
   return h('span.q', { class: q >= 70 ? 'hi' : q >= 40 ? 'mid' : 'lo', title: t('Quality') }, Math.round(q));
 }
 

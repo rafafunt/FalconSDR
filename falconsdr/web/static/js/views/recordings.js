@@ -179,7 +179,7 @@ export function recordingsView(root) {
       h('div.when', h('b', fmtTime(it.time)), fmtDateShort(it.time)),
       h('div.what', h('b', freqLabel(it)), it.name ? h('span.name', it.name) : null, h('p', { class: tr && tr.text ? '' : 'none' }, text)),
       h('span.dur', fmtDuration(it.duration)),
-      h('span.qcell', qualityBadge(it.quality)),
+      h('span.qcell', qualityBadge(it.quality, it.speech)),
       h('button.star', { class: it.favorite ? 'on' : '', title: t('Favorite'), onclick: (e) => { e.stopPropagation(); setFavorite([it.id], !it.favorite); } }, icon('star')));
     el.dataset.id = it.id;
     return el;
@@ -409,7 +409,7 @@ export function recordingsView(root) {
           h('div.small.muted', `${fmtDate(it.time)} ${fmtTime(it.time)}${prefs.utc ? ' UTC' : ''}`, ' · ', fmtDuration(it.duration),
             it.snr !== null ? ` · SNR ${it.snr} dB` : '',
             it.clipping !== null && it.clipping >= 0.005 ? ` · ${t('clipped {pct}%', { pct: (it.clipping * 100).toFixed(1) })}` : '')),
-        qualityBadge(it.quality),
+        qualityBadge(it.quality, it.speech),
         h('button.icon.star', { class: it.favorite ? 'on' : '', title: t('Favorite'), onclick: () => setFavorite([it.id], !it.favorite) }, icon('star')),
         h('button.icon.ghost', { title: t('Close'), onclick: closePlayer }, icon('x'))),
       waveBox,

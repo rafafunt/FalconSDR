@@ -84,6 +84,8 @@ class QualityCache:
             "quality_score": quality.quality_score,
             "duration_sec": quality.duration_sec,
             "readable": quality.readable,
+            "speech_prob": quality.speech_prob,
+            "version": quality.version,
         }
         with self._lock:
             self._version += 1

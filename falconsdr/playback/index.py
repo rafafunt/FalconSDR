@@ -12,6 +12,7 @@ mid-recording.
 """
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 import math
@@ -27,7 +28,7 @@ from falconsdr.config import AppConfig, atomic_write_text
 from falconsdr.military_presets import get_all_presets
 from falconsdr.models import airband_channel, snap_airband_hz
 from falconsdr.playback import stats
-from falconsdr.playback.audio_analysis import analyze_wav, cleanup_temp_decodes, compute_waveform_peaks
+from falconsdr.playback.audio_analysis import ANALYSIS_VERSION, analyze_wav, cleanup_temp_decodes, compute_waveform_peaks
 from falconsdr.playback.config import APP_DATA_DIR, UTC_TZ
 from falconsdr.playback.favorites_store import FavoritesStore
 from falconsdr.playback.models import MANUAL_FREQ_KHZ, QualityMetrics, Recording, TranscriptionResult
@@ -312,8 +313,10 @@ class Library:
     def _analyze_some(self, budget_s: float) -> None:
         deadline = time.monotonic() + budget_s
         with self._lock:
-            todo = [r for r in self._recs.values() if r.quality is None]
-        todo.sort(key=lambda r: r.dt_utc, reverse=True)
+            # Never measured first, then results of an older scoring version (they keep showing until re-measured),
+            # newest recordings first within each group.
+            todo = [r for r in self._recs.values() if r.quality is None or r.quality.version < ANALYSIS_VERSION]
+        todo = heapq.nsmallest(256, todo, key=lambda r: (r.quality is not None, -r.dt_utc.timestamp()))   # no full sort of tens of thousands
         analyzed = 0
         for rec in todo:
             if time.monotonic() > deadline or self._stop.is_set():
@@ -406,6 +409,7 @@ class Library:
             "duration": qm.duration_sec if qm else None,
             "quality": round(qm.quality_score, 1) if qm and qm.readable else None,
             "snr": round(qm.snr_db, 1) if qm and qm.readable else None,
+            "speech": round(qm.speech_prob, 2) if qm and qm.readable else None,
             # Voice level in dBFS (the library's signal level is on the 16-bit scale): the player evens it out.
             "level": round(20.0 * math.log10(qm.signal_level / 32768.0), 1) if qm and qm.readable and qm.signal_level > 0 else None,
             "clipping": round(qm.clipping_ratio, 4) if qm and qm.readable else None,
