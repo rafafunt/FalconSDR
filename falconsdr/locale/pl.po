@@ -4265,3 +4265,6 @@ msgstr "Podłączony jest odbiornik SDRplay. FalconSDR komunikuje się z nim prz
 
 msgid "Download the SDRplay API"
 msgstr "Pobierz SDRplay API"
+
+msgid "Installed as a headless receiver: run its install line again on that computer - settings and recordings are kept."
+msgstr "Zainstalowany jako odbiornik-serwer: uruchom ponownie jego polecenie instalacji na tym komputerze - ustawienia i nagrania zostają."

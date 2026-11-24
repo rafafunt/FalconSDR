@@ -666,6 +666,7 @@ export function settingsView(root, hash, scope = 'settings') {
     aur: t('Update it with your AUR helper:'),
     git: t('Get the new version, then restart FalconSDR:'),
     source: t('Download the new version from the release page.'),
+    server: t('Installed as a headless receiver: run its install line again on that computer - settings and recordings are kept.'),
   });
   let upd = null;
   let updTimer = null;
@@ -695,11 +696,14 @@ export function settingsView(root, hash, scope = 'settings') {
     }
     const download = a.asset ? h('a.btn.primary', { href: a.asset.url, target: '_blank', rel: 'noopener' }, icon('download'),
       `${t('Download')} (${fmtBytes(a.asset.size)})`) : null;
-    const command = a.command ? h('div.row', { style: { gap: '8px', alignItems: 'stretch' } }, h('code.cmd', { style: { flex: 1 } }, a.command),
+    // min-width 0: a long command scrolls inside its box instead of pushing "Copy" off the card (phones).
+    const command = a.command ? h('div.row', { style: { gap: '8px', alignItems: 'stretch', width: '100%' } }, h('code.cmd', { style: { flex: '1 1 auto', minWidth: 0 } }, a.command),
       h('button', { onclick: () => copyText(a.command) }, t('Copy'))) : null;
     const page = !download ? h('a.btn', { href: u.latest.url, target: '_blank', rel: 'noopener' }, icon('external'), t('Open the release page')) : null;
     return h('div.col', { style: { gap: '8px', alignItems: 'flex-start' } }, download, command, a.type === 'command' ? null : page);
   }
+  // updates.release_notes(): {"en": ..., "pl": ...} plain text; the demo sends ''.
+  const notesText = (n) => (typeof n === 'string' ? n : (n && (n[lang] || n.en)) || '');
   function paintUpdates() {
     const u = upd;
     const check = cfg().updates.check;
@@ -719,7 +723,7 @@ export function settingsView(root, hash, scope = 'settings') {
       setting(t('Version'), line, h('button', { onclick: (e) => { e.currentTarget.disabled = true; loadUpdates(true); } }, icon('refresh'), t('Check now'))),
       u && u.available ? h('div.update-box',
         h('b', t('FalconSDR {version} is available', { version: u.latest.version })),
-        u.latest.notes ? h('div.update-notes', u.latest.notes.replace(/^#+\s*/gm, '')) : null,   // Markdown headings as plain lines
+        notesText(u.latest.notes) ? h('div.update-notes', notesText(u.latest.notes)) : null,
         h('a.small', { href: u.latest.url, target: '_blank', rel: 'noopener' }, t('All changes on GitHub')),
         h('p.small', { style: { margin: 0 } }, KIND_HELP()[u.kind] || ''),
         updateActions(u)) : null);

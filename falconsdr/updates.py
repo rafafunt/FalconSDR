@@ -25,6 +25,7 @@ from urllib.request import Request, urlopen
 from . import __version__
 
 REPO = "rafafunt/FalconSDR"
+SERVER_INSTALL = f"curl -fsSL https://raw.githubusercontent.com/{REPO}/master/packaging/install.sh | bash -s -- --server"
 _LATEST_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 _CHECK_EVERY_S = 24 * 3600
 _RETRY_AFTER_ERROR_S = 3600
@@ -42,13 +43,30 @@ def _request(url: str) -> Request:
     return Request(url, headers={"User-Agent": f"FalconSDR/{__version__}", "Accept": "application/vnd.github+json"})
 
 
+def release_notes(body: str) -> dict:
+    """The "What's new" list of a release body as plain text, per language: {"en": ..., "pl": ...}. The release page is
+    Markdown with a download banner and the Polish text inside <details>; the app shows text, not Markdown."""
+    out = {}
+    for lang, heading in (("en", r"###\s+What's new"), ("pl", r"####\s+Nowości")):
+        # The list ends at the next heading or at the bold "Server install" paragraph that follows it.
+        m = re.search(rf"^{heading}\s*$(.*?)(?=^\s*#|^\s*\*\*[^*\n]+\*\*\s+[^-\n]|\Z)", body, re.M | re.S)
+        if m:
+            text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", m[1])          # [text](url) -> text
+            text = re.sub(r"\*\*([^*]+)\*\*|<[^>]+>", lambda g: g[1] or "", text)   # **bold** -> bold, tags dropped
+            text = re.sub(r"\*([^*\s][^*\n]*)\*", r"\1", text)                  # *italic* -> italic ("- " bullets stay)
+            out[lang] = text.strip()[:_NOTES_MAX]
+    if not out:     # a release written another way: its text, cleaned the same way
+        out["en"] = re.sub(r"\*\*|<[^>]+>", "", re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", body)).strip()[:_NOTES_MAX]
+    return out
+
+
 def fetch_latest() -> dict:
     """The latest published release (GitHub leaves out drafts and pre-releases)."""
     with urlopen(_request(_LATEST_URL), timeout=_TIMEOUT_S) as r:
         data = json.loads(r.read())
     return {
         "version": str(data.get("tag_name", "")).lstrip("v"),
-        "notes": str(data.get("body") or "")[:_NOTES_MAX],
+        "notes": release_notes(str(data.get("body") or "")),
         "url": str(data.get("html_url", "")),
         "published": str(data.get("published_at", "")),
         "assets": [{"name": a["name"], "url": a["browser_download_url"], "size": int(a.get("size", 0))}
@@ -71,6 +89,9 @@ def install_kind() -> str:
         if any(Path("/var/lib/pacman/local").glob("falconsdr-*")):
             return "aur"
         return "rpm"
+    root = Path(__file__).resolve().parent.parent
+    if root == Path("/opt/falconsdr") and Path("/etc/systemd/system/falconsdr-receiver.service").exists():
+        return "server"     # packaging/install.sh --server: the same line updates it
     return "git" if (Path(__file__).resolve().parent.parent / ".git").exists() else "source"
 
 
@@ -104,6 +125,8 @@ def action_for(kind: str, latest: dict) -> dict:
         return {"type": "download", "asset": asset, "command": f"sudo apt install ./{asset['name']}"}
     if kind == "rpm" and asset:
         return {"type": "download", "asset": asset, "command": f"sudo dnf install ./{asset['name']}"}
+    if kind == "server":
+        return {"type": "command", "command": SERVER_INSTALL}
     if kind == "aur":
         return {"type": "command", "command": "yay -Syu falconsdr"}
     if kind == "git":

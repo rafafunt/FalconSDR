@@ -1160,6 +1160,17 @@ class UpdatesTest(unittest.TestCase):
         self.assertEqual(updates.checksum_for("ab" * 32 + "  a.exe\n" + "cd" * 32 + " *b.deb\n", "b.deb"), "cd" * 32)
         self.assertEqual(updates.checksum_for("x  a.exe", "a.exe"), "")
 
+    def test_release_notes_are_plain_text_per_language(self) -> None:
+        from falconsdr import updates
+        body = ("**Downloads below** · **[Opis po Polsku](#po-polsku)**\n\n### What's new\n- **SDRplay** through the [API](https://x).\n"
+                "- Fixes.\n\n**Server install** picks the latest release:\n```\ncurl ...\n```\n\n### Downloads\n| File |\n"
+                "<details>\n<summary><b>Rozwiń</b></summary>\n\n#### Nowości\n- **SDRplay** przez [API](https://x).\n\n"
+                " **Instalacja serwera** jedną komendą:\n\n#### Pliki do pobrania\n</details>\n")
+        self.assertEqual(updates.release_notes(body), {"en": "- SDRplay through the API.\n- Fixes.", "pl": "- SDRplay przez API."})
+        self.assertEqual(updates.release_notes("Just **text** and a [link](u)."), {"en": "Just text and a link."})
+        self.assertEqual(updates.release_notes("### What's new\n- after *Later*, again"), {"en": "- after Later, again"})
+        self.assertEqual(updates.action_for("server", {"assets": self.ASSETS}), {"type": "command", "command": updates.SERVER_INSTALL})
+
     def test_not_asked_yet_until_answered(self) -> None:
         cfg = AppConfig()
         self.assertIsNone(cfg.updates.check)        # the UI asks once
