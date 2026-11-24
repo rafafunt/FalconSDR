@@ -15,8 +15,10 @@ import hmac
 import json
 import mimetypes
 import os
+import platform
 import queue
 import secrets
+import sys
 import threading
 import time
 import traceback
@@ -426,7 +428,10 @@ def make_handler(app: App):
             self._json(ctl.notify_state())
 
         def health(self, _query: dict) -> None:
-            self._json({"receivers": ctl.health()})
+            # "How it was installed" decides which gotchas apply (frozen builds: 35/43), and users rarely know it.
+            how = "AppImage" if os.environ.get("APPIMAGE") else "packaged" if getattr(sys, "frozen", False) else "from source"
+            system = f"{platform.platform()} · Python {platform.python_version()} · {how}"
+            self._json({"receivers": ctl.health(), "system": system})
 
         def probe(self, _query: dict) -> None:
             if self.command == "POST":

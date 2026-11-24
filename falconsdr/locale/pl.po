@@ -4133,3 +4133,21 @@ msgstr "Test odbiornika już trwa."
 
 msgid "Report a problem"
 msgstr "Zgłoś problem"
+
+msgid "Test the receiver first?"
+msgstr "Najpierw przetestować odbiornik?"
+
+msgid "The test measures your receiver in about a minute and answers most of the questions we would otherwise have to ask you. It helps us the most."
+msgstr "Test w około minutę zmierzy Twój odbiornik i odpowie na większość pytań, które inaczej musielibyśmy Ci zadać. To pomaga nam najbardziej."
+
+msgid "The scanner stops for the test and starts again afterwards."
+msgstr "Skaner zatrzyma się na czas testu i potem uruchomi się ponownie."
+
+msgid "Report without the test"
+msgstr "Zgłoś bez testu"
+
+msgid "Test the receiver first"
+msgstr "Najpierw przetestuj odbiornik"
+
+msgid "Test finished - now click “Report a problem”."
+msgstr "Test zakończony - teraz kliknij „Zgłoś problem”."
