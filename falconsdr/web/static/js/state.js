@@ -1,6 +1,6 @@
 // App-wide state: server settings (config, Memory List, blacklist, presets...),
 // the live scanner snapshot (polled), and tiny pub/sub so views can react.
-import { api, errorToast, lang, modal, setCh833, t } from './core.js';
+import { api, errorToast, h, lang, modal, setCh833, t } from './core.js';
 
 export const S = {
   settings: null,   // GET /api/settings
@@ -109,6 +109,18 @@ export async function maybeShowLaunchNotice() {
   await modal(t('Before you start'), LAUNCH_TEXT(), [[t('I understand'), true, 'primary']]);
   seen.push(lang);
   api.post('/api/disclaimer', { kind: 'launch', lang }).catch(() => {});
+}
+
+// Asked once per installation (config.updates.check is null until answered), after the launch notice - never on
+// top of it. An update to a newer version keeps the answer; Settings -> Updates changes it any time.
+export async function maybeAskUpdates() {
+  if (cfg().updates.check !== null || S.settings.mode === 'client') return;
+  const yes = await modal(t('Check for updates?'), h('div.col', { style: { gap: '10px' } },
+    h('p', t('FalconSDR can check once a day whether a new version is out and tell you here.')),
+    h('p.small.muted', t('It only asks GitHub (github.com) for the number of the latest version - nothing about you, your receiver or your recordings is sent. You can change this any time in Settings → Updates.'))),
+  [[t("Don't check"), false, 'ghost'], [t('Check for updates'), true, 'primary']]);
+  if (yes === null) return;   // closed with Esc: ask again next time
+  await patchConfigNow({ updates: { check: yes } }).catch(errorToast);
 }
 
 // Gate shared by every recording-starting action; false = user declined.

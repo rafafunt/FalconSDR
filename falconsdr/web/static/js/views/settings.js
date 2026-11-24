@@ -24,6 +24,7 @@ const SECTIONS = [
   ['storage', () => t('Disk & retention')],
   ['connect', () => t('Connect to a server')],
   ['access', () => t('Access')],
+  ['updates', () => t('Updates')],
   ['receiver', () => t('Receiver health')],
   ['advanced', () => t('Advanced')],
 ];
@@ -628,8 +629,8 @@ export function settingsView(root, hash, scope = 'settings') {
     const url = `https://github.com/rafafunt/FalconSDR/issues/new?${new URLSearchParams({ template: 'receiver.yml', report })}`;
     window.open(url, '_blank', 'noopener');
   }
-  function copyReport() {
-    const text = reportText();
+  function copyReport() { copyText(reportText()); }
+  function copyText(text) {
     // navigator.clipboard needs HTTPS or localhost; the UI is often plain http://IP (gotcha 40): copy a selection then.
     const viaSelection = () => {
       const tmp = h('textarea', { style: { position: 'fixed', opacity: '0' } });
@@ -650,6 +651,77 @@ export function settingsView(root, hash, scope = 'settings') {
         h('div.row.wrap', probeBtn, copyBtn, issueBtn)),
       report);
     paintHealth();
+  }
+
+  // ---------------------------------------------------------- updates (updates.py)
+  // What each kind of installation can do with an update; functions, so t() runs after the catalog is loaded.
+  const KIND_HELP = () => ({
+    'windows-setup': t('Installed with the Windows installer: FalconSDR downloads the new installer, checks it and installs it. Recordings in progress are closed first, settings and recordings are kept.'),
+    appimage: t('AppImage: FalconSDR downloads the new version, checks it, replaces its own file and starts again. Settings and recordings are kept.'),
+    'windows-zip': t('Portable ZIP: download it, quit FalconSDR and unpack it over the old folder. Settings and recordings are kept.'),
+    macos: t('Download it, quit FalconSDR and replace the app with the new one. Settings and recordings are kept.'),
+    deb: t('Download the package, then install it from its folder with:'),
+    rpm: t('Download the package, then install it from its folder with:'),
+    aur: t('Update it with your AUR helper:'),
+    git: t('Get the new version, then restart FalconSDR:'),
+    source: t('Download the new version from the release page.'),
+  });
+  let upd = null;
+  let updTimer = null;
+  async function loadUpdates(force = false) {
+    try { upd = force ? await api.post('/api/updates/check') : await api.get('/api/updates'); } catch (e) {
+      if (force) errorToast(e);
+      return;
+    }
+    if (!dead) paintUpdates();
+  }
+  function updateActions(u) {
+    const a = u.action, inst = u.install;
+    if (a.type === 'install') {
+      if (inst.state === 'downloading') return h('p.small', t('Downloading… {n} %', { n: inst.progress }));
+      if (inst.state === 'installing') return h('p.small', t('Installing - FalconSDR restarts by itself in a moment.'));
+      return h('div.col', { style: { gap: '6px', alignItems: 'flex-start' } },
+        inst.state === 'error' ? h('p.small', { style: { color: 'var(--red)', margin: 0 } }, `${t('The update failed')}: ${inst.error}`) : null,
+        h('button.primary', {
+          onclick: async () => {
+            try { upd = await api.post('/api/updates/install'); } catch (e) { errorToast(e); return; }
+            paintUpdates();
+            clearInterval(updTimer);
+            updTimer = setInterval(() => loadUpdates(), 1000);   // progress; fails quietly once the program restarts
+            timers.push(updTimer);
+          },
+        }, icon('download'), t('Install and restart')));
+    }
+    const download = a.asset ? h('a.btn.primary', { href: a.asset.url, target: '_blank', rel: 'noopener' }, icon('download'),
+      `${t('Download')} (${fmtBytes(a.asset.size)})`) : null;
+    const command = a.command ? h('div.row', { style: { gap: '8px', alignItems: 'stretch' } }, h('code.cmd', { style: { flex: 1 } }, a.command),
+      h('button', { onclick: () => copyText(a.command) }, t('Copy'))) : null;
+    const page = !download ? h('a.btn', { href: u.latest.url, target: '_blank', rel: 'noopener' }, icon('external'), t('Open the release page')) : null;
+    return h('div.col', { style: { gap: '8px', alignItems: 'flex-start' } }, download, command, a.type === 'command' ? null : page);
+  }
+  function paintUpdates() {
+    const u = upd;
+    const check = cfg().updates.check;
+    const when = u && u.checked_at ? fmtAgo(new Date(u.checked_at * 1000).toISOString()) : '';
+    const line = !u ? '' : [
+      `${t('Installed')}: ${u.current}`,
+      u.error ? `${t('Could not check')}: ${u.error}` : u.available ? null : u.latest ? t('This is the newest version.') : null,
+      when ? `${t('Checked')} ${when}` : null,
+    ].filter(Boolean).join(' · ');
+    mount(body('updates'),
+      setting(t('Check for updates'), t('Once a day FalconSDR asks GitHub (github.com) for the number of the latest version. Nothing about you, your receiver or your recordings is sent.'),
+        toggle('', !!check, async (v) => {
+          await patchConfigNow({ updates: { check: v } });
+          if (v) setTimeout(() => loadUpdates(), 3000);
+          paintUpdates();
+        })),
+      setting(t('Version'), line, h('button', { onclick: (e) => { e.currentTarget.disabled = true; loadUpdates(true); } }, icon('refresh'), t('Check now'))),
+      u && u.available ? h('div.update-box',
+        h('b', t('FalconSDR {version} is available', { version: u.latest.version })),
+        u.latest.notes ? h('div.update-notes', u.latest.notes.replace(/^#+\s*/gm, '')) : null,   // Markdown headings as plain lines
+        h('a.small', { href: u.latest.url, target: '_blank', rel: 'noopener' }, t('All changes on GitHub')),
+        h('p.small', { style: { margin: 0 } }, KIND_HELP()[u.kind] || ''),
+        updateActions(u)) : null);
   }
 
   // ---------------------------------------------------------- advanced
@@ -711,7 +783,7 @@ export function settingsView(root, hash, scope = 'settings') {
       return;
     }
     renderRecording(); renderAddonsSignpost(); renderStorage(); renderConnect(); renderAccess();
-    renderLocation(); renderPresets(); renderAppearance(); renderReceiver(); renderAdvanced();
+    renderLocation(); renderPresets(); renderAppearance(); paintUpdates(); loadUpdates(); renderReceiver(); renderAdvanced();
   }
   renderAll();
   if (scope === 'settings') {

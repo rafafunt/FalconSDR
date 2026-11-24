@@ -33,6 +33,7 @@ from . import sdr_native
 from .addons.manager import AddonManager
 from .addons import tetra as tetra_addon
 from .notifier import Notifier, clean_channel, clean_rule, mask
+from .updates import UpdateChecker
 from .scanner_engine import AUDIO_RATE, ScannerEngine, SharedFrequencies
 from .sdr_backend import HAVE_SOAPY, RTLTCP_DRIVER, device_family, device_method, enumerate_devices
 
@@ -153,6 +154,7 @@ class Controller:
         self.worker_commands: dict[str, list[str]] = {}
         self.library = Library(self.config, self.open_recording_paths, self.freq_names)
         self.addons = AddonManager(self.config, self.log, self._addon_ended)
+        self.updates = UpdateChecker(self.config)
         self.notifier = Notifier(self.config, lambda: (float(self.config.location.home_lat or 0), float(self.config.location.home_lon or 0)))
         self.addons.hub.on_event = self.notifier.on_message
         self.addons.on_failed = lambda _id, why: self.notifier.on_system("addon_failed", why)
@@ -659,6 +661,7 @@ class Controller:
                 "notify_seq": self.notifier.seq,
                 "addon_since": self.addons.started_at,
                 "schedule_now": self.schedule_now() if self.config.schedule.enabled else [],
+                "update": self.updates.available(),
             }
 
     def _uncovered(self) -> list[dict]:
@@ -803,6 +806,8 @@ class Controller:
         self.config.save()
         if self.config.language != old_language:
             i18n.set_language(self.config.language)
+        if "updates" in patch:
+            self.updates.wake()      # switched on: check now, not in a minute
         if self.config.recording.output_dir != old_root:
             threading.Thread(target=self.library.rescan, daemon=True).start()
         if not set(patch) <= _READ_LIVE_KEYS:  # a slider drag must not rebuild the scan plan at every step
@@ -851,6 +856,7 @@ class Controller:
         fresh.access_token = self.config.access_token
         fresh.workers = self.config.workers
         fresh.legal_disclaimer = self.config.legal_disclaimer
+        fresh.updates = self.config.updates      # an answered question stays answered
         for f in fresh.__dataclass_fields__:
             setattr(self.config, f, getattr(fresh, f))
         self.config.save()

@@ -438,6 +438,18 @@ def make_handler(app: App):
                 ctl.probe()
             self._json(sdr_probe.state())
 
+        def updates(self, _query: dict) -> None:
+            action = self.path.split("?")[0].rsplit("/", 1)[-1]
+            if action == "check":
+                return self._json(ctl.updates.check_now())
+            if action == "install":
+                # Runs a downloaded installer: only for the computer FalconSDR runs on, never over the network
+                # (a server is updated by whoever runs it - systemd, a package manager).
+                if app.mode != "local" or app.on_quit is None or app.on_switch is None:
+                    raise ValueError(i18n.tr("Updates are installed on the computer FalconSDR runs on."))
+                ctl.updates.install(quit_app=app.on_quit, restart_app=app.on_switch)
+            self._json(ctl.updates.status())
+
         def reset(self, _query: dict) -> None:
             ctl.reset_to_defaults()
             self._json({"ok": True})
@@ -736,6 +748,9 @@ def make_handler(app: App):
         ("POST", "/api/disclaimer"): Handler.disclaimer,
         ("POST", "/api/reset"): Handler.reset,
         ("GET", "/api/health"): Handler.health,
+        ("GET", "/api/updates"): Handler.updates,
+        ("POST", "/api/updates/check"): Handler.updates,
+        ("POST", "/api/updates/install"): Handler.updates,
         ("GET", "/api/probe"): Handler.probe,
         ("POST", "/api/probe"): Handler.probe,
         ("POST", "/api/access"): Handler.access,

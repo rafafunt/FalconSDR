@@ -155,8 +155,8 @@ button:hover, .btn:hover { background: var(--fill-strong); text-decoration: none
 button:active, .btn:active { opacity: .7; }
 button:disabled { opacity: .35; cursor: default; }
 button svg.ic { width: 16px; height: 16px; }
-button.primary { background: var(--accent-fill); color: var(--on-accent); }
-button.primary:hover { background: color-mix(in srgb, var(--accent-fill) 88%, #000); }
+button.primary, .btn.primary { background: var(--accent-fill); color: var(--on-accent); }
+button.primary:hover, .btn.primary:hover { background: color-mix(in srgb, var(--accent-fill) 88%, #000); }
 button.danger, .btn.danger { color: var(--red); }
 button.danger.solid { background: var(--red-solid); color: #fff; }
 button.ghost, .btn.ghost { background: transparent; }
@@ -307,6 +307,8 @@ button.grip:active { cursor: grabbing; }
 .band-main .range { font: 13px var(--mono); color: var(--secondary); }
 .notice { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border-radius: var(--radius-s); background: var(--accent-tint); font-size: 14px; }
 .notice svg.ic { color: var(--accent); flex: none; }
+.update-box { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: var(--radius); background: var(--accent-tint); }
+.update-notes { max-height: 220px; overflow: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.5; color: var(--secondary); }
 input.time { width: auto; font-family: var(--mono); }
 button.day { min-width: 44px; justify-content: center; color: var(--secondary); background: var(--fill); }
 button.day.on { color: var(--on-accent); background: var(--accent-fill); }
@@ -486,6 +488,9 @@ details summary { cursor: pointer; color: var(--accent); font-size: 14px; }
 @keyframes fade { from { opacity: 0; } }
 #toasts { position: fixed; left: 50%; transform: translateX(-50%); bottom: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 200; width: max-content; max-width: min(460px, calc(100vw - 32px)); }
 @media (max-width: 860px) { #toasts { bottom: calc(84px + env(safe-area-inset-bottom)); } }
+/* "A new version is out": below dialogs (100) and toasts (200), above the tab bar on phones */
+.update-card { position: fixed; right: 16px; bottom: 24px; z-index: 90; width: min(430px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: var(--radius); background: var(--surface); box-shadow: 0 8px 30px rgba(0,0,0,.18); font-size: 14px; animation: fade .15s; }
+@media (max-width: 860px) { .update-card { bottom: calc(84px + env(safe-area-inset-bottom)); } }
 .toast { background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(20px); box-shadow: 0 8px 30px rgba(0,0,0,.18); border-radius: 12px; padding: 10px 16px; animation: fade .15s; font-size: 14px; }
 .toast.bad { color: var(--red); }
 .toast.good { color: var(--green); }

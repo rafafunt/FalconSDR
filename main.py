@@ -64,6 +64,9 @@ DEFAULT_PORT = 8765
 def _restart() -> None:
     """Re-exec this program with the same arguments (mode switch)."""
     args = [a for a in sys.argv[1:] if a != "--local"]
+    appimage = os.environ.get("APPIMAGE")
+    if appimage:   # the file itself, not the running copy's mount: after an update (updates.py) it is the new version
+        os.execv(appimage, [appimage, *args])
     if getattr(sys, "frozen", False):
         os.execv(sys.executable, [sys.executable, *args])
     os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *args])
