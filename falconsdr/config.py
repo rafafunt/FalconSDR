@@ -310,6 +310,12 @@ class LegalDisclaimerConfig:
 
 
 @dataclass
+class UpdatesConfig:
+    """Update check (updates.py, gotcha 61). None = not asked yet: the UI asks once, right after the launch notice."""
+    check: bool | None = None
+
+
+@dataclass
 class AddonsConfig:
     """Add-ons (falconsdr/addons, AGENTS.md gotcha 58). Transcription and digital voice keep their own settings."""
     enabled: list = field(default_factory=list)   # ids of the add-ons that are switched on
@@ -378,6 +384,7 @@ class AppConfig:
     # falconsdr/locale/<code>.po file.
     language: str = "auto"
     legal_disclaimer: LegalDisclaimerConfig = field(default_factory=LegalDisclaimerConfig)
+    updates: UpdatesConfig = field(default_factory=UpdatesConfig)
     # Offers the simulated device and enables diagnostics (gotcha 8/32).
     debug_mode: bool = False
     # Optional password for the web UI and workers (Settings → Access).
@@ -431,6 +438,7 @@ class AppConfig:
             memory_list_enabled=raw.get("memory_list_enabled", True),
             language=raw.get("language", "auto"),
             legal_disclaimer=_from_dict(LegalDisclaimerConfig, raw.get("legal_disclaimer", {})),
+            updates=_from_dict(UpdatesConfig, raw.get("updates", {})),
             debug_mode=raw.get("debug_mode", False),
             access_token=raw.get("access_token", ""),
             workers=dict(raw.get("workers", {})),

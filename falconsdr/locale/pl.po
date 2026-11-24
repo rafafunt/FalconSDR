@@ -4151,3 +4151,105 @@ msgstr "Najpierw przetestuj odbiornik"
 
 msgid "Test finished - now click “Report a problem”."
 msgstr "Test zakończony - teraz kliknij „Zgłoś problem”."
+
+msgid "Updates"
+msgstr "Aktualizacje"
+
+msgid "Check for updates?"
+msgstr "Sprawdzać aktualizacje?"
+
+msgid "FalconSDR can check once a day whether a new version is out and tell you here."
+msgstr "FalconSDR może raz dziennie sprawdzać, czy jest nowa wersja, i powiedzieć Ci o tym tutaj."
+
+msgid "It only asks GitHub (github.com) for the number of the latest version - nothing about you, your receiver or your recordings is sent. You can change this any time in Settings → Updates."
+msgstr "Pyta tylko GitHuba (github.com) o numer najnowszej wersji - nic o Tobie, Twoim odbiorniku ani nagraniach nie jest wysyłane. Możesz to zmienić w każdej chwili w Ustawienia → Aktualizacje."
+
+msgid "Don't check"
+msgstr "Nie sprawdzaj"
+
+msgid "Check for updates"
+msgstr "Sprawdzaj aktualizacje"
+
+msgid "FalconSDR {version} is available"
+msgstr "Dostępny jest FalconSDR {version}"
+
+msgid "Installed with the Windows installer: FalconSDR downloads the new installer, checks it and installs it. Recordings in progress are closed first, settings and recordings are kept."
+msgstr "Zainstalowany instalatorem Windows: FalconSDR pobierze nowy instalator, sprawdzi go i zainstaluje. Trwające nagrania zostaną najpierw zamknięte, ustawienia i nagrania zostają."
+
+msgid "AppImage: FalconSDR downloads the new version, checks it, replaces its own file and starts again. Settings and recordings are kept."
+msgstr "AppImage: FalconSDR pobierze nową wersję, sprawdzi ją, podmieni swój plik i uruchomi się ponownie. Ustawienia i nagrania zostają."
+
+msgid "Portable ZIP: download it, quit FalconSDR and unpack it over the old folder. Settings and recordings are kept."
+msgstr "Wersja ZIP: pobierz ją, zamknij FalconSDR i rozpakuj w miejsce starego folderu. Ustawienia i nagrania zostają."
+
+msgid "Download it, quit FalconSDR and replace the app with the new one. Settings and recordings are kept."
+msgstr "Pobierz ją, zamknij FalconSDR i zastąp aplikację nową. Ustawienia i nagrania zostają."
+
+msgid "Download the package, then install it from its folder with:"
+msgstr "Pobierz pakiet, a potem zainstaluj go w jego folderze poleceniem:"
+
+msgid "Update it with your AUR helper:"
+msgstr "Zaktualizuj go swoim pomocnikiem AUR:"
+
+msgid "Get the new version, then restart FalconSDR:"
+msgstr "Pobierz nową wersję, a potem uruchom FalconSDR ponownie:"
+
+msgid "Download the new version from the release page."
+msgstr "Pobierz nową wersję ze strony wydania."
+
+msgid "Downloading… {n} %"
+msgstr "Pobieranie… {n} %"
+
+msgid "Installing - FalconSDR restarts by itself in a moment."
+msgstr "Instalowanie - FalconSDR za chwilę sam uruchomi się ponownie."
+
+msgid "The update failed"
+msgstr "Aktualizacja nie powiodła się"
+
+msgid "Install and restart"
+msgstr "Zainstaluj i uruchom ponownie"
+
+msgid "Copy"
+msgstr "Kopiuj"
+
+msgid "Open the release page"
+msgstr "Otwórz stronę wydania"
+
+msgid "Installed"
+msgstr "Zainstalowana"
+
+msgid "Could not check"
+msgstr "Nie udało się sprawdzić"
+
+msgid "This is the newest version."
+msgstr "To najnowsza wersja."
+
+msgid "Checked"
+msgstr "Sprawdzono"
+
+msgid "Once a day FalconSDR asks GitHub (github.com) for the number of the latest version. Nothing about you, your receiver or your recordings is sent."
+msgstr "Raz dziennie FalconSDR pyta GitHuba (github.com) o numer najnowszej wersji. Nic o Tobie, Twoim odbiorniku ani nagraniach nie jest wysyłane."
+
+msgid "Version"
+msgstr "Wersja"
+
+msgid "Check now"
+msgstr "Sprawdź teraz"
+
+msgid "All changes on GitHub"
+msgstr "Wszystkie zmiany na GitHubie"
+
+msgid "Updates are installed on the computer FalconSDR runs on."
+msgstr "Aktualizacje instaluje się na komputerze, na którym działa FalconSDR."
+
+msgid "You have {current}. See what is new and how to update."
+msgstr "Masz wersję {current}. Zobacz, co nowego i jak zaktualizować."
+
+msgid "See what's new"
+msgstr "Zobacz, co nowego"
+
+msgid "Later"
+msgstr "Później"
+
+msgid "Skip this version"
+msgstr "Pomiń tę wersję"

@@ -1134,6 +1134,54 @@ class IqUncoveredTimeTest(unittest.TestCase):
             thread.close()
 
 
+
+class UpdatesTest(unittest.TestCase):
+    ASSETS = [{"name": n, "url": f"https://example/{n}", "size": 10} for n in (
+        "falconsdr-1.7.0-1.x86_64.rpm", "FalconSDR-1.7.0-macos-arm64-experimental.zip", "FalconSDR-1.7.0-macos-x86_64-experimental.zip",
+        "FalconSDR-1.7.0-windows-x64-portable.zip", "FalconSDR-1.7.0-windows-x64-setup.exe", "FalconSDR-1.7.0-x86_64.AppImage",
+        "falconsdr_1.7.0_amd64.deb", "SHA256SUMS")]
+
+    def test_versions_and_the_file_for_each_kind_of_install(self) -> None:
+        from falconsdr import updates
+        self.assertGreater(updates.parse_version("v1.10.0"), updates.parse_version("1.9.2"))
+        self.assertEqual(updates.parse_version("garbage"), ())
+        names = {k: (updates.pick_asset(k, self.ASSETS, "x86_64") or {}).get("name") for k in
+                 ("windows-setup", "windows-zip", "appimage", "deb", "rpm", "macos", "git")}
+        self.assertEqual(names, {"windows-setup": "FalconSDR-1.7.0-windows-x64-setup.exe", "windows-zip": "FalconSDR-1.7.0-windows-x64-portable.zip",
+                                 "appimage": "FalconSDR-1.7.0-x86_64.AppImage", "deb": "falconsdr_1.7.0_amd64.deb",
+                                 "rpm": "falconsdr-1.7.0-1.x86_64.rpm", "macos": "FalconSDR-1.7.0-macos-x86_64-experimental.zip", "git": None})
+        self.assertIsNone(updates.pick_asset("deb", self.ASSETS, "armv7l"))       # a Raspberry Pi: the release page instead
+        self.assertEqual(updates.action_for("deb", {"assets": self.ASSETS})["command"], "sudo apt install ./falconsdr_1.7.0_amd64.deb")
+        self.assertEqual(updates.checksum_for("ab" * 32 + "  a.exe\n" + "cd" * 32 + " *b.deb\n", "b.deb"), "cd" * 32)
+        self.assertEqual(updates.checksum_for("x  a.exe", "a.exe"), "")
+
+    def test_not_asked_yet_until_answered(self) -> None:
+        cfg = AppConfig()
+        self.assertIsNone(cfg.updates.check)        # the UI asks once
+        cfg.updates.check = False
+        cfg.save()
+        self.assertIs(AppConfig.load().updates.check, False)
+
+    def test_a_download_that_does_not_match_sha256sums_is_not_installed(self) -> None:
+        import hashlib, io
+        from unittest import mock
+        from falconsdr import updates
+        good = hashlib.sha256(b"the real installer").hexdigest()
+        bodies = {"https://example/SHA256SUMS": f"{good}  FalconSDR-1.7.0-windows-x64-setup.exe\n".encode(),
+                  "https://example/FalconSDR-1.7.0-windows-x64-setup.exe": b"something else"}
+        checker = updates.UpdateChecker.__new__(updates.UpdateChecker)
+        checker._lock, checker._install = threading.Lock(), {"state": "downloading", "progress": 0, "error": ""}
+        started = mock.Mock()
+        with mock.patch.object(updates, "urlopen", lambda req, timeout: io.BytesIO(bodies[req.full_url])), \
+                mock.patch.object(updates, "_start_windows_installer", started), \
+                mock.patch.object(updates.tempfile, "gettempdir", lambda: os.environ["HOME"]):
+            checker._install_worker("windows-setup", self.ASSETS[4], self.ASSETS, quit_app=started, restart_app=started)
+        self.assertEqual(checker._install["state"], "error")
+        self.assertIn("SHA256SUMS", checker._install["error"])
+        started.assert_not_called()
+        self.assertFalse((Path(os.environ["HOME"]) / "falconsdr-update" / self.ASSETS[4]["name"]).exists())
+
+
 class ProbeRunTest(unittest.TestCase):
     def test_runs_the_probe_as_a_child_and_keeps_its_output(self) -> None:
         from unittest import mock

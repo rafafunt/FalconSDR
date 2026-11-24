@@ -1,6 +1,6 @@
 import { api, errorToast, h, icon, loadLanguage, modal, mount, t, toast } from './core.js';
 import { liveAudio } from './live-audio.js';
-import { S, addonsInUse, emit, loadSettings, maybeShowLaunchNotice, on, startPolling } from './state.js';
+import { S, addonsInUse, emit, loadSettings, maybeAskUpdates, maybeShowLaunchNotice, on, startPolling } from './state.js';
 import { channelsView } from './views/channels.js';
 import { listenView } from './views/listen.js';
 import { messagesView } from './views/messages.js';
@@ -45,7 +45,35 @@ async function boot() {
   await loadSettings();
   shell();
   startPolling();
-  maybeShowLaunchNotice();
+  await maybeShowLaunchNotice();   // the legal notice first, then (once per installation) the update question
+  maybeAskUpdates();
+}
+
+// A new version: a small card, not a dialog - once per version, again a week after "Later", never for a skipped
+// version. Remembered per browser (on a server every user decides for themselves); the top-bar chip and
+// Settings -> Updates always show it anyway.
+const NOTICE_KEY = 'update-notice';
+const WEEK_MS = 7 * 24 * 3600 * 1000;
+let noticeShownFor = '';
+function readNotice() { try { return JSON.parse(localStorage.getItem(NOTICE_KEY)) || {}; } catch { return {}; } }
+function writeNotice(value) { try { localStorage.setItem(NOTICE_KEY, JSON.stringify(value)); } catch { /* no storage: shown again next visit */ } }
+function maybeUpdateCard() {
+  const version = S.live && S.live.update;
+  if (!version || noticeShownFor === version || document.querySelector('.modal-back')) return;   // never over a dialog
+  if (location.hash.startsWith('#/settings/updates')) return;
+  const seen = readNotice();
+  if (seen.skip === version || (seen.version === version && Date.now() < (seen.until || 0))) return;
+  noticeShownFor = version;
+  const close = (remember) => { card.remove(); writeNotice(remember); };
+  const later = () => close({ version, until: Date.now() + WEEK_MS });
+  const card = h('div.update-card', { role: 'status' },
+    h('b', t('FalconSDR {version} is available', { version })),
+    h('span.small.muted', t('You have {current}. See what is new and how to update.', { current: S.settings.version })),
+    h('div.row.wrap', { style: { gap: '8px' } },
+      h('button.primary', { onclick: () => { later(); location.hash = '#/settings/updates'; } }, t("See what's new")),
+      h('button.ghost', { onclick: later }, t('Later')),
+      h('button.ghost', { onclick: () => close({ skip: version }) }, t('Skip this version'))));
+  document.body.append(card);
 }
 
 function loginPage() {
@@ -141,6 +169,8 @@ function shell() {
     const running = live && live.running;
     const signal = live && (live.state === 'SIGNAL_DETECTED' || live.state === 'LINGER');
     mount(status,
+      live && live.update ? h('a.chip.accent', { href: '#/settings/updates', title: t('FalconSDR {version} is available', { version: live.update }) },
+        icon('download'), live.update) : null,
       live && live.recording ? h('span.chip.bad.live', { title: t('Recording') }, h('span.dot'), 'REC') : null,
       live && live.addon
         ? h('span.chip.good.live', h('span.dot'), t('Add-on running'))
@@ -152,6 +182,7 @@ function shell() {
       }, icon(liveAudio.playing ? 'headphones' : 'mute')));
   };
   on('live', updateStatus);
+  on('live', maybeUpdateCard);
   // Notifications: a notice in the app whenever a rule fires (the first poll only sets the starting point).
   let notifySeq = null;
   on('live', async (live) => {

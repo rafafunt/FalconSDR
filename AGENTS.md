@@ -571,6 +571,12 @@ Gotchas 1, 2 and 26 are retired (Qt UI, PortAudio playback) and their numbers ar
     our front end (cc/gcc/clang, else TinyCC on Windows). ETSI's licence covers the code, not patents: never bundle or redistribute
     it. Linux builds only; Windows/macOS and real-air speech untested.
 
+61. **Updates (`updates.py`, Settings -> Updates) check GitHub only after the user said yes**: `config.updates.check`
+    is None until the question (shown once, after the launch notice - `state.js` `maybeAskUpdates`) is answered;
+    an update keeps the answer, Reset to defaults too. One-click install only for the Windows installer and an
+    AppImage, only in local mode, and only a file whose SHA-256 matches the release's `SHA256SUMS`. AppImage restarts
+    by exec'ing `$APPIMAGE` (`main._restart`): `sys.executable` is the old mount. The Windows path is untested on Windows.
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch
