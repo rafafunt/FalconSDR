@@ -32,10 +32,13 @@ def parse_filename(name: str) -> ParsedName | None:
     if not m:
         return None
     year, month, day, hour, minute, second, micros, freq = m.groups()
-    dt_local = datetime(
-        int(year), int(month), int(day), int(hour), int(minute), int(second),
-        microsecond=int(micros) if micros else 0,
-    ).astimezone()  # the recorder names files in this computer's local time (recorder.py)
+    try:
+        dt_local = datetime(
+            int(year), int(month), int(day), int(hour), int(minute), int(second),
+            microsecond=int(micros) if micros else 0,
+        ).astimezone()  # the recorder names files in this computer's local time (recorder.py)
+    except (ValueError, OSError):
+        return None
     # freq is None for a "..._session.wav" name (manual/"Single File" mode -
     # see FILENAME_REGEX's own comment) - no single fixed frequency, so
     # MANUAL_FREQ_KHZ (0, never a real radio frequency) stands in for it.
@@ -72,14 +75,20 @@ def organize(root: Path = FALCONSDR_DIR) -> List[Path]:
         if dest.exists():
             if dest.resolve() == path.resolve():
                 continue
-            # Name already taken by another file (shouldn't normally happen -
-            # the timestamp in the name has second resolution) - append a
-            # suffix instead of overwriting or losing data.
-            stem, suffix = dest.stem, dest.suffix
-            i = 1
-            while dest.exists():
-                dest = date_dir / f"{stem}_dup{i}{suffix}"
-                i += 1
+            # Name already taken by another file - bump the microsecond field so the
+            # moved file still matches FILENAME_REGEX and stays visible in the library.
+            tag = "session" if parsed.freq_khz == MANUAL_FREQ_KHZ else str(parsed.freq_khz)
+            base_stamp = parsed.dt_local.strftime("%Y-%m-%d_%H-%M-%S")
+            us = parsed.dt_local.microsecond
+            while dest.exists() and us < 999_999:
+                us += 1
+                dest = date_dir / f"{base_stamp}-{us:06d}_{tag}{dest.suffix}"
+            if dest.exists():
+                stem, suffix = dest.stem, dest.suffix
+                i = 1
+                while dest.exists():
+                    dest = date_dir / f"{stem}_dup{i}{suffix}"
+                    i += 1
             logger.warning("Name collision, saving as %s", dest.name)
 
         shutil.move(str(path), str(dest))

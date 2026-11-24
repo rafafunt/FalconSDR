@@ -78,6 +78,11 @@ def clean_channel(raw: dict, old: dict | None = None) -> dict:
         url = {"ntfy": out.get("server"), "webhook": out.get("url"), "telegram": out.get("api_base")}[kind]
         if urlparse(url).scheme not in ("http", "https") or not urlparse(url).netloc:
             raise ValueError(f"{kind}: the address must start with http:// or https://")
+    if kind == "webhook" and out.get("header_name"):
+        if not re.fullmatch(r"[A-Za-z0-9-]+", out["header_name"]):
+            raise ValueError("webhook: invalid header name")
+        if any(c in out.get("header_value", "") for c in ("\r", "\n")):
+            raise ValueError("webhook: invalid header value")
     if kind == "telegram":
         if not out["token"] or not out["chat_id"]:
             raise ValueError("telegram: a bot token and a chat id are needed")
@@ -133,7 +138,7 @@ def _who(e: dict) -> str:
 def _km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     p1, p2 = math.radians(lat1), math.radians(lat2)
     a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
-    return 6371.0 * 2 * math.asin(math.sqrt(a))
+    return 6371.0 * 2 * math.asin(math.sqrt(min(1.0, max(0.0, a))))
 
 
 def matches(rule: dict, source: str, e: dict, home: tuple[float, float] = (0.0, 0.0)) -> bool:
@@ -163,9 +168,10 @@ def matches(rule: dict, source: str, e: dict, home: tuple[float, float] = (0.0, 
             if not (value < rule["value"] if rule["op"] == "<" else value > rule["value"]):
                 return False
         if rule["within_km"]:
-            if "lat" not in e or "lon" not in e or not (home[0] or home[1]):
+            lat, lon = e.get("lat"), e.get("lon")
+            if lat is None or lon is None or not (home[0] or home[1]):
                 return False
-            if _km(home[0], home[1], float(e["lat"]), float(e["lon"])) > rule["within_km"]:
+            if _km(home[0], home[1], float(lat), float(lon)) > rule["within_km"]:
                 return False
     return True
 
@@ -381,9 +387,11 @@ class Notifier:
             item, channel, payload = self._queue.get()
             try:
                 self._send(channel, item["title"], item["message"], payload)
-                item["results"][channel["name"]] = "ok"
+                status = "ok"
             except Exception as exc:  # noqa: BLE001
-                item["results"][channel["name"]] = f"error: {exc}"
+                status = f"error: {exc}"
+            with self._lock:
+                item["results"][channel["name"]] = status
 
     def test(self, channel: dict) -> str:
         """Sends a test message right now; returns "" or the reason it failed."""

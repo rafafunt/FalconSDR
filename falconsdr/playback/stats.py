@@ -36,7 +36,7 @@ def frequency_stats(recordings: List[Recording], use_utc: bool = False) -> List[
 
     result = []
     for freq_khz, recs in by_freq.items():
-        qualities = [r.quality_score for r in recs if r.quality]
+        qualities = [r.quality_score for r in recs if r.quality and r.quality.readable]
         avg_q = sum(qualities) / len(qualities) if qualities else 0.0
         total_dur = sum(r.duration_sec for r in recs)
         last_heard = max((r.dt_utc if use_utc else r.dt_local) for r in recs)
@@ -83,12 +83,13 @@ class Summary:
     unique_frequencies: int
 
 
-def summarize(recordings: List[Recording], use_utc: bool = False) -> Summary:
+def summarize(recordings: List[Recording], use_utc: bool = False, freq_st: Optional[List[FrequencyStat]] = None) -> Summary:
     if not recordings:
         return Summary(0, 0.0, None, None, 0.0, None, 0)
 
-    qualities = [r.quality_score for r in recordings if r.quality]
-    freq_st = frequency_stats(recordings, use_utc=use_utc)
+    qualities = [r.quality_score for r in recordings if r.quality and r.quality.readable]
+    if freq_st is None:
+        freq_st = frequency_stats(recordings, use_utc=use_utc)
     times = [(r.dt_utc if use_utc else r.dt_local) for r in recordings]
     return Summary(
         total_count=len(recordings),

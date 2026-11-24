@@ -88,5 +88,23 @@
     "stop_hz": 108000000,
     "step_hz": 100000,
     "modulation": "WFM"
+  },
+  {
+    "id": "tetra_eu_390",
+    "label": "TETRA Europe 390-395 MHz (+12.5 kHz grid, experimental)",
+    "tooltip": "European TETRA downlink band (25 kHz spacing with +12.5 kHz carrier offset).\nDecodes public SYNC/SYSINFO network beacons and clear-mode calls/SDS/LIP;\nencrypted networks stay muted and are never decrypted.",
+    "start_hz": 390012500,
+    "stop_hz": 394987500,
+    "step_hz": 25000,
+    "modulation": "TETRA"
+  },
+  {
+    "id": "tetra_eu_420",
+    "label": "TETRA Europe 420-430 MHz (+12.5 kHz grid, experimental)",
+    "tooltip": "European commercial/utility TETRA downlink band (25 kHz spacing with +12.5 kHz carrier offset).\nDecodes public SYNC/SYSINFO network beacons and clear-mode calls/SDS/LIP;\nencrypted networks stay muted and are never decrypted.",
+    "start_hz": 420012500,
+    "stop_hz": 429987500,
+    "step_hz": 25000,
+    "modulation": "TETRA"
   }
 ]

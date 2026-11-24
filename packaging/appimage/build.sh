@@ -65,6 +65,8 @@ rm -rf "$BUILD"
 mkdir -p "$BUILD"
 source "$SCRIPT_DIR/../linux-native-libs.sh"
 collect_native_libs soft
+source "$SCRIPT_DIR/../linux-tetra.sh"
+build_tetra "$REPO_ROOT"
 (
   cd "$REPO_ROOT"
   "$VENV/bin/pyinstaller" \
@@ -79,6 +81,7 @@ collect_native_libs soft
     --collect-data imageio_ffmpeg \
     --collect-all pip \
     "${NATIVE_ARGS[@]}" \
+    "${TETRA_ARGS[@]}" \
     --distpath "$BUILD/dist" \
     --workpath "$BUILD/work" \
     --specpath "$BUILD" \

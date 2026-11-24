@@ -30,6 +30,8 @@ class ScanWindow:
     # The band this window was built from alone, for its overrides; None when
     # mixed. Set by ScannerEngine._rebuild_windows().
     band: "VfoRangeConfig | None" = None
+    # Antenna port requested for this window ("" = device default).
+    antenna: str = ""
 
 
 def plan_windows(freqs: list[int], sample_rate_hz: float, channel_bw_hz: float) -> list[ScanWindow]:
@@ -48,8 +50,10 @@ def plan_windows(freqs: list[int], sample_rate_hz: float, channel_bw_hz: float) 
         lo, hi = members[0], members[-1]
         center = (lo + hi) // 2
         # Nudge off the exact grid mid-point so a channel doesn't land
-        # precisely on the window center (DC/LO-leakage spur territory).
-        center += int(channel_bw_hz * 0.37)
+        # precisely on the window center (DC/LO-leakage spur territory),
+        # capped so wide channels at low sample rates don't cross Nyquist.
+        margin = max(0.0, sample_rate_hz * 0.49 - ((hi - lo) / 2.0 + channel_bw_hz / 2.0))
+        center += int(min(channel_bw_hz * 0.37, margin))
         windows.append(ScanWindow(center_hz=center, freqs=list(members)))
 
     for f in ordered[1:]:
@@ -166,21 +170,24 @@ def extend_boundary_window(
     window: ScanWindow, sample_rate_hz: float, step_hz: float, direction: str,
 ) -> list[int]:
     """Probe frequencies just past a band's edge (``direction`` "below" or
-    "above"), within the window's unused capture room - center_hz stays, so
-    no extra retune. Only for real swept bands (gotcha 31).
+    "above"), within the window's unused capture room on that side - center_hz
+    stays, so no extra retune. Only for real swept bands (gotcha 31).
     """
     if not window.freqs or step_hz <= 0:
         return []
-    usable_bw = sample_rate_hz * USABLE_FRACTION
+    half_usable = sample_rate_hz * USABLE_FRACTION / 2.0
     lo, hi = min(window.freqs), max(window.freqs)
-    slack = usable_bw - (hi - lo + step_hz)
-    extend_by = max(0.0, min(slack, sample_rate_hz * _MAX_EXTEND_FRACTION))
+    if direction == "below":
+        room = (lo - step_hz / 2.0) - (window.center_hz - half_usable)
+        edge, sign = lo, -1
+    else:
+        room = (window.center_hz + half_usable) - (hi + step_hz / 2.0)
+        edge, sign = hi, 1
+    extend_by = max(0.0, min(room, sample_rate_hz * _MAX_EXTEND_FRACTION))
     n_extra = int(extend_by // step_hz)
     if n_extra <= 0:
         return []
-    edge = lo if direction == "below" else hi
-    sign = -1 if direction == "below" else 1
-    return [int(edge + sign * step_hz * i) for i in range(1, n_extra + 1)]
+    return [f for f in (int(edge + sign * step_hz * i) for i in range(1, n_extra + 1)) if f > 0]
 
 
 def spectrum_snapshot(iq: np.ndarray, sample_rate: float, center_hz: float, num_points: int = 512) -> tuple[np.ndarray, np.ndarray]:

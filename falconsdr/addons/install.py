@@ -53,7 +53,14 @@ _states: dict[str, dict] = {}
 
 
 def can_install(addon_id: str) -> bool:
-    """vdl2: built from source (Linux, macOS); rtl_433: the author's ready build (Windows, macOS)."""
+    """vdl2: built from source (Linux, macOS); rtl_433: the author's ready build (Windows, macOS);
+    tetra: built locally from tetra-rs/ via cargo."""
+    if addon_id == "tetra":
+        from . import tetra
+        return tetra.can_build_tetra()
+    if addon_id == "tetra_codec":
+        from . import tetra_codec
+        return tetra_codec.can_install()
     if addon_id == "vdl2":
         return sys.platform != "win32"
     return addon_id == "rtl_433" and _rtl433_asset() is not None
@@ -64,12 +71,26 @@ def install_dir(addon_id: str) -> Path:
 
 
 def state(addon_id: str) -> dict:
+    if addon_id == "tetra_codec":
+        from . import tetra_codec
+        return tetra_codec.install_state()
+    if addon_id == "tetra":
+        from . import tetra
+        return tetra.install_state()
     with _lock:
         s = _states.get(addon_id) or {"running": False, "log": [], "error": "", "hint": ""}
         return {**s, "log": list(s["log"][-12:])}
 
 
 def start(addon_id: str) -> None:
+    if addon_id == "tetra_codec":
+        from . import tetra_codec
+        tetra_codec.start()
+        return
+    if addon_id == "tetra":
+        from . import tetra
+        tetra.start_build()
+        return
     if not can_install(addon_id):
         raise RuntimeError(tr("FalconSDR cannot install this one on this computer: put the program in {folder} or set its path below.").format(folder=install_dir(addon_id)))
     with _lock:
@@ -80,14 +101,26 @@ def start(addon_id: str) -> None:
 
 
 def uninstall(addon_id: str) -> None:
-    shutil.rmtree(install_dir(addon_id), ignore_errors=True)
+    if addon_id == "tetra_codec":
+        from . import tetra_codec
+        tetra_codec.uninstall()
+        return
+    if addon_id == "tetra":
+        from . import tetra
+        tetra.uninstall_tetra()
+        return
     with _lock:
+        if _states.get(addon_id, {}).get("running"):
+            raise RuntimeError(tr("Installation is in progress - wait for it to finish."))
         _states.pop(addon_id, None)
+    shutil.rmtree(install_dir(addon_id), ignore_errors=True)
 
 
 def _say(addon_id: str, line: str) -> None:
     with _lock:
-        _states[addon_id]["log"].append(line)
+        st = _states.get(addon_id)
+        if st is not None:
+            st["log"].append(line)
 
 
 def install_hint() -> str:
@@ -120,9 +153,10 @@ def _download(addon_id: str, name: str, url: str, sha256: str, dest: Path) -> No
 
 
 def _run(addon_id: str, cmd: list[str], env: dict) -> None:
-    # A build must not starve a scanner that is running: lowest priority on POSIX (Windows never builds here).
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                          preexec_fn=(lambda: os.nice(15)) if os.name == "posix" else None)
+    # A build must not starve a scanner that is running: lowest priority on POSIX (via `nice`, never
+    # preexec_fn which can deadlock after fork() in a multithreaded process).
+    run_cmd = ["nice", "-n", "15", *cmd] if os.name == "posix" and shutil.which("nice") else cmd
+    proc = subprocess.run(run_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env)
     if proc.returncode != 0:
         for line in proc.stdout.decode("utf-8", "replace").strip().splitlines()[-6:]:
             _say(addon_id, line)
@@ -149,7 +183,7 @@ def _install_vdl2() -> None:
             raise RuntimeError("Missing for the build: " + ", ".join(missing))
         work = install_dir(addon_id).with_name("vdl2-build")
         shutil.rmtree(work, ignore_errors=True)
-        work.mkdir(parents=True)
+        work.mkdir(parents=True, exist_ok=True)
         try:
             jobs = str(max(1, (os.cpu_count() or 2) // 2))      # half the cores: the scanner may be running
             for name, url, sha256 in _VDL2_SOURCES:
@@ -189,7 +223,7 @@ def _install_rtl433() -> None:
         _say(addon_id, "rtl_433 (GPL-2.0) is downloaded as the author published it.")
         folder = install_dir(addon_id)
         shutil.rmtree(folder, ignore_errors=True)
-        folder.mkdir(parents=True)
+        folder.mkdir(parents=True, exist_ok=True)
         archive = folder / "download.zip"
         _say(addon_id, "Downloading rtl_433…")
         with _urlopen(url) as resp, open(archive, "wb") as out:
@@ -217,6 +251,8 @@ def _install_rtl433() -> None:
         except (OSError, subprocess.SubprocessError) as exc:
             ok, reason = False, [str(exc)]
         if not ok:
+            # Don't leave an unusable binary behind - otherwise find_program() reports it as installed.
+            shutil.rmtree(folder, ignore_errors=True)
             if sys.platform == "darwin":
                 with _lock:
                     _states[addon_id]["hint"] = "brew install librtlsdr libusb openssl@3"

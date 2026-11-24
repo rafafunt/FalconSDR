@@ -44,6 +44,9 @@ done
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "need '$1' (install it first)"; }
+as_root() {
+  if [ "$(id -u)" -eq 0 ]; then "$@"; else need sudo; sudo "$@"; fi
+}
 
 from_source_hint() {
   cat >&2 <<EOF
@@ -115,9 +118,9 @@ install_deb() {
   fetch_asset \
     "https://github.com/$REPO/releases/download/$tag/falconsdr_${tag#v}_${deb_arch}.deb" \
     "$tmp/falconsdr.deb"
-  say "Installing (sudo apt install)..."
-  sudo apt-get update -qq
-  sudo apt install -y "$tmp/falconsdr.deb"
+  say "Installing (apt install)..."
+  as_root apt-get update -qq
+  as_root apt install -y "$tmp/falconsdr.deb"
 }
 
 install_rpm() {
@@ -129,9 +132,9 @@ install_rpm() {
   fetch_asset \
     "https://github.com/$REPO/releases/download/$tag/falconsdr-${ver}-1.${arch}.rpm" \
     "$tmp/falconsdr.rpm"
-  if have_dnf; then sudo dnf install -y "$tmp/falconsdr.rpm"
-  elif have_zypper; then sudo zypper --non-interactive install --allow-unsigned-rpm "$tmp/falconsdr.rpm"
-  else sudo rpm -i "$tmp/falconsdr.rpm"; fi
+  if have_dnf; then as_root dnf install -y "$tmp/falconsdr.rpm"
+  elif have_zypper; then as_root zypper --non-interactive install --allow-unsigned-rpm "$tmp/falconsdr.rpm"
+  else as_root rpm -U "$tmp/falconsdr.rpm"; fi
 }
 
 install_aur() {
@@ -269,10 +272,15 @@ main() {
     from_source_hint; exit 1
   fi
   check_arch
-  if have_apt; then install_deb "$(release_tag)"
-  elif have_dnf || have_zypper; then install_rpm "$(release_tag)"
-  elif have_pacman; then install_aur
-  else install_appimage "$(release_tag)"; fi
+  if have_pacman; then
+    install_aur
+  else
+    tag="$(release_tag)"
+    [ -n "$tag" ] || die "couldn't find the latest release (GitHub API) - set FALCONSDR_VERSION=v1.6.0 or similar"
+    if have_apt; then install_deb "$tag"
+    elif have_dnf || have_zypper; then install_rpm "$tag"
+    else install_appimage "$tag"; return; fi
+  fi
   cat <<EOF
 
 Unplug and replug the RTL-SDR dongle once (USB permission rule), then run:

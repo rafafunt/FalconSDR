@@ -52,12 +52,16 @@ jobs:
         run: |
           python -m venv venv
           venv/bin/pip install -q -r requirements.txt pyinstaller pillow
+          # our own TETRA decoder (Rust, no dependencies), laid out as in the repository; the speech codec is fetched by the user
+          cargo build --release --locked --manifest-path tetra-rs/Cargo.toml
           echo "VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' falconsdr/__init__.py)" >> "$GITHUB_ENV"
           venv/bin/pyinstaller --name FalconSDR --windowed --onedir --noconfirm \
             --icon packaging/icons/falconsdr.png --osx-bundle-identifier app.falconsdr \
             --add-data falconsdr/locale/pl.po:falconsdr/locale \
             --add-data falconsdr/presets/band_presets.json:falconsdr/presets \
             --add-data falconsdr/web/static:falconsdr/web/static \
+            --add-data tetra-rs/target/release/falconsdr-tetra:tetra-rs/target/release \
+            --add-data tetra-rs/codec/falconsdr_sdecoder.c:tetra-rs/codec \
             --collect-data tzdata --collect-data pyrtlsdrlib \
             --collect-data imageio_ffmpeg --collect-all pip \
             --add-binary "$(brew --prefix)/lib/libhackrf.dylib:." \

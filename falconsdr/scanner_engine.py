@@ -35,6 +35,7 @@ from .channelizer import (
 )
 from .config import AppConfig, CONFIG_DIR, RecordingConfig, VfoRangeConfig
 from . import digital_voice
+from .addons import tetra as tetra_addon
 from .dsp import Demodulator, NoiseReducer
 from .i18n import tr
 from . import schedule
@@ -55,6 +56,13 @@ MAX_VFO_CHANNELS = 20_000
 # Channels closer than this to an active WFM slot are its own sidebands
 # (a broadcast station is ~200 kHz wide; same-area stations sit >=200 kHz apart).
 _WFM_GUARD_HZ = 200_000
+# A TETRA carrier is ~22 kHz wide: guard ±18 kHz so a 12.5 kHz grid doesn't
+# open duplicate slots on sidebands, while real adjacent 25 kHz carriers both open.
+_TETRA_GUARD_HZ = 18_000
+# TETRA base stations transmit 24/7 (MCCH): during multi-window scanning, visit
+# signalling-only TETRA slots for ~4 s (~3.9 multiframes) then move on unless Held.
+_TETRA_SCAN_VISIT_S = 4.0
+_MAX_TETRA_SLOTS = 8
 
 # Reflection detection (_detect_reflections): a strong channel can produce a
 # correlated, 10-25 dB weaker copy on another channel of the same window
@@ -351,6 +359,8 @@ class _Slot:
         # Digital voice (DMR/YSF): its dsd-fme process, None for analog - or
         # when the add-on is missing, then it plays as NFM.
         self.dsd: digital_voice.DsdDecoder | None = None
+        # Experimental clear-mode TETRA decoder (falconsdr-tetra subprocess).
+        self.tetra: tetra_addon.TetraSlotDecoder | None = None
         # Add-on data decoder (ACARS, APRS - falconsdr/addons): reads this slot's audio instead of playing/recording it.
         self.data_decoder = None
         self.data_addon = ""
@@ -403,6 +413,7 @@ class ScannerSignals:
         # Measured seconds since this window was last tuned (from the second visit on).
         self.cycle_time_changed = Signal()
         self.gain_range_changed = Signal()  # (lo_db, hi_db)
+        self.antennas_changed = Signal()    # tuple[str, ...]
         self.log = Signal()                # str
         # The continuous RTL-SDR stream crashed or ended the last run: DeviceConfig.async_read was switched
         # off for good - the Controller saves it.
@@ -506,6 +517,7 @@ class ScannerEngine(threading.Thread):
         self._seen_rates_version = 0
         self._logged_checkpoints: set[str] = set()  # see _checkpoint_once()
         self._dsd_warned = False
+        self._tetra_warned = False
 
         # Guards the scheduling state below: _rebuild_windows() replaces it
         # from the API thread while _next_window() reads it on this thread.
@@ -526,6 +538,7 @@ class ScannerEngine(threading.Thread):
         self._channel_name_by_khz: dict[int, str] = {}  # fallback lookup - see _rebuild_windows
         self._channel_mod_map: dict[int, Modulation] = {}
         self._channel_weight_map: dict[int, float] = {}
+        self._channel_map: dict[int, Channel] = {}
 
         self._cur_window: ScanWindow | None = None
         # center_hz -> monotonic time of the last tune, for cycle_time_changed.
@@ -538,6 +551,9 @@ class ScannerEngine(threading.Thread):
 
         self._applied_gain_mode = ""
         self._applied_gain_db = None
+        self._applied_antenna = ""
+        self._default_antenna = ""
+        self._failed_antennas: set[str] = set()
         # Only while the effective gain mode is "sw_auto" (agc.py).
         self._software_agc: SoftwareAgc | None = None
         self._plans: list = []
@@ -880,6 +896,10 @@ class ScannerEngine(threading.Thread):
     def bias_tee(self) -> bool:
         return bool(self._device.get("bias_tee")) if self._device else self.config.device.bias_tee
 
+    @property
+    def antenna(self) -> str:
+        return str((self._device or {}).get("antenna") or "") if self._device else self.config.device.antenna
+
     def _open_backend(self, allow_simulated_fallback: bool) -> None:
         dev = self.config.device
         driver, device_args = self.driver, self.device_args
@@ -888,12 +908,14 @@ class ScannerEngine(threading.Thread):
         if allow_simulated_fallback or driver == "simulated":
             raw_backend = create_backend(
                 driver, device_args, wanted_rate, dev.gain_mode, dev.gain_db,
-                debug_mode=self.config.debug_mode, bias_tee=self.bias_tee, async_read=dev.async_read,
+                debug_mode=self.config.debug_mode, bias_tee=self.bias_tee, async_read=dev.async_read, antenna=self.antenna,
             )
         else:
             # Reconnect after real hardware was seen: keep failing, never fall
             # back to simulation (gotcha 8/10).
-            raw_backend = open_real_backend(driver, device_args, wanted_rate, dev.gain_mode, dev.gain_db, self.bias_tee, dev.async_read)
+            raw_backend = open_real_backend(
+                driver, device_args, wanted_rate, dev.gain_mode, dev.gain_db, self.bias_tee, dev.async_read, antenna=self.antenna,
+            )
         # What the receiver really captures (an Airspy has a few fixed rates) is what everything below is built
         # on - and what the other engines plan with (SharedFrequencies).
         actual = float(getattr(raw_backend, "sample_rate", 0) or wanted_rate)
@@ -919,6 +941,11 @@ class ScannerEngine(threading.Thread):
         if plan_changed:
             self._rebuild_windows()
         self.signals.gain_range_changed.emit(*self._backend.gain_range_db)
+        antennas = getattr(self._backend, "antennas", ())
+        self._default_antenna = self.antenna or (antennas[0] if antennas else "")
+        self._applied_antenna = self._default_antenna
+        self._failed_antennas = set()
+        self.signals.antennas_changed.emit(antennas)
         if self.bias_tee and self._backend.label != "simulated":
             self.signals.log.emit(tr("Bias-T is on: the dongle powers its antenna input (until scanning stops)."))
         if self._backend.label == "simulated" and driver != "simulated":
@@ -1118,25 +1145,27 @@ class ScannerEngine(threading.Thread):
             weight_by_freq = {c.freq_hz: c.weight for c in weighted_channels}
             mod_by_freq = {c.freq_hz: c.modulation for c in weighted_channels}
             name_by_freq = {c.freq_hz: c.name for c in weighted_channels}
-            groups = plan_windows([c.freq_hz for c in weighted_channels], sample_rate, mem_bw)
-            for group in groups:
-                lane_weight = max(weight_by_freq[f] for f in group.freqs)
-                owning_band = _overlapping_band(group.freqs, enabled_bands)
+            bw_by_freq = {c.freq_hz: float(c.bandwidth_hz) if c.bandwidth_hz else mem_bw for c in weighted_channels}
+            groups = plan_windows([c.freq_hz for c in weighted_channels], sample_rate, max(bw_by_freq.values(), default=mem_bw))
+            for wgroup in groups:
+                lane_weight = max(weight_by_freq[f] for f in wgroup.freqs)
+                owning_band = _overlapping_band(wgroup.freqs, enabled_bands)
                 if owning_band is not None:
                     # Inside a scanned band: go wide, so the visit also covers its neighbours.
-                    windows = _wide_anchor_windows(group.freqs, owning_band, sample_rate)
+                    windows = _wide_anchor_windows(wgroup.freqs, owning_band, sample_rate)
                     band_mod = (Modulation(owning_band.modulation)
                                 if owning_band.modulation in Modulation._value2member_map_ else Modulation.AM)
                     for w in windows:
+                        w.antenna = owning_band.antenna or ""
                         for f in w.freqs:
                             if f in mod_by_freq:
-                                _claim(f, mem_bw, mod_by_freq[f], name_by_freq.get(f, ""), weight_by_freq[f])
+                                _claim(f, bw_by_freq.get(f, mem_bw), mod_by_freq[f], name_by_freq.get(f, ""), weight_by_freq[f])
                             elif f not in bw_map:
                                 _claim(f, float(max(1, owning_band.step_hz)), band_mod, weight=owning_band.weight)
                 else:
-                    windows = [group]
-                    for f in group.freqs:
-                        _claim(f, mem_bw, mod_by_freq.get(f, Modulation.AM), name_by_freq.get(f, ""),
+                    windows = [wgroup]
+                    for f in wgroup.freqs:
+                        _claim(f, bw_by_freq.get(f, mem_bw), mod_by_freq.get(f, Modulation.AM), name_by_freq.get(f, ""),
                                weight_by_freq.get(f, 0.0))
                 priority_lanes.append(_Lane(weight=lane_weight, windows=windows, is_range=False))
 
@@ -1162,6 +1191,7 @@ class ScannerEngine(threading.Thread):
                 _extend_edges(windows, float(max(1, vr.step_hz)))
             for w in windows:
                 w.band = vr  # unambiguous: this whole lane is one band's own grid
+                w.antenna = vr.antenna or ""
             priority_lanes.append(_Lane(weight=vr.weight, windows=windows, is_range=True))
 
         # -- default lane: everything with weight 0, pooled together. -------
@@ -1173,7 +1203,7 @@ class ScannerEngine(threading.Thread):
         band_freqs: set[int] = set()
         for c in plain_channels:
             if c.freq_hz not in bw_map:
-                _claim(c.freq_hz, mem_bw, c.modulation, c.name, c.weight)
+                _claim(c.freq_hz, float(c.bandwidth_hz) if c.bandwidth_hz else mem_bw, c.modulation, c.name, c.weight)
             default_freqs.append(c.freq_hz)
         for vr in plain_bands:
             freqs, band_mod = _band_grid(vr)
@@ -1195,14 +1225,25 @@ class ScannerEngine(threading.Thread):
                     band_freqs.add(f)
 
         default_grouping_bw = max((bw_map[f] for f in default_freqs), default=25_000.0)
-        default_windows = plan_windows(default_freqs, sample_rate, default_grouping_bw)
-        _extend_edges(default_windows, default_grouping_bw, band_freqs)
-        for w in default_windows:
-            # VfoRangeConfig is a plain (mutable, unhashable) dataclass, so
-            # identity-compare (`is`) rather than building a set of them.
-            owners = [freq_to_band[f] for f in w.freqs if f in freq_to_band]
-            if owners and all(b is owners[0] for b in owners):
-                w.band = owners[0]
+        # Partition by requested antenna port so bands on different antenna ports
+        # never share one capture window.
+        by_ant: dict[str, list[int]] = {}
+        for f in default_freqs:
+            ant = (freq_to_band[f].antenna or "") if f in freq_to_band else ""
+            by_ant.setdefault(ant, []).append(f)
+        default_windows: list[ScanWindow] = []
+        for ant, ant_freqs in by_ant.items():
+            ant_bw = max((bw_map[f] for f in ant_freqs), default=default_grouping_bw)
+            ant_windows = plan_windows(ant_freqs, sample_rate, ant_bw)
+            _extend_edges(ant_windows, ant_bw, band_freqs)
+            for w in ant_windows:
+                w.antenna = ant
+                # VfoRangeConfig is a plain (mutable, unhashable) dataclass, so
+                # identity-compare (`is`) rather than building a set of them.
+                owners = [freq_to_band[f] for f in w.freqs if f in freq_to_band]
+                if owners and all(b is owners[0] for b in owners):
+                    w.band = owners[0]
+            default_windows.extend(ant_windows)
 
         # Display names from all channels, enabled or not, matched by rounded
         # kHz - like the Recordings page: a disabled channel can still be
@@ -1244,6 +1285,7 @@ class ScannerEngine(threading.Thread):
             self._channel_name_by_khz = name_by_khz
             self._channel_mod_map = mod_map
             self._channel_weight_map = weight_map
+            self._channel_map = {c.freq_hz: c for c in enabled_channels}
 
         total_windows = len(default_windows) + sum(len(lane.windows) for lane in priority_lanes)
         extra = (
@@ -1278,6 +1320,28 @@ class ScannerEngine(threading.Thread):
         if mode != self._applied_gain_mode or db != self._applied_gain_db:
             self._backend.set_gain(mode, db)
             self._applied_gain_mode, self._applied_gain_db = mode, db
+
+    def _effective_antenna(self, window: ScanWindow | None) -> str:
+        band = _live_band(self.config, window)
+        if band is not None and band.antenna:
+            return band.antenna
+        if window is not None and window.antenna:
+            return window.antenna
+        return self._default_antenna
+
+    def _maybe_apply_antenna(self, window: ScanWindow | None) -> None:
+        want = self._effective_antenna(window)
+        if not want or want == self._applied_antenna or want in self._failed_antennas:
+            return
+        if not hasattr(self._backend, "set_antenna"):
+            return
+        try:
+            self._backend.set_antenna(want)
+            self._applied_antenna = want
+            self._last_tuned_center_hz = None  # force settle on the new antenna input
+        except Exception as exc:  # noqa: BLE001 - an unsupported port name must not stop scanning
+            self._failed_antennas.add(want)
+            self.signals.log.emit(tr("Could not switch antenna to \"{antenna}\" ({error})").format(antenna=want, error=exc))
 
     def _maybe_run_software_agc(self, iq: np.ndarray) -> None:
         """Steps the SoftwareAgc from this tick's IQ peak; no-op unless "sw_auto"."""
@@ -1446,6 +1510,7 @@ class ScannerEngine(threading.Thread):
             if self._shared is not None and self._shared.rates_version != self._seen_rates_version:
                 self._rebuild_windows()   # a receiver turned out to capture another width: the shared plan changes
             self._maybe_apply_gain(self._cur_window)
+            self._maybe_apply_antenna(self._cur_window)
             chunk = self._chunk_size()
 
             if state == ScannerState.CALCULATE_NEXT_FREQ:
@@ -1455,6 +1520,7 @@ class ScannerEngine(threading.Thread):
                     time.sleep(0.3)
                     continue
                 self._cur_window = window
+                self._maybe_apply_antenna(window)
                 self._emit_freqs()  # no slots active here (guaranteed - see below) -> shows the window placeholder
                 if window.center_hz == self._last_tuned_center_hz:
                     # Already tuned here (narrow or solo band): skip the
@@ -1522,14 +1588,19 @@ class ScannerEngine(threading.Thread):
                 wfm_active = [
                     s.freq_hz for s in self._slots.values() if s.modulation == Modulation.WFM
                 ]
+                tetra_active = [
+                    s.freq_hz for s in self._slots.values() if s.modulation == Modulation.TETRA
+                ]
                 candidate_freqs = [
                     f for f, ok in zip(window.freqs, not_blacklisted)
                     if ok and f not in self._slots
                     and not any(abs(f - w) < _WFM_GUARD_HZ for w in wfm_active)
+                    and not any(abs(f - t) < _TETRA_GUARD_HZ for t in tetra_active)
                     and not (self._shared and self._shared.taken_by_other(f, self))
                 ]
                 raw_powers: dict[int, float] = {}
                 best_freq = best_level = None
+                cand_freq = cand_level = cand_trigger = None
                 if candidate_freqs:
                     raw_powers = channel_powers_from_spectrum(
                         spectrum, window.center_hz, candidate_freqs, self._channel_bw_map,
@@ -1537,15 +1608,23 @@ class ScannerEngine(threading.Thread):
                     # Edge-corrected for triggering only; raw_powers go to logs/metadata.
                     corrected = self._apply_edge_compensation(raw_powers, window.center_hz)
                     best_freq, best_level = _strongest(corrected)
+                    triggered = [
+                        (f, lvl, self._effective_trigger_dbfs(window, f))
+                        for f, lvl in corrected.items()
+                        if lvl >= self._effective_trigger_dbfs(window, f)
+                    ]
+                    if triggered:
+                        cand_freq, cand_level, cand_trigger = max(triggered, key=lambda x: x[1])
 
                 effective_trigger = self._effective_trigger_dbfs(window)
                 self.signals.level_changed.emit(
                     primary_level if primary_level is not None
                     else (best_level if best_level is not None else -120.0)
                 )
+                band = _live_band(self.config, window)
                 self._submit_spectrum(
                     iq, sample_rate, window.center_hz, effective_trigger,
-                    window.band is not None and window.band.has_advanced_overrides,
+                    band is not None and band.has_advanced_overrides,
                 )
                 self._emit_state(self._display_state())
 
@@ -1561,27 +1640,34 @@ class ScannerEngine(threading.Thread):
                         self.set_hold(False)
                     state = ScannerState.CALCULATE_NEXT_FREQ
                     self._emit_state(state)
-                elif best_freq is not None and best_level >= effective_trigger:
-                    if self._at_recording_capacity():
+                elif self._tetra_visit_done():
+                    # Continuous 24/7 TETRA base station beacon(s) with no active clear voice:
+                    # release the window after _TETRA_SCAN_VISIT_S so multi-window scanning moves on.
+                    for f in list(self._slots.keys()):
+                        self._close_slot(f, reason="tetra_visit")
+                    state = ScannerState.CALCULATE_NEXT_FREQ
+                    self._emit_state(state)
+                elif cand_freq is not None:
+                    if self._at_recording_capacity(cand_freq):
                         now = time.monotonic()
-                        if now - self._capacity_logged.get(best_freq, 0.0) > 30.0:
-                            self._capacity_logged[best_freq] = now
+                        if self._cand_records_audio(cand_freq) and now - self._capacity_logged.get(cand_freq, 0.0) > 30.0:
+                            self._capacity_logged[cand_freq] = now
                             self.signals.log.emit(
                                 tr("Limit of {n} simultaneous recordings reached - {freq:.4f} MHz not recorded").format(
-                                    n=self.config.recording.max_concurrent_recordings, freq=best_freq / 1e6,
+                                    n=self.config.recording.max_concurrent_recordings, freq=cand_freq / 1e6,
                                 )
                             )
                         if not any_active and not self._hold and now >= scanning_deadline:
                             state = ScannerState.CALCULATE_NEXT_FREQ
                             self._emit_state(state)
                     else:
-                        raw_level = raw_powers[best_freq]
+                        raw_level = raw_powers[cand_freq]
                         self._calibration_log.log_detect(
-                            best_freq, window.center_hz, sample_rate, self._applied_gain_mode,
-                            self._applied_gain_db, raw_level, effective_trigger,
-                            self._channel_bw_map.get(best_freq, 0.0),
+                            cand_freq, window.center_hz, sample_rate, self._calibration_key(self._applied_gain_mode),
+                            self._applied_gain_db, raw_level, cand_trigger,
+                            self._channel_bw_map.get(cand_freq, 0.0),
                         )
-                        self._open_slot(best_freq, window, raw_level)
+                        self._open_slot(cand_freq, window, raw_level)
                 elif not any_active and not self._hold and time.monotonic() >= scanning_deadline:
                     # Nothing active and the dwell is over - move on.
                     self._maybe_log_floor(iq, sample_rate, window)
@@ -1648,10 +1734,12 @@ class ScannerEngine(threading.Thread):
             return powers
         return {f: v + self._correction_db(f - center_hz) for f, v in powers.items()}
 
-    # -- per-band overrides ---------------------------------------------
-    # A window tagged with a band uses that band's own trigger/timing/gain/
-    # noise reduction where set; None falls back to the global setting.
-    def _effective_trigger_dbfs(self, window: ScanWindow | None) -> float:
+    # -- per-channel and per-band overrides ------------------------------
+    # Precedence: Memory List channel override -> Band override -> Global setting.
+    def _effective_trigger_dbfs(self, window: ScanWindow | None, freq_hz: int | None = None) -> float:
+        ch = getattr(self, "_channel_map", {}).get(freq_hz) if freq_hz is not None else None
+        if ch is not None and ch.trigger_level_dbfs is not None:
+            return ch.trigger_level_dbfs
         band = _live_band(self.config, window)
         if band is not None and band.trigger_level_dbfs is not None:
             return band.trigger_level_dbfs
@@ -1663,7 +1751,10 @@ class ScannerEngine(threading.Thread):
             return band.tuning_time_ms
         return self.config.timing.tuning_time_ms
 
-    def _effective_linger_time_ms(self, window: ScanWindow | None) -> int:
+    def _effective_linger_time_ms(self, window: ScanWindow | None, freq_hz: int | None = None) -> int:
+        ch = getattr(self, "_channel_map", {}).get(freq_hz) if freq_hz is not None else None
+        if ch is not None and ch.linger_time_ms is not None:
+            return ch.linger_time_ms
         band = _live_band(self.config, window)
         if band is not None and band.linger_time_ms is not None:
             return band.linger_time_ms
@@ -1676,28 +1767,45 @@ class ScannerEngine(threading.Thread):
         db = band.gain_db if band is not None and band.gain_db is not None else dev.gain_db
         return mode, db
 
-    def _effective_squelch_dbfs(self, window: ScanWindow | None) -> float | None:
+    def _effective_squelch_dbfs(self, window: ScanWindow | None, freq_hz: int | None = None) -> float | None:
         """None when squelch is off, else effective trigger + offset (offset
         clamped <= 0, so it can never mute during SIGNAL_DETECTED - gotcha 6).
         Mutes live audio and writes silence; never affects LINGER/closing."""
+        ch = getattr(self, "_channel_map", {}).get(freq_hz) if freq_hz is not None else None
         band = _live_band(self.config, window)
-        enabled = band.squelch_enabled if band is not None and band.squelch_enabled is not None else self.config.squelch_enabled
+        if ch is not None and ch.squelch_enabled is not None:
+            enabled = ch.squelch_enabled
+        elif band is not None and band.squelch_enabled is not None:
+            enabled = band.squelch_enabled
+        else:
+            enabled = self.config.squelch_enabled
         if not enabled:
             return None
-        offset = band.squelch_offset_db if band is not None and band.squelch_offset_db is not None else self.config.squelch_offset_db
-        return self._effective_trigger_dbfs(window) + min(0.0, offset)
+        if ch is not None and ch.squelch_offset_db is not None:
+            offset = ch.squelch_offset_db
+        elif band is not None and band.squelch_offset_db is not None:
+            offset = band.squelch_offset_db
+        else:
+            offset = self.config.squelch_offset_db
+        trigger = self._effective_trigger_dbfs(window) if freq_hz is None else self._effective_trigger_dbfs(window, freq_hz)
+        return trigger + min(0.0, offset)
 
-    def _effective_noise_reduction(self, window: ScanWindow | None) -> tuple[bool, float]:
+    def _effective_noise_reduction(self, window: ScanWindow | None, freq_hz: int | None = None) -> tuple[bool, float]:
+        ch = getattr(self, "_channel_map", {}).get(freq_hz) if freq_hz is not None else None
         band = _live_band(self.config, window)
         nr = self.config.noise_reduction
-        enabled = (
-            band.noise_reduction_enabled if band is not None and band.noise_reduction_enabled is not None
-            else nr.enabled
-        )
-        strength = (
-            band.noise_reduction_strength if band is not None and band.noise_reduction_strength is not None
-            else nr.strength
-        )
+        if ch is not None and ch.noise_reduction_enabled is not None:
+            enabled = ch.noise_reduction_enabled
+        elif band is not None and band.noise_reduction_enabled is not None:
+            enabled = band.noise_reduction_enabled
+        else:
+            enabled = nr.enabled
+        if ch is not None and ch.noise_reduction_strength is not None:
+            strength = ch.noise_reduction_strength
+        elif band is not None and band.noise_reduction_strength is not None:
+            strength = band.noise_reduction_strength
+        else:
+            strength = nr.strength
         return enabled, strength
 
     def _maybe_log_floor(self, iq: np.ndarray, sample_rate: float, window: ScanWindow) -> None:
@@ -1720,9 +1828,6 @@ class ScannerEngine(threading.Thread):
             return None
         active_freqs = list(self._slots.keys())
         raw_powers = channel_powers_from_spectrum(spectrum, window.center_hz, active_freqs, self._channel_bw_map)
-        trigger_dbfs = self._effective_trigger_dbfs(window)
-        squelch_dbfs = self._effective_squelch_dbfs(window)
-        linger_time_ms = self._effective_linger_time_ms(window)
         primary_level = None
 
         # Non-primary slots run in parallel on _slot_pool (gotcha 12) - each
@@ -1734,10 +1839,12 @@ class ScannerEngine(threading.Thread):
             # Edge-corrected, so a slot near the window edge doesn't linger out early.
             level = raw_powers.get(freq_hz, -120.0) + self._correction_db(slot.offset_hz)
             slot.level_history.append(level)
+            slot_trigger = self._effective_trigger_dbfs(window, freq_hz)
+            slot_squelch = self._effective_squelch_dbfs(window, freq_hz)
             # AM is divided by its carrier; below the trigger there is no carrier, only noise, which must stay quiet.
-            slot.demod.carrier_floor = 10.0 ** ((trigger_dbfs - 6.0) / 20.0)
+            slot.demod.carrier_floor = 10.0 ** ((slot_trigger - 6.0) / 20.0)
             # Squelch only mutes audio; LINGER below depends on the trigger alone.
-            squelched = squelch_dbfs is not None and level < squelch_dbfs
+            squelched = slot_squelch is not None and level < slot_squelch
             if freq_hz == self._primary_freq:
                 primary_level = level
                 self._process_one_slot(slot, iq, squelched)
@@ -1749,10 +1856,12 @@ class ScannerEngine(threading.Thread):
         for freq_hz, slot, level, future in tasks:
             if future is not None:
                 future.result()  # re-raises the slot's own exception
-            if level >= trigger_dbfs:
+            slot_trigger = self._effective_trigger_dbfs(window, freq_hz)
+            slot_linger = self._effective_linger_time_ms(window, freq_hz)
+            if level >= slot_trigger:
                 slot.linger_deadline = None
             elif slot.linger_deadline is None:
-                slot.linger_deadline = time.monotonic() + linger_time_ms / 1000.0
+                slot.linger_deadline = time.monotonic() + slot_linger / 1000.0
             elif time.monotonic() >= slot.linger_deadline:
                 self._close_slot(freq_hz)
         self._detect_reflections(tasks)
@@ -1766,8 +1875,12 @@ class ScannerEngine(threading.Thread):
         if len(slots) < 2 or len(slots) > _REFLECTION_MAX_SLOTS_CHECKED:
             return
         # Per-slot stats computed once, not once per pair.
+        # TETRA carriers are CRC-verified digital downlinks; two real carriers on the same
+        # mast can fade together and must not discard each other as reflections.
         prepared: dict[int, tuple[np.ndarray, float, float]] = {}
         for slot in slots:
+            if slot.modulation == Modulation.TETRA:
+                continue
             if len(slot.level_history) < _REFLECTION_MIN_OVERLAP_TICKS:
                 continue
             arr = np.array(slot.level_history)
@@ -1815,8 +1928,20 @@ class ScannerEngine(threading.Thread):
                 slot.announced_call = call
                 self.signals.log.emit(tr("{mod} {freq:.4f} MHz: to {tg} from {src}").format(
                     mod=slot.modulation.value, freq=slot.freq_hz / 1e6, tg=call[0], src=call[1]))
+        elif getattr(slot, "tetra", None) is not None:
+            squelched = False
+            slot.tetra.feed(slot.demod.channelize_iq(iq, slot.offset_hz, tetra_addon.TETRA_IQ_RATE))
+            audio = slot.tetra.read(round(iq.size * AUDIO_RATE / slot.demod.sample_rate))
+            events = slot.tetra.drain_events()
+            if events and self.addons is not None:
+                self.addons.publish_decoded("tetra", slot.freq_hz, events)
+            call = (slot.tetra.talkgroup, slot.tetra.source)
+            if call[0] and call != slot.announced_call:
+                slot.announced_call = call
+                self.signals.log.emit(tr("{mod} {freq:.4f} MHz: to {tg} from {src}").format(
+                    mod=slot.modulation.value, freq=slot.freq_hz / 1e6, tg=call[0], src=call[1] or "?"))
         else:
-            mod = Modulation.NFM if slot.modulation in digital_voice.DIGITAL_MODULATIONS else slot.modulation
+            mod = Modulation.NFM if slot.modulation in (*digital_voice.DIGITAL_MODULATIONS, Modulation.TETRA) else slot.modulation
             audio = slot.demod.demod(iq, mod, slot.offset_hz)
         if slot.data_decoder is not None:
             self._decode_data(slot, audio)
@@ -1837,14 +1962,59 @@ class ScannerEngine(threading.Thread):
         if events and self.addons is not None:
             self.addons.publish_decoded(slot.data_addon, slot.freq_hz, events)
 
-    def _at_recording_capacity(self) -> bool:
+    def _has_multiple_windows(self) -> bool:
+        with self._lock:
+            n = len(self._default_lane.windows) + sum(len(l.windows) for l in self._priority_lanes)
+        return n > 1
+
+    def _tetra_visit_done(self) -> bool:
+        """True when all open slots are signalling-only TETRA beacons and the
+        multi-window visit budget has elapsed (so scanning moves on)."""
+        if self._hold or not self._slots or not self._has_multiple_windows():
+            return False
+        for slot in self._slots.values():
+            tetra = getattr(slot, "tetra", None)
+            if tetra is None or tetra.has_active_voice():
+                return False
+        oldest = min(s.opened_at for s in self._slots.values())
+        return (time.monotonic() - oldest) >= _TETRA_SCAN_VISIT_S
+
+    def _slot_records_audio(self, slot: _Slot) -> bool:
+        if self._is_silent_data(slot):
+            return False
+        tetra = getattr(slot, "tetra", None)
+        if tetra is not None and not tetra.has_codec:
+            return False
+        return True
+
+    def _has_tetra_codec(self) -> bool:
+        paths = getattr(self.config, "addons", None)
+        codec = str((paths.paths if paths is not None else {}).get("tetra_codec", "")).strip()
+        return bool(codec and Path(codec).expanduser().is_file())
+
+    def _cand_records_audio(self, freq_hz: int | None) -> bool:
+        if freq_hz is None:
+            return True
+        if self._channel_mod_map.get(freq_hz) == Modulation.TETRA and not self._has_tetra_codec():
+            return False
+        return True
+
+    def _at_recording_capacity(self, cand_freq: int | None = None) -> bool:
         """True when one more slot would exceed max_concurrent_recordings
         (0 = unlimited, gotcha 24). Only while auto-recording is on -
-        otherwise it would limit live listening too."""
+        otherwise it would limit live listening too. Purely signalling slots
+        (ACARS/APRS, TETRA without a speech codec) do not consume recording slots."""
+        if cand_freq is not None and self._channel_mod_map.get(cand_freq) == Modulation.TETRA:
+            tetra_open = sum(1 for s in self._slots.values() if getattr(s, "tetra", None) is not None)
+            if tetra_open >= _MAX_TETRA_SLOTS:
+                return True
+            if not self._has_tetra_codec():
+                return False
         limit = self.config.recording.max_concurrent_recordings
         if not self.config.recording.enabled or limit <= 0:
             return False
-        return len(self._slots) >= limit
+        rec_slots = sum(1 for s in self._slots.values() if self._slot_records_audio(s))
+        return rec_slots >= limit
 
     def _open_slot(self, freq_hz: int, window: ScanWindow, level_dbfs: float) -> None:
         if self._shared is not None and not self._shared.claim(freq_hz, self):
@@ -1860,7 +2030,7 @@ class ScannerEngine(threading.Thread):
             modulation = claim.modulation      # the decoder needs this demodulation whatever the band says
         offset_hz = float(freq_hz - window.center_hz)
         slot = _Slot(freq_hz, name, modulation, offset_hz, demod, noise_reducer, recorder)
-        if claim is not None:
+        if claim is not None and claim.addon_id != "tetra":
             slot.data_decoder, slot.data_addon = claim.make(), claim.addon_id
         slot.window = window  # remembered for _register_recency_boost on close
         if modulation in digital_voice.DIGITAL_MODULATIONS:
@@ -1871,20 +2041,35 @@ class ScannerEngine(threading.Thread):
                     self._dsd_warned = True
                     self.signals.log.emit(tr("Digital voice is not available ({error}) - playing {mod} channels as NFM").format(
                         error=exc, mod=modulation.value))
+        elif modulation == Modulation.TETRA:
+            paths = getattr(self.config, "addons", None)
+            paths_map = paths.paths if paths is not None else {}
+            try:
+                slot.tetra = tetra_addon.TetraSlotDecoder(
+                    freq_hz, AUDIO_RATE,
+                    custom_path=str(paths_map.get("tetra", "")),
+                    codec_path=str(paths_map.get("tetra_codec", "")),
+                )
+                if claim is None and self.addons is not None:
+                    self.addons.note_slot("tetra")
+            except (RuntimeError, OSError) as exc:
+                if not self._tetra_warned:
+                    self._tetra_warned = True
+                    self.signals.log.emit(tr("TETRA decoder is not available ({error}) - playing TETRA channels as NFM").format(error=exc))
         self._slots[freq_hz] = slot
 
         # Higher weight wins the live speaker; a tie keeps whichever slot
         # already had it ("first heard" - only a strictly higher weight
         # actually takes over).
         weight = self._channel_weight_map.get(freq_hz, 0.0)
-        if self._is_silent_data(slot):
-            weight = -1.0                      # a data channel never takes the speaker from a voice channel
+        if self._is_silent_data(slot) or (slot.tetra is not None and not slot.tetra.has_codec):
+            weight = -1.0                      # a silent data/signalling channel never takes the speaker from a voice channel
         if self._primary_freq is None or weight > self._primary_weight:
             self._primary_freq = freq_hz
             self._primary_weight = weight
 
         timing = self.config.timing
-        nr_enabled, nr_strength = self._effective_noise_reduction(window)
+        nr_enabled, nr_strength = self._effective_noise_reduction(window, freq_hz)
         # WAV metadata (wav_metadata.py): the settings and RF conditions this
         # was captured with, per the window's effective settings. Written on close.
         slot.meta = {
@@ -1897,21 +2082,22 @@ class ScannerEngine(threading.Thread):
             "offset_from_center_hz": offset_hz,
             "sample_rate_hz": self.sample_rate_hz,
             "channel_bw_hz": self._channel_bw_map.get(freq_hz),
-            "trigger_level_dbfs": self._effective_trigger_dbfs(window),
+            "trigger_level_dbfs": self._effective_trigger_dbfs(window, freq_hz),
             "measured_dbfs_at_trigger": level_dbfs,
             "edge_correction_db": self._correction_db(offset_hz),
             "gain_mode": self._applied_gain_mode,
             "gain_db": self._applied_gain_db,
+            "antenna": self._applied_antenna,
             "device_driver": self.driver,
             "scanning_dwell_ms": timing.scanning_dwell_ms,
             "tuning_time_ms": self._effective_tuning_time_ms(window),
-            "linger_time_ms": self._effective_linger_time_ms(window),
+            "linger_time_ms": self._effective_linger_time_ms(window, freq_hz),
             "noise_reduction_enabled": nr_enabled,
             "noise_reduction_strength": nr_strength,
             "opened_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         }
 
-        if self.config.recording.enabled:
+        if self.config.recording.enabled and self._slot_records_audio(slot):
             if self._disk_low():
                 slot.recording_failed = True
                 self._log_disk_trouble(tr("Less than 1 GB free on the recordings disk - not recording"))
@@ -1935,15 +2121,31 @@ class ScannerEngine(threading.Thread):
             slot.meta.update(talkgroup=slot.dsd.talkgroup, source=slot.dsd.source, encrypted=slot.dsd.encrypted)
             if slot.dsd.encrypted:
                 self.signals.log.emit(tr("{freq:.4f} MHz: encrypted - not decoded").format(freq=freq_hz / 1e6))
+        tetra = getattr(slot, "tetra", None)
+        if tetra is not None:
+            tetra.close()
+            rem = tetra.drain_events()
+            if rem and self.addons is not None:
+                self.addons.publish_decoded("tetra", freq_hz, rem)
+            slot.meta.update(
+                talkgroup=tetra.talkgroup, source=tetra.source, encrypted=tetra.encrypted,
+                mcc=tetra.mcc, mnc=tetra.mnc,
+            )
+            if tetra.encrypted:
+                self.signals.log.emit(tr("{freq:.4f} MHz: encrypted - not decoded").format(freq=freq_hz / 1e6))
         finished_path = None
-        if self.config.recording.enabled:
+        # Check whether this slot actually opened a file (not the current config flag:
+        # toggling auto-recording off mid-transmission must still finalize the open WAV).
+        if slot.recorder.is_writing:
             finished_path = slot.recorder.end_transmission()
             slot.recorder.stop_session()
-            if (finished_path is None and reason == "linger" and not slot.recording_failed and not (slot.dsd and slot.dsd.encrypted)
+            tetra_signalling_only = bool(tetra and (tetra.encrypted or tetra.events_seen > 0))
+            if (finished_path is None and reason == "linger" and not slot.recording_failed
+                    and not (slot.dsd and slot.dsd.encrypted) and not tetra_signalling_only
                     and not self._is_silent_data(slot)):
                 # Recorder dropped it - say so, a silent loss looks like a bug.
                 self.signals.log.emit(
-                    (tr("{freq:.4f} MHz: no digital voice decoded - recording discarded") if slot.dsd
+                    (tr("{freq:.4f} MHz: no digital voice decoded - recording discarded") if (slot.dsd or tetra)
                      else tr("{freq:.4f} MHz: nothing above the squelch level - recording discarded")).format(freq=freq_hz / 1e6)
                 )
             if finished_path is not None and reason == "reflection":
@@ -2010,9 +2212,11 @@ class ScannerEngine(threading.Thread):
             self._primary_freq = None
             self._primary_weight = -1.0
             return
-        freq_hz = max(self._slots, key=lambda f: self._channel_weight_map.get(f, 0.0))
+        def _slot_weight(f: int) -> float:
+            return -1.0 if self._is_silent_data(self._slots[f]) else self._channel_weight_map.get(f, 0.0)
+        freq_hz = max(self._slots, key=_slot_weight)
         self._primary_freq = freq_hz
-        self._primary_weight = self._channel_weight_map.get(freq_hz, 0.0)
+        self._primary_weight = _slot_weight(freq_hz)
 
     def _emit_recording_changed(self) -> None:
         # An open slot is only a recording when a file is being written -
@@ -2043,10 +2247,13 @@ class ScannerEngine(threading.Thread):
             if slot.freq_hz == self._primary_freq:
                 # Manual recording gets what a listener hears: silence.
                 self._feed_manual_recording(np.zeros(audio.shape[0], dtype=np.float32))
-            if self.config.recording.enabled:
+            if self.config.recording.enabled and not slot.recording_failed:
                 # real=False: silence alone doesn't make a recording worth keeping.
                 silence = np.zeros(audio.shape[0], dtype=np.float32)
-                slot.recorder.write_audio(silence, real=False)
+                try:
+                    slot.recorder.write_audio(silence, real=False)
+                except OSError as exc:
+                    self._recording_failed(slot, exc)
             return
         if slot.was_squelched:
             # The noise reducer is stateful and was skipped during the gap -
@@ -2055,21 +2262,22 @@ class ScannerEngine(threading.Thread):
             slot.noise_reducer.reset()
             slot.was_squelched = False
         # Vocoder output is already clean; a spectral gate only damages it.
-        mono = audio if slot.dsd is not None else self._apply_noise_reduction(slot, audio)
+        is_digital = slot.dsd is not None or getattr(slot, "tetra", None) is not None
+        mono = audio if is_digital else self._apply_noise_reduction(slot, audio)
         if slot.freq_hz == self._primary_freq:
             self.signals.live_audio_ready.emit(mono)
         if slot.freq_hz == self._primary_freq:
             # Manual recording follows the primary slot regardless of mute.
             self._feed_manual_recording(mono, freq_hz=slot.freq_hz)
-        if self.config.recording.enabled and not slot.recording_failed:
+        if self.config.recording.enabled and not slot.recording_failed and slot.recorder.is_writing:
             # Digital: only decoded voice makes a recording worth keeping (not an encrypted call's silence).
             try:
-                slot.recorder.write_audio(mono, real=slot.dsd is None or bool(mono.any()))
+                slot.recorder.write_audio(mono, real=not is_digital or bool(mono.any()))
             except OSError as exc:
                 self._recording_failed(slot, exc)
 
     def _apply_noise_reduction(self, slot: _Slot, audio):
-        enabled, strength = self._effective_noise_reduction(slot.window)
+        enabled, strength = self._effective_noise_reduction(slot.window, slot.freq_hz)
         if not enabled:
             return audio
         return slot.noise_reducer.process(audio, strength=strength)

@@ -45,6 +45,14 @@ _LOGIN_FAIL_DELAY_S = 1.0  # a threaded server: this slows a password guesser, n
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 
 
+def _host_without_port(host_header: str) -> str:
+    h = host_header.strip().lower()
+    if h.startswith("["):
+        end = h.find("]")
+        return h[:end + 1] if end != -1 else h
+    return h.rsplit(":", 1)[0]
+
+
 def may_change_command_line(token: str, client_ip: str) -> bool:
     """A program path plus arguments is a command line: only this computer, or somebody who has the access password."""
     return bool(token) or client_ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
@@ -162,7 +170,7 @@ def make_handler(app: App):
             path, query = url.path, parse_qs(url.query)
             try:
                 if (app.mode == "local" and not app.token
-                        and self.headers.get("Host", "").rsplit(":", 1)[0] not in _LOOPBACK_HOSTS):
+                        and _host_without_port(self.headers.get("Host", "")) not in _LOOPBACK_HOSTS):
                     return self._error(403, "Forbidden")  # localhost-only UI: refuse DNS-rebinding hosts
                 if method in ("POST", "PUT") and self.headers.get("X-FalconSDR") != "1":
                     # A custom header forces a CORS preflight this server never
@@ -255,6 +263,8 @@ def make_handler(app: App):
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True
+            if self.command == "HEAD":
+                return
             q = ctl.subscribe_audio()
             try:
                 while True:
@@ -286,8 +296,8 @@ def make_handler(app: App):
             self._json(ctl.live())
 
         # -- settings -------------------------------------------------------
-        def settings(self, _query: dict) -> None:
-            data = ctl.settings()
+        def settings(self, query: dict) -> None:
+            data = ctl.settings(refresh_devices=_qs(query, "refresh_devices") == "1")
             data["curated"] = {
                 "military": [channel_dict(c) for c in military_presets.MILITARY_CHANNELS],
                 "fire": [channel_dict(c) for c in military_presets.FIRE_CHANNELS],
@@ -387,7 +397,7 @@ def make_handler(app: App):
             if self.command == "POST":
                 body = self._body()
                 if action == "configure":
-                    if ("path" in body or "extra_args" in body) and not may_change_command_line(app.token, self.client_address[0]):
+                    if any(k in body for k in ("path", "extra_args", "codec_path")) and not may_change_command_line(app.token, self.client_address[0]):
                         # A program path plus arguments is a command line: with no password on the network anyone could run anything.
                         return self._error(403, i18n.tr("Changing a program's path or options needs an access password (Settings) or this computer."))
                     ctl.addons.configure(str(body.get("id", "")), body)
@@ -398,7 +408,7 @@ def make_handler(app: App):
                 elif action == "install":
                     installer.start(str(body.get("id", "")))
                 elif action == "uninstall":
-                    if ctl.addons.running_external == str(body.get("id", "")):
+                    if str(body.get("id", "")) in ctl.addons.running_ids:
                         raise ValueError(i18n.tr("Another add-on is running - stop it first."))
                     installer.uninstall(str(body.get("id", "")))
             self._json({"addons": ctl.addons.status(), "running": ctl.addons.running_external})
@@ -489,7 +499,7 @@ def make_handler(app: App):
 
         def storage(self, _query: dict) -> None:
             victims = lib.retention_victims()
-            sizes = sum(lib.get(rel).size for rel in victims if lib.get(rel))
+            sizes = sum(rec.size for rel in victims if (rec := lib.get(rel)) is not None)
             self._json({**lib.storage(), "retention_pending": len(victims), "retention_bytes": sizes})
 
         def lib_delete(self, _query: dict) -> None:
@@ -668,22 +678,31 @@ def make_handler(app: App):
             if length < 0:
                 raise ValueError("Content-Length required")
             if target.exists() and target.stat().st_size == length:
-                self.rfile.read(length)
-                return self._json({"ok": True, "skipped": True})
-            target.parent.mkdir(parents=True, exist_ok=True)
-            partial = target.with_name(target.name + ".part")
-            with partial.open("wb") as f:
                 remaining = length
                 while remaining > 0:
                     chunk = self.rfile.read(min(1 << 20, remaining))
                     if not chunk:
-                        raise ValueError("Upload interrupted")
-                    f.write(chunk)
+                        break
                     remaining -= len(chunk)
-            mtime = float(self.headers.get("X-Mtime") or 0)
-            if mtime:
-                os.utime(partial, (mtime, mtime))
-            partial.replace(target)
+                return self._json({"ok": True, "skipped": True})
+            target.parent.mkdir(parents=True, exist_ok=True)
+            partial = target.with_name(target.name + ".part")
+            try:
+                with partial.open("wb") as f:
+                    remaining = length
+                    while remaining > 0:
+                        chunk = self.rfile.read(min(1 << 20, remaining))
+                        if not chunk:
+                            raise ValueError("Upload interrupted")
+                        f.write(chunk)
+                        remaining -= len(chunk)
+                mtime = float(self.headers.get("X-Mtime") or 0)
+                if mtime:
+                    os.utime(partial, (mtime, mtime))
+                partial.replace(target)
+            except BaseException:
+                partial.unlink(missing_ok=True)
+                raise
             lib.add_file(target)
             self._json({"ok": True})
 

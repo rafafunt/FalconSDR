@@ -155,8 +155,12 @@ def _position(text: str) -> dict | None:
         _extras(text[19:], out)
         return out
     if len(text) >= 13 and (text[0] in "/\\" or text[0].isalpha()):
+        if not all(33 <= ord(ch) <= 124 for ch in text[1:9]):
+            return None
         lat = 90 - _base91(text[1:5]) / 380926
         lon = -180 + _base91(text[5:9]) / 190463
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            return None
         out = {"lat": round(lat, 5), "lon": round(lon, 5), "symbol": text[0] + text[9]}
         _extras(text[13:], out)
         return out
@@ -164,7 +168,7 @@ def _position(text: str) -> dict | None:
 
 
 def _mic_e(dest: str, info: bytes) -> dict | None:
-    if len(info) < 9 or len(dest) < 6:
+    if len(info) < 9 or len(dest) < 6 or any(b < 28 for b in info[1:7]):
         return None
     digits, north, lon_offset, west = [], False, False, False
     for i, ch in enumerate(dest[:6]):
@@ -200,6 +204,8 @@ def _mic_e(dest: str, info: bytes) -> dict | None:
     lon = deg + (minutes + (info[3] - 28) / 100) / 60
     if west:
         lon = -lon
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
     speed = (info[4] - 28) * 10 + (info[5] - 28) // 10
     course = ((info[5] - 28) % 10) * 100 + (info[6] - 28)
     if speed >= 800:

@@ -39,20 +39,37 @@ done
 
 mkdir -p "$DEST"
 rsync -a --delete --exclude .venv --exclude .git --exclude '__pycache__' \
-    --exclude 'packaging/linux-deb/build*' --exclude 'packaging/linux-deb/out' "$SRC/" "$DEST/"
+    --exclude 'packaging/linux-deb/build*' --exclude 'packaging/linux-deb/out' \
+    --exclude 'packaging/rpm/build*' --exclude 'packaging/rpm/out' \
+    --exclude 'packaging/appimage/build*' --exclude 'packaging/appimage/out' \
+    --exclude 'packaging/windows/build*' --exclude 'packaging/windows/out' \
+    --exclude demo "$SRC/" "$DEST/"
 [ -x "$DEST/.venv/bin/python" ] || python3 -m venv --system-site-packages "$DEST/.venv"
 "$DEST/.venv/bin/pip" install --quiet --upgrade -r "$DEST/requirements.txt"
 
 install -D -m 644 "$SRC/packaging/linux-deb/60-rtl-sdr.rules" /etc/udev/rules.d/60-rtl-sdr.rules
 install -D -m 644 "$SRC/packaging/linux-deb/blacklist-rtl-dvb.conf" /etc/modprobe.d/blacklist-rtl-dvb.conf
-command -v udevadm >/dev/null && timeout 5 udevadm control --reload-rules >/dev/null 2>&1 || true
+if command -v udevadm >/dev/null; then
+    timeout 5 udevadm control --reload-rules >/dev/null 2>&1 || true
+    timeout 5 udevadm trigger --subsystem-match=usb >/dev/null 2>&1 || true
+fi
+command -v rmmod >/dev/null && timeout 5 rmmod dvb_usb_rtl28xxu >/dev/null 2>&1 || true
 
 # The service user owns its data and its venv (so "Install transcription" in the UI can pip into it).
 chown -R falconsdr:falconsdr "$HOME_DIR" "$DEST/.venv"
 CONFIG="$HOME_DIR/.config/FalconSDR/config.json"
 if [ -f "$CONFIG" ]; then
-    REC_DIR=$("$DEST/.venv/bin/python" -c "import json,sys; print(json.load(open(sys.argv[1])).get('recording', {}).get('output_dir', ''))" "$CONFIG")
-    if [ -n "$REC_DIR" ]; then mkdir -p "$REC_DIR" && chown -R falconsdr:falconsdr "$REC_DIR"; fi
+    REC_DIR=$("$DEST/.venv/bin/python" -c "import json,os,sys; p=json.load(open(sys.argv[1])).get('recording', {}).get('output_dir', ''); print(os.path.realpath(p) if p else '')" "$CONFIG")
+    HOME_REAL=$(realpath "$HOME_DIR")
+    case "$REC_DIR" in
+        "$HOME_REAL"|"$HOME_REAL"/*)
+            mkdir -p "$REC_DIR" && chown -R falconsdr:falconsdr "$REC_DIR"
+            ;;
+        "") ;;
+        *)
+            echo "note: custom recordings dir '$REC_DIR' is outside $HOME_DIR - ensure user 'falconsdr' can write to it." >&2
+            ;;
+    esac
 fi
 
 install -m 644 "$SRC/packaging/remote-server/$UNIT" /etc/systemd/system/

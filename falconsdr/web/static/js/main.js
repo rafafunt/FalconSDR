@@ -92,9 +92,11 @@ async function clientPage() {
         h('button.ghost', {
           onclick: async () => {
             if (!(await modal(t('Disconnect from the server?'), t('This computer goes back to scanning on its own. Recordings stay on the server.'), [[t('Cancel'), false, 'ghost'], [t('Disconnect'), true, 'danger solid']]))) return;
-            await api.post('/api/client/disconnect');
-            toast(t('Switching to local mode…'));
-            setTimeout(() => location.reload(), 2500);
+            try {
+              await api.post('/api/client/disconnect');
+              toast(t('Switching to local mode…'));
+              setTimeout(() => location.reload(), 2500);
+            } catch (e) { errorToast(e); }
           },
         }, t('Disconnect'))));
   };
@@ -125,8 +127,15 @@ function shell() {
       .map(([key, r]) => h('a', { href: `#/${key}`, 'data-route': key }, icon(r.icon), h('span', r.label()))));
     markActive();
   };
+  let hadAddons = addonsInUse();
   renderNav();
-  on('settings', renderNav);
+  const syncNav = () => {
+    const now = addonsInUse();
+    if (now !== hadAddons) { hadAddons = now; renderNav(); }
+  };
+  on('settings', () => { hadAddons = addonsInUse(); renderNav(); });
+  on('config', syncNav);
+  on('live', syncNav);
   const updateStatus = () => {
     const live = S.live;
     const running = live && live.running;

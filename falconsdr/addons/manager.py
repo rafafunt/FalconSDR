@@ -18,6 +18,7 @@ from ..i18n import tr
 from ..models import Modulation
 from .acars import AcarsDecoder
 from .aprs import AprsDecoder
+from . import tetra as tetra_addon
 from .events import EventHub
 from .stats import StatsStore
 from ..sdr_backend import SoapyBackend
@@ -56,6 +57,10 @@ CATALOG: tuple[AddonSpec, ...] = (
               "Reads VDL Mode 2 aircraft data link (136.7-137 MHz) with dumpvdl2. Needs the receiver for itself while it runs.",
               "dumpvdl2: GPL-3.0, libacars: MIT", homepage="https://github.com/szpajder/dumpvdl2",
               frequencies="vdl2_frequencies_hz", exe=("dumpvdl2", "dumpvdl2.exe")),
+    AddonSpec("tetra", "TETRA (clear-mode)", "builtin",
+              "Decodes unencrypted TETRA downlink control channels (MCC/MNC/LA, clear calls, SDS text, LIP GPS). Encrypted networks and calls stay muted and are never decrypted.",
+              "FalconSDR, GPL-3.0-or-later", modulation=Modulation.TETRA, frequencies="tetra_frequencies_hz",
+              exe=("falconsdr-tetra", "falconsdr-tetra.exe"), experimental=True),
 )
 SPECS = {s.id: s for s in CATALOG}
 
@@ -81,41 +86,63 @@ def _number(value, low: float, high: float, name: str) -> float:
     return number
 
 
+def _validate_option(key: str, value):
+    if key == "band":
+        if value not in (*RTL433_BANDS, "custom"):
+            raise ValueError("band: unknown")
+        return value
+    if key == "custom_mhz":
+        # "433.92, 868.3" (a comma and a space) separates; "868,95" (a comma between digits) is a decimal comma.
+        tokens = re.split(r"[\s;]+", re.sub(r",\s+", " ", str(value).strip()))
+        return " ".join(f"{_number(v, 1, 6000, 'frequency'):g}" for v in tokens if v)
+    if key == "hop_s":
+        return int(_number(value, 1, 3600, "hop"))
+    if key == "gain":
+        return "" if str(value).strip() == "" else _number(value, 0, 80, "gain")
+    if key == "ppm":
+        return int(_number(value, -500, 500, "ppm"))
+    if key == "units":
+        if value not in ("native", "si", "customary"):
+            raise ValueError("units: unknown")
+        return value
+    if key == "sample_rate":
+        if value not in RTL433_SAMPLE_RATES:
+            raise ValueError("sample rate: unknown")
+        return value
+    if key == "remotes":
+        return bool(value)
+    if key == "extra_decoders":
+        if not isinstance(value, (list, tuple, set)):
+            raise ValueError("decoder: must be a list")
+        return sorted({int(_number(v, 1, 999, "decoder")) for v in value})[:80]
+    return value
+
+
 def clean_options(addon_id: str, current: dict, patch: dict) -> dict:
-    """``current`` updated with the valid keys of ``patch``; raises ValueError for a bad value."""
+    """``current`` updated with the valid keys of ``patch``; validates stored values too
+    (bad values already on disk/via /api/config fall back to defaults, bad values in ``patch`` raise ValueError)."""
     defaults = OPTION_DEFAULTS.get(addon_id, {})
-    out = {**defaults, **{k: v for k, v in current.items() if k in defaults}}
+    out = dict(defaults)
+    if isinstance(current, dict):
+        for key, value in current.items():
+            if key not in defaults:
+                continue
+            try:
+                out[key] = _validate_option(key, value)
+            except (ValueError, TypeError):
+                pass
     for key, value in patch.items():
         if key not in defaults:
             continue
-        if key == "band":
-            if value not in (*RTL433_BANDS, "custom"):
-                raise ValueError("band: unknown")
-        elif key == "custom_mhz":
-            # "433.92, 868.3" (a comma and a space) separates; "868,95" (a comma between digits) is a decimal comma.
-            tokens = re.split(r"[\s;]+", re.sub(r",\s+", " ", str(value).strip()))
-            value = " ".join(f"{_number(v, 1, 6000, 'frequency'):g}" for v in tokens if v)
-        elif key == "hop_s":
-            value = int(_number(value, 1, 3600, "hop"))
-        elif key == "gain":
-            value = "" if str(value).strip() == "" else _number(value, 0, 80, "gain")
-        elif key == "ppm":
-            value = int(_number(value, -500, 500, "ppm"))
-        elif key == "units":
-            if value not in ("native", "si", "customary"):
-                raise ValueError("units: unknown")
-        elif key == "sample_rate":
-            if value not in RTL433_SAMPLE_RATES:
-                raise ValueError("sample rate: unknown")
-        elif key == "remotes":
-            value = bool(value)
-        elif key == "extra_decoders":
-            value = sorted({int(_number(v, 1, 999, "decoder")) for v in (value or [])})[:80]
-        out[key] = value
+        out[key] = _validate_option(key, value)
     return out
 
 
 def _install_hint(spec: AddonSpec) -> str:
+    if spec.id == "tetra":
+        if installer.can_install("tetra"):
+            return tr("FalconSDR can compile the bundled Rust TETRA decoder locally (needs cargo/rustc), or put falconsdr-tetra in {folder}.").format(folder=BIN_DIR / "tetra")
+        return tr("Put falconsdr-tetra in {folder} or set its path below.").format(folder=BIN_DIR / "tetra")
     if spec.id == "rtl_433":
         if installer.can_install("rtl_433"):
             return tr("FalconSDR can download the ready build the author publishes for this system.")
@@ -136,6 +163,24 @@ def summarize(event: dict) -> str:
     if kind == "acars":
         head = " ".join(x for x in (event.get("registration"), event.get("flight"), f"[{event.get('label', '')}]") if x)
         return f"{head} {event.get('text', '')}".replace("\n", " ").strip()
+    if kind == "tetra":
+        sub = event.get("subtype", "")
+        if sub == "sync":
+            return f"SYNC · MCC {event.get('mcc', 0)} / MNC {event.get('mnc', 0)} · CC {event.get('cc', 0)} · TS {event.get('ts', 1)}"
+        if sub == "sysinfo":
+            enc = "Encrypted" if event.get("encrypted") else "Clear"
+            return f"SYSINFO · MCC {event.get('mcc', 0)} / MNC {event.get('mnc', 0)} · LA {event.get('la', 0)} · {enc}"
+        if sub == "call":
+            ev = event.get("event", "call")
+            who = f"GSSI {event.get('gssi', 0)}" + (f" ← ISSI {event.get('issi')}" if event.get("issi") else "")
+            return f"Call {ev} · {who} · TS {event.get('ts', 1)}"
+        if sub == "encrypted":
+            who = f"GSSI {event.get('gssi', 0)}" if event.get("gssi") else "Encrypted call"
+            return f"Encrypted · {who} · TS {event.get('ts', 1)} (muted)"
+        if sub == "sds":
+            return f"SDS · {event.get('src', 0)} → {event.get('dst', 0)}: {event.get('text', '')}".strip()
+        if sub == "lip":
+            return f"LIP · {event.get('src', 0)}: {float(event.get('lat', 0.0)):.4f}, {float(event.get('lon', 0.0)):.4f}"
     return event.get("summary", "")
 
 
@@ -196,6 +241,9 @@ class AddonManager:
 
     def program(self, addon_id: str) -> str | None:
         spec = SPECS[addon_id]
+        if addon_id == "tetra":
+            exe = tetra_addon.tetra_executable(str(self._config.addons.paths.get("tetra", "")))
+            return str(exe) if exe is not None else None
         return find_program(spec.exe, str(self._config.addons.paths.get(addon_id, "")), addon_id) if spec.exe else None
 
     def status(self) -> list[dict]:
@@ -203,21 +251,28 @@ class AddonManager:
         out = []
         for spec in CATALOG:
             program = self.program(spec.id) if spec.exe else None
-            out.append({
+            installed = (program is not None) if spec.exe else (spec.kind == "builtin")
+            entry = {
                 "id": spec.id, "name": spec.name, "kind": spec.kind, "summary": tr(spec.summary), "license": tr(spec.license),
                 "homepage": spec.homepage, "enabled": self.enabled(spec.id), "experimental": spec.experimental,
-                "installed": spec.kind == "builtin" or program is not None, "program": program or "",
+                "installed": installed, "program": program or "",
                 "running": spec.id in self.running_ids,
                 "frequencies": list(getattr(cfg, spec.frequencies)) if spec.frequencies else [],
                 "receiver": self.receiver(spec.id, 0 if spec.kind == "external" else -1),
                 "options": clean_options(spec.id, cfg.options.get(spec.id, {}), {}) if spec.id in OPTION_DEFAULTS else {},
                 "path": str(cfg.paths.get(spec.id, "")), "extra_args": str(cfg.extra_args.get(spec.id, "")),
-                "install_hint": _install_hint(spec) if spec.kind == "external" and program is None else "",
+                "install_hint": _install_hint(spec) if spec.exe and program is None else "",
                 "managed": bool(program) and Path(program).is_relative_to(BIN_DIR),
                 "can_install": installer.can_install(spec.id), "install": installer.state(spec.id) if installer.can_install(spec.id) else None,
                 "stats": dict(self._stats[spec.id]),
                 "error": self.last_error if self.last_error.startswith(spec.id + ":") else "",
-            })
+            }
+            if spec.id == "tetra":
+                from . import tetra_codec
+                entry["codec_path"] = str(cfg.paths.get("tetra_codec", ""))
+                entry["codec_installed"] = tetra_codec.codec_executable() is not None
+                entry["codec_install"] = tetra_codec.install_state() if tetra_codec.can_install() else None
+            out.append(entry)
         return out
 
     def configure(self, addon_id: str, patch: dict) -> None:
@@ -239,8 +294,12 @@ class AddonManager:
             cfg.receivers = {**cfg.receivers, addon_id: int(patch["receiver"])}
         if "path" in patch:
             cfg.paths = {**cfg.paths, addon_id: str(patch["path"]).strip()}
+        if "codec_path" in patch and addon_id == "tetra":
+            cfg.paths = {**cfg.paths, "tetra_codec": str(patch["codec_path"]).strip()}
         if "extra_args" in patch:
-            cfg.extra_args = {**cfg.extra_args, addon_id: str(patch["extra_args"]).strip()}
+            raw_extra = str(patch["extra_args"]).strip()
+            shlex.split(raw_extra, posix=os.name != "nt")  # reject unclosed quotes before saving
+            cfg.extra_args = {**cfg.extra_args, addon_id: raw_extra}
         if "listen_to_data" in patch:
             cfg.listen_to_data = bool(patch["listen_to_data"])
         self._config.save()
@@ -251,6 +310,9 @@ class AddonManager:
         value = self._config.addons.receivers.get(addon_id, default)
         return value if isinstance(value, int) else default
 
+    def note_slot(self, addon_id: str) -> None:
+        self._stats[addon_id]["slots"] += 1
+
     def claim(self, freq_hz: int, receiver: int = 0) -> Claim | None:
         cfg = self._config.addons
         for spec in CATALOG:
@@ -258,8 +320,10 @@ class AddonManager:
                 continue
             if self.receiver(spec.id) not in (-1, receiver):
                 continue          # this add-on listens on another receiver
+            if spec.id == "tetra" and self.program("tetra") is None:
+                continue
             if any(abs(freq_hz - int(f)) <= CLAIM_TOLERANCE_HZ for f in getattr(cfg, spec.frequencies)):
-                make = AcarsDecoder if spec.id == "acars" else AprsDecoder
+                make = (lambda: None) if spec.id == "tetra" else (AcarsDecoder if spec.id == "acars" else AprsDecoder)
                 self._stats[spec.id]["slots"] += 1
                 return Claim(spec.id, spec.modulation, make)
         return None
@@ -275,7 +339,7 @@ class AddonManager:
         driver = str(device.get("driver", "auto"))
         if driver not in ("auto", "rtlsdr", "rtlsdr_native"):
             raise RuntimeError(tr("{name} works with RTL-SDR receivers only.").format(name=SPECS[addon_id].name))
-        args = dict(kv.split("=", 1) for kv in str(device.get("device_args", "")).split(",") if "=" in kv)
+        args = {k.strip(): v.strip() for k, v in (kv.split("=", 1) for kv in str(device.get("device_args", "")).split(",") if "=" in kv)}
         ident = args.get("serial") or args.get("index") or ""
         if addon_id == "vdl2":
             return ["--rtlsdr", ident or "0"]
@@ -321,19 +385,20 @@ class AddonManager:
             if addon_id in self._runs:
                 raise RuntimeError(tr("{name} is already running.").format(name=spec.name))
             self.last_error = ""
-            self._runs[addon_id] = {"runner": None, "since": time.time(), "cancelled": False}
+            self._runs[addon_id] = {"runner": None, "since": time.time(), "cancelled": False, "timer": None}
         # The dongle that the scanner just closed is not free for a moment (usb_claim_interface -6): the same
         # cooldown the backends keep between a close and the next open.
         SoapyBackend._wait_for_reopen_cooldown()
         try:
-            self._launch(addon_id, argv, parse, tries=3)
+            launched = self._launch(addon_id, argv, parse, tries=3)
         except OSError as exc:      # the program could not even be started
             with self._lock:
                 self._runs.pop(addon_id, None)
             raise RuntimeError(f"{spec.name}: {exc}") from exc
-        self._log(tr("{name} started - the scanner is paused while it runs.").format(name=spec.name))
+        if launched:
+            self._log(tr("{name} started - the scanner is paused while it runs.").format(name=spec.name))
 
-    def _launch(self, addon_id: str, argv: list[str], parse, tries: int) -> None:
+    def _launch(self, addon_id: str, argv: list[str], parse, tries: int) -> bool:
         spec = SPECS[addon_id]
         started = time.monotonic()
 
@@ -350,19 +415,29 @@ class AddonManager:
                 run = self._runs.get(addon_id)
                 runner = run["runner"] if run else None
                 cancelled = run is None or run["cancelled"]
-            tail = list(runner.stderr_tail) if runner else []
+            tail = runner.stderr_lines() if runner else []
             busy = (bool(code) and tries > 0 and not cancelled and time.monotonic() - started < 10
                     and any(re.search(r"claim|busy|-6\b", line, re.I) for line in tail))
             if busy:    # the receiver was not yet free: wait and try again, quietly
                 self._log(tr("The receiver was still busy - trying again."))
-                threading.Timer(_BUSY_RETRY_S, lambda: self._retry(addon_id, argv, parse, tries - 1)).start()
-                return
+                retry_timer = threading.Timer(_BUSY_RETRY_S, lambda: self._retry(addon_id, argv, parse, tries - 1))
+                retry_timer.daemon = True
+                with self._lock:
+                    cur = self._runs.get(addon_id)
+                    if cur is not None and not cur["cancelled"]:
+                        cur["timer"] = retry_timer
+                        retry_timer.start()
+                        return
+            log_msg = ""
             with self._lock:
                 self._runs.pop(addon_id, None)
                 if code:
                     shown = " ".join(tail[-3:])
                     self.last_error = f"{addon_id}: exit {code} {shown}".strip()
-                    self._log(tr("{name} stopped by itself (exit {code}) {tail}").format(name=spec.name, code=code, tail=shown))
+                    log_msg = tr("{name} stopped by itself (exit {code}) {tail}").format(name=spec.name, code=code, tail=shown)
+            if log_msg:
+                # Never call self._log (Controller._lock) while holding self._lock (AB-BA deadlock with Controller.live()).
+                self._log(log_msg)
             if code and not cancelled:
                 self.schedule_failed.add(addon_id)      # the schedule must not restart it every 5 s (cleared when its range is over)
                 self.on_failed(addon_id, f"{spec.name} stopped by itself (exit {code})")
@@ -370,16 +445,30 @@ class AddonManager:
 
         runner = ExternalRunner(argv, on_line, on_exit)
         with self._lock:
-            if addon_id in self._runs:
-                self._runs[addon_id]["runner"] = runner
+            run = self._runs.get(addon_id)
+            if run is None or run["cancelled"]:
+                return False
+            run["runner"] = runner
         runner.start()
+        return True
 
     def _retry(self, addon_id: str, argv: list[str], parse, tries: int) -> None:
         with self._lock:
             run = self._runs.get(addon_id)
             if run is None or run["cancelled"]:
                 return
-        self._launch(addon_id, argv, parse, tries)
+            run["timer"] = None
+        try:
+            self._launch(addon_id, argv, parse, tries)
+        except OSError as exc:
+            spec = SPECS[addon_id]
+            with self._lock:
+                self._runs.pop(addon_id, None)
+                self.last_error = f"{addon_id}: {exc}"
+            self._log(f"{spec.name}: {exc}")
+            self.schedule_failed.add(addon_id)
+            self.on_failed(addon_id, f"{spec.name}: {exc}")
+            self._on_stopped(addon_id)
 
     def stop_external(self, addon_id: str = "") -> None:
         """Stops one external program, or all of them."""
@@ -390,6 +479,9 @@ class AddonManager:
                 run = self._runs.get(i)
                 if run:
                     run["cancelled"] = True
+                    if run.get("timer") is not None:
+                        run["timer"].cancel()
+                        run["timer"] = None
                     runners.append((i, run["runner"]))
         for i, runner in runners:
             if runner is not None:

@@ -1,12 +1,28 @@
 // "Channels": the Memory List (named frequencies in folders, each with its
-// own modulation, priority weight and on/off) and the blacklist.
-import { carrierHz, confirmDialog, fmtChannel, fmtMHz, formDialog, h, icon, mount, select, tabs, t, toast, typedAs833 } from '../core.js';
+// own modulation, priority weight, optional overrides and on/off) and the blacklist.
+import { carrierHz, confirmDialog, fmtChannel, fmtMHz, formDialog, h, icon, modal, mount, select, tabs, t, toast, typedAs833 } from '../core.js';
 import { S, cfg, loadSettings, on, patchConfig, saveBlacklist, saveChannels } from '../state.js';
-import { modLabel, modOptions } from './bands.js';
+import { isDigitalMod, modLabel, modOptions } from './bands.js';
 let tab = 'memory';
+
+const CH_OVERRIDES = [
+  'bandwidth_hz', 'trigger_level_dbfs', 'squelch_enabled', 'squelch_offset_db',
+  'linger_time_ms', 'noise_reduction_enabled', 'noise_reduction_strength',
+];
+const hasChannelOverrides = (c) => CH_OVERRIDES.some((k) => c[k] !== null && c[k] !== undefined);
+function overrideSummary(c) {
+  const parts = [];
+  if (c.bandwidth_hz != null) parts.push(`${(c.bandwidth_hz / 1000).toFixed(c.bandwidth_hz % 1000 ? 2 : 0)} kHz`);
+  if (c.trigger_level_dbfs != null) parts.push(`${c.trigger_level_dbfs} dBFS`);
+  if (c.squelch_enabled != null || c.squelch_offset_db != null) parts.push(c.squelch_enabled === false ? `${t('Squelch')}: ${t('Off')}` : `${t('Squelch')}${c.squelch_offset_db != null ? ` ${c.squelch_offset_db} dB` : ''}`);
+  if (c.linger_time_ms != null) parts.push(`${(c.linger_time_ms / 1000).toFixed(1)}s`);
+  if (c.noise_reduction_enabled != null || c.noise_reduction_strength != null) parts.push(c.noise_reduction_enabled === false ? `${t('Noise reduction')}: ${t('Off')}` : `${t('Noise reduction')}${c.noise_reduction_strength != null ? ` ${Math.round(c.noise_reduction_strength * 100)}%` : ''}`);
+  return parts.join(' · ');
+}
 
 // Sortable column headers (click: sort by it, click again: reverse). `dir` is the first click's direction:
 // 1 = ascending (A-Z, low-high), -1 = descending (highest / newest / switched on first).
+// Memory List also supports key === 'custom' (saved order in channels.csv, editable with arrows or drag-and-drop).
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 const SORTS = {
   memory: { storage: 'channelsSort', cols: {
@@ -27,11 +43,13 @@ const sortState = {};
 for (const [name, def] of Object.entries(SORTS)) {
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem(def.storage)); } catch { /* private window: start from the default */ }
-  sortState[name] = saved && def.cols[saved.key] && (saved.dir === 1 || saved.dir === -1) ? saved : { key: 'freq', dir: 1 };
+  const ok = saved && ((name === 'memory' && saved.key === 'custom') || (def.cols[saved.key] && (saved.dir === 1 || saved.dir === -1)));
+  sortState[name] = ok ? saved : { key: 'freq', dir: 1 };
 }
 
 function sorted(name, list) {
   const { key, dir } = sortState[name];
+  if (key === 'custom') return [...list];
   const col = SORTS[name].cols[key];
   return [...list].sort((a, b) => {
     const x = col.get(a), y = col.get(b);
@@ -50,7 +68,9 @@ export function channelsView(root) {
   mount(root, page);
   const renderTabs = () => mount(tabsBox, tabs([['memory', t('Memory List'), S.settings.channels.length], ['blacklist', t('Blacklist'), S.settings.blacklist.length]], tab,
     (v) => { tab = v; sel.clear(); render(); }));
-  const collapsed = new Set(JSON.parse(localStorage.getItem('collapsedFolders') || '[]'));
+  let savedCollapsed = [];
+  try { savedCollapsed = JSON.parse(localStorage.getItem('collapsedFolders') || '[]'); } catch { savedCollapsed = []; }
+  const collapsed = new Set(Array.isArray(savedCollapsed) ? savedCollapsed : []);
   let query = '';
 
   // Row selection like Recordings: click, Ctrl/⌘+click, Shift+click; Delete
@@ -196,18 +216,82 @@ export function channelsView(root) {
   async function editChannel(ch) {
     const isNew = !ch;
     const fl = folders();
-    const v = await formDialog(isNew ? t('Add channel') : t('Edit channel'), [
-      { key: 'freq', label: t('Frequency (MHz)'), type: 'number', value: ch ? fmtChannel(ch.freq_hz) : '', hint: t('Airband: type the channel as published, e.g. 126.805') },
-      { key: 'name', label: t('Name'), value: ch ? ch.name : '', placeholder: t('e.g. Downtown Tower') },
-      { key: 'mod', label: t('Modulation'), type: 'select', value: ch ? ch.modulation : 'AM', options: modOptions() },
-      { key: 'folder', label: t('Folder'), type: 'select', value: ch ? ch.folder : '', options: [['', t('(no folder)')], ...fl.map((f) => [f, f])] },
-      { key: 'weight', label: t('Priority weight'), type: 'number', value: ch ? ch.weight : 0, hint: t('0 = normal. Higher = checked more often.') },
-    ], isNew ? t('Add') : t('Save'));
-    if (!v || !(v.freq > 0)) return;
-    const hz = carrierHz(v.freq);
+    const c = cfg();
+    const freqIn = h('input', { type: 'number', step: 'any', value: ch ? fmtChannel(ch.freq_hz) : '' });
+    const nameIn = h('input', { value: ch ? ch.name : '', placeholder: t('e.g. Downtown Tower') });
+    const modIn = select(modOptions(), ch ? ch.modulation : 'AM', () => syncAnalogOnly());
+    const folderIn = select([['', t('(no folder)')], ...fl.map((f) => [f, f])], ch ? ch.folder : '', () => {});
+    const weightIn = h('input', { type: 'number', step: 'any', min: 0, max: 20, value: ch ? ch.weight : 0 });
+
+    // Optional per-channel overrides: empty / "Default" = null (inherits band/global settings).
+    const tri = (val) => (val === true ? 'on' : val === false ? 'off' : '');
+    const parseTri = (v) => (v === 'on' ? true : v === 'off' ? false : null);
+    const optNum = (el, scale = 1, round = false) => {
+      const s = el.value.trim();
+      if (!s) return null;
+      const n = parseFloat(s);
+      if (!Number.isFinite(n)) return null;
+      return round ? Math.round(n * scale) : n * scale;
+    };
+    const bwIn = h('input', { type: 'number', step: 'any', min: 1, max: 500, placeholder: String(c.memory_channel_bandwidth_hz / 1000), value: ch && ch.bandwidth_hz != null ? ch.bandwidth_hz / 1000 : '' });
+    const trigIn = h('input', { type: 'number', step: 1, min: -120, max: 0, placeholder: String(c.trigger_level_dbfs), value: ch && ch.trigger_level_dbfs != null ? ch.trigger_level_dbfs : '' });
+    const sqModeIn = select([['', t('Global / band')], ['on', t('On')], ['off', t('Off')]], ch ? tri(ch.squelch_enabled) : '', () => {});
+    const sqOffIn = h('input', { type: 'number', step: 1, min: -40, max: 0, placeholder: String(c.squelch_offset_db), value: ch && ch.squelch_offset_db != null ? ch.squelch_offset_db : '' });
+    const lingerIn = h('input', { type: 'number', step: 0.1, min: 0, max: 30, placeholder: String(c.timing.linger_time_ms / 1000), value: ch && ch.linger_time_ms != null ? ch.linger_time_ms / 1000 : '' });
+    const nrModeIn = select([['', t('Global / band')], ['on', t('On')], ['off', t('Off')]], ch ? tri(ch.noise_reduction_enabled) : '', () => {});
+    const nrStrIn = h('input', { type: 'number', step: 1, min: 0, max: 100, placeholder: String(Math.round(c.noise_reduction.strength * 100)), value: ch && ch.noise_reduction_strength != null ? Math.round(ch.noise_reduction_strength * 100) : '' });
+
+    const sqRow = h('div.fields',
+      h('label.field', t('Squelch'), sqModeIn),
+      h('label.field', t('Squelch offset (dB)'), sqOffIn));
+    const nrRow = h('div.fields',
+      h('label.field', t('Noise reduction'), nrModeIn),
+      h('label.field', t('Noise reduction strength (%)'), nrStrIn));
+    const syncAnalogOnly = () => {
+      const hide = isDigitalMod(modIn.value);
+      sqRow.classList.toggle('hidden', hide);
+      nrRow.classList.toggle('hidden', hide);
+    };
+    syncAnalogOnly();
+
+    const ovOpen = !!(ch && hasChannelOverrides(ch));
+    const form = h('form.col', { onsubmit: (e) => { e.preventDefault(); form.closest('.modal-back').querySelector('.actions button.primary').click(); } },
+      h('label.field', t('Frequency (MHz)'), freqIn, h('span.hint', t('Airband: type the channel as published, e.g. 126.805'))),
+      h('label.field', t('Name'), nameIn),
+      h('div.fields',
+        h('label.field', t('Modulation'), modIn),
+        h('label.field', t('Folder'), folderIn),
+        h('label.field', t('Priority weight'), weightIn)),
+      h('span.small.muted', t('0 = normal. Higher = checked more often.')),
+      h('details', { open: ovOpen },
+        h('summary', t('Custom settings for this channel')),
+        h('div.col', { style: { marginTop: '10px', gap: '10px' } },
+          h('p.small.muted', t('Leave empty to use the band or global setting.')),
+          h('div.fields',
+            h('label.field', t('Channel bandwidth (kHz)'), bwIn),
+            h('label.field', t('Trigger level (dBFS)'), trigIn),
+            h('label.field', t('Hold after a transmission (s)'), lingerIn)),
+          sqRow,
+          nrRow)));
+
+    const ok = await modal(isNew ? t('Add channel') : t('Edit channel'), form, [[t('Cancel'), false, 'ghost'], [isNew ? t('Add') : t('Save'), true, 'primary']]);
+    if (!ok) return;
+    const freq = parseFloat(freqIn.value);
+    if (!(freq > 0)) return;
+    const hz = carrierHz(freq);
     const channels = S.settings.channels;
-    if (channels.some((c) => c.freq_hz === hz && c !== ch)) { toast(t('{f} MHz is already in the list', { f: fmtChannel(hz) }), 'bad'); return; }
-    const data = { freq_hz: hz, ch833: typedAs833(v.freq), name: v.name.trim(), modulation: v.mod, folder: v.folder, weight: v.weight || 0 };
+    if (channels.some((x) => x.freq_hz === hz && x !== ch)) { toast(t('{f} MHz is already in the list', { f: fmtChannel(hz) }), 'bad'); return; }
+    const data = {
+      freq_hz: hz, ch833: typedAs833(freq), name: nameIn.value.trim(), modulation: modIn.value,
+      folder: folderIn.value, weight: parseFloat(weightIn.value) || 0,
+      bandwidth_hz: optNum(bwIn, 1000, true),
+      trigger_level_dbfs: optNum(trigIn, 1, false),
+      squelch_enabled: parseTri(sqModeIn.value),
+      squelch_offset_db: optNum(sqOffIn, 1, false),
+      linger_time_ms: optNum(lingerIn, 1000, true),
+      noise_reduction_enabled: parseTri(nrModeIn.value),
+      noise_reduction_strength: optNum(nrStrIn, 0.01, false),
+    };
     if (isNew) channels.push({ ...data, enabled: true }); else Object.assign(ch, data);
     await saveChannels(channels);
     render();
@@ -253,16 +337,53 @@ export function channelsView(root) {
     render();
   }
 
-  function channelRow(ch) {
+  let dragChannel = null;
+  async function moveChannel(ch, dir, list) {
+    const idx = list.indexOf(ch);
+    const other = list[idx + dir];
+    if (!other) return;
+    const all = S.settings.channels;
+    const a = all.indexOf(ch), b = all.indexOf(other);
+    if (a < 0 || b < 0) return;
+    [all[a], all[b]] = [all[b], all[a]];
+    await saveChannels(all);
+    render();
+  }
+
+  async function reorderChannel(src, dst) {
+    if (!src || !dst || src === dst || src.folder !== dst.folder) return;
+    const all = S.settings.channels;
+    const from = all.indexOf(src), to = all.indexOf(dst);
+    if (from < 0 || to < 0) return;
+    all.splice(from, 1);
+    all.splice(all.indexOf(dst) + (from < to ? 1 : 0), 0, src);
+    await saveChannels(all);
+    render();
+  }
+
+  function channelRow(ch, idx, list) {
     const save = () => saveChannels(S.settings.channels);
-    return selectable(ch, h('tr', { ondblclick: (e) => { if (!e.target.closest('input, button, label')) editChannel(ch); } },
+    const custom = sortState.memory.key === 'custom' && !query.trim();
+    const tr = h('tr', {
+      draggable: custom ? true : false,
+      ondblclick: (e) => { if (!e.target.closest('input, button, label')) editChannel(ch); },
+      ondragstart: custom ? (e) => { dragChannel = ch; tr.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; } : null,
+      ondragend: custom ? () => { dragChannel = null; tr.classList.remove('dragging'); body.querySelectorAll('.drag-over').forEach((x) => x.classList.remove('drag-over')); } : null,
+      ondragover: custom ? (e) => { if (dragChannel && dragChannel !== ch && dragChannel.folder === ch.folder) { e.preventDefault(); tr.classList.add('drag-over'); } } : null,
+      ondragleave: custom ? () => tr.classList.remove('drag-over') : null,
+      ondrop: custom ? (e) => { e.preventDefault(); tr.classList.remove('drag-over'); reorderChannel(dragChannel, ch); } : null,
+    },
       checkbox(ch),
       h('td', h('label.switch', h('input', { type: 'checkbox', checked: ch.enabled, title: t('Scan this channel'), onchange: (e) => { ch.enabled = e.target.checked; save(); } }))),
       h('td.mono', { title: `${fmtMHz(ch.freq_hz, 4)} MHz` }, fmtChannel(ch.freq_hz)),
       h('td', ch.name || h('span.faint', t('(unnamed)'))),
-      h('td', h('span.chip', modLabel(ch.modulation))),
+      h('td', h('div.row', { style: { gap: '6px', flexWrap: 'wrap' } },
+        h('span.chip', modLabel(ch.modulation)),
+        hasChannelOverrides(ch) ? h('span.chip.accent', { title: overrideSummary(ch) }, t('custom')) : null)),
       h('td', h('input', { type: 'number', min: 0, max: 20, step: 0.5, value: ch.weight, style: { width: '74px' }, title: t('Priority weight'), onchange: (e) => { ch.weight = +e.target.value || 0; save(); } })),
       h('td', h('div.actions',
+        custom ? h('button.icon.ghost', { title: t('Move up'), disabled: idx === 0, onclick: () => moveChannel(ch, -1, list) }, icon('up')) : null,
+        custom ? h('button.icon.ghost', { title: t('Move down'), disabled: idx === list.length - 1, onclick: () => moveChannel(ch, 1, list) }, icon('down')) : null,
         h('button.icon.ghost', { title: t('Edit'), onclick: () => editChannel(ch) }, icon('edit')),
         h('button.icon.ghost', {
           title: t('Delete'), onclick: async () => {
@@ -270,7 +391,8 @@ export function channelsView(root) {
             await saveChannels(S.settings.channels.filter((c) => c !== ch));
             render();
           },
-        }, icon('trash'))))));
+        }, icon('trash')))));
+    return selectable(ch, tr);
   }
 
   function memory() {
@@ -292,12 +414,19 @@ export function channelsView(root) {
           h('button.icon.ghost', { title: t('Delete folder'), onclick: () => deleteFolder(folder) }, icon('trash'))))));
         if (isCollapsed) continue;
       }
-      rows.push(...list.map(channelRow));
+      rows.push(...list.map((ch, idx) => channelRow(ch, idx, list)));
     }
     const enabled = S.settings.channels.filter((c) => c.enabled).length;
+    const isCustom = sortState.memory.key === 'custom';
+    const toggleCustomOrder = () => {
+      sortState.memory = isCustom ? { key: 'freq', dir: 1 } : { key: 'custom', dir: 1 };
+      try { localStorage.setItem(SORTS.memory.storage, JSON.stringify(sortState.memory)); } catch { /* ignore */ }
+      render();
+    };
     return h('section.card',
       h('div.row.wrap',
         h('div.grow', search),
+        h('button', { class: isCustom ? 'on' : '', title: t('Drag rows or use the arrows to arrange channels in your own order. Scan priority is controlled by Weight.'), onclick: toggleCustomOrder }, t('Custom order')),
         h('button.primary', { onclick: () => editChannel(null) }, icon('plus'), t('Add channel')),
         h('button', { onclick: newFolder }, icon('folder'), t('New folder')),
         S.settings.channels.length ? h('button.ghost.danger', { onclick: deleteAll }, icon('trash'), t('Delete all')) : null),

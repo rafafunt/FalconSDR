@@ -35,28 +35,29 @@ def _preload_cuda_libs() -> None:
     global _cuda_preloaded
     if _cuda_preloaded:
         return
-    _cuda_preloaded = True
     try:
         import nvidia  # from the nvidia-cublas-cu12 / nvidia-cudnn-cu12 packages, if installed in the venv
     except ImportError:
-        return
-    base = Path(next(iter(nvidia.__path__)))
-    if sys.platform == "win32":
-        # The Windows wheels keep their DLLs in <pkg>/bin; ctranslate2 finds
-        # them once those folders are on the DLL search path.
-        for bindir in base.glob("*/bin"):
-            os.add_dll_directory(str(bindir))
-            os.environ["PATH"] = str(bindir) + os.pathsep + os.environ.get("PATH", "")
-        return
-    for sub in ("cublas/lib", "cudnn/lib", "cuda_nvrtc/lib"):
-        libdir = base / sub
-        if not libdir.exists():
+        return  # don't latch: install_gpu can add the packages later in the same session
+    _cuda_preloaded = True
+    for raw_base in list(nvidia.__path__):
+        base = Path(raw_base)
+        if sys.platform == "win32":
+            # The Windows wheels keep their DLLs in <pkg>/bin; ctranslate2 finds
+            # them once those folders are on the DLL search path.
+            for bindir in base.glob("*/bin"):
+                os.add_dll_directory(str(bindir))
+                os.environ["PATH"] = str(bindir) + os.pathsep + os.environ.get("PATH", "")
             continue
-        for so in sorted(libdir.glob("lib*.so*")):
-            try:
-                ctypes.CDLL(str(so), mode=ctypes.RTLD_GLOBAL)
-            except OSError as exc:
-                logger.debug("Failed to load %s: %s", so, exc)
+        for sub in ("cublas/lib", "cudnn/lib", "cuda_nvrtc/lib"):
+            libdir = base / sub
+            if not libdir.exists():
+                continue
+            for so in sorted(libdir.glob("lib*.so*")):
+                try:
+                    ctypes.CDLL(str(so), mode=ctypes.RTLD_GLOBAL)
+                except OSError as exc:
+                    logger.debug("Failed to load %s: %s", so, exc)
 
 
 # No initial_prompt with aviation phraseology on purpose: on noisy audio
@@ -207,6 +208,11 @@ def _get_models(config: TranscriptionConfig):
     with _lock:
         _maybe_retry_gpu_locked()
         if _model_key(_active_config) != _model_key(config) or _generic_model is None:
+            # Release previous models before allocating new ones so switching doesn't double peak VRAM/RAM.
+            if _generic_model is not None or _english_atc_model is not None:
+                _generic_model = _english_atc_model = _active_config = None
+                import gc
+                gc.collect()
             _generic_model = _load_model(config.generic_model, config)
             _english_atc_model = _load_model(config.english_atc_model, config) if config.english_atc_model else None
             _active_config = config
@@ -216,7 +222,7 @@ def _get_models(config: TranscriptionConfig):
 def _resolve_language(lang: str, prob: float, all_probs, candidates: list) -> tuple:
     """On noisy VHF clips Whisper can pick a random language (Norwegian,
     Finnish...). Prefer an expected language when its probability is close."""
-    if lang in candidates:
+    if not candidates or lang in candidates:
         return lang, prob
     probs = dict(all_probs)
     best_candidate = max(candidates, key=lambda l: probs.get(l, 0.0))

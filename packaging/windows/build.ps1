@@ -72,6 +72,11 @@ VSVersionInfo(
 # read/write in the code names its encoding (Windows' default is cp1250).
 # --noconsole: the app runs in the background with its UI in the browser;
 # main.py sends its log to ~\.config\FalconSDR\falconsdr.log instead.
+# falconsdr-tetra (our own Rust TETRA decoder, no dependencies), laid out as in the repository so tetra.py finds it unchanged.
+# The speech codec is not built here: it is ETSI's code, fetched on the user's computer (addons\tetra_codec.py).
+Check ($null -ne (Get-Command cargo -ErrorAction SilentlyContinue)) "cargo (Rust) not found - the TETRA decoder is built from tetra-rs\"
+& cargo build --release --locked --manifest-path "$RepoRoot\tetra-rs\Cargo.toml"
+Check ($LASTEXITCODE -eq 0) "building falconsdr-tetra failed"
 Push-Location $RepoRoot
 try {
     & "$Venv\Scripts\pyinstaller.exe" `
@@ -84,6 +89,8 @@ try {
         --add-data "$RepoRoot\falconsdr\locale\pl.po;falconsdr\locale" `
         --add-data "$RepoRoot\falconsdr\presets\band_presets.json;falconsdr\presets" `
         --add-data "$RepoRoot\falconsdr\web\static;falconsdr\web\static" `
+        --add-data "$RepoRoot\tetra-rs\target\release\falconsdr-tetra.exe;tetra-rs\target\release" `
+        --add-data "$RepoRoot\tetra-rs\codec\falconsdr_sdecoder.c;tetra-rs\codec" `
         --collect-data tzdata `
         --collect-data pyrtlsdrlib `
         --collect-data imageio_ffmpeg `

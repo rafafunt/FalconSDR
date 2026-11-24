@@ -127,7 +127,8 @@ class Worker(threading.Thread):
 
     # -- status reported to the server ------------------------------------------
     def say(self, line: str) -> None:
-        self._log.append(f"{datetime.now():%H:%M:%S} {line}")
+        with self._lock:
+            self._log.append(f"{datetime.now():%H:%M:%S} {line}")
         logger.info("worker: %s", line)
         self._publish()
 
@@ -141,7 +142,8 @@ class Worker(threading.Thread):
         self._hb_wake.set()
 
     def _log_line(self, line: str) -> None:
-        self._log.append(line[-300:])
+        with self._lock:
+            self._log.append(line[-300:])
         self._publish()
 
     def _download_in_progress(self) -> Optional[dict]:
@@ -152,10 +154,12 @@ class Worker(threading.Thread):
 
     def _info(self) -> dict:
         download = self._download_in_progress()
+        with self._lock:
+            log_snapshot = list(self._log)
         return {
             "download": download, "status_for_s": round(time.time() - self._status_since),
             "embedded": self.embedded, "status": "downloading" if download else self._status, "installed": self._installed,
-            "gpu": _gpu_name(), "log": list(self._log), "local_only": self._local_only,
+            "gpu": _gpu_name(), "log": log_snapshot, "local_only": self._local_only,
             "mirror_root": str(self._mirror_root() or ""), "removal_pending": removal_pending(),
         }
 
@@ -173,7 +177,7 @@ class Worker(threading.Thread):
                 if not self._connected:
                     self._connected = True
                     self.say("connected")
-            except (URLError, OSError, ValueError, KeyError) as exc:
+            except Exception as exc:  # noqa: BLE001 - HTTPException / RuntimeError must never kill the heartbeat thread
                 if self._connected:
                     self.say(f"server unreachable: {exc}")
                 self._connected = False
@@ -208,8 +212,10 @@ class Worker(threading.Thread):
                 if not did_work:
                     self._wake.wait(_IDLE_S)
                     self._wake.clear()
-            except (URLError, OSError, ValueError, KeyError) as exc:
+            except Exception as exc:  # noqa: BLE001 - HTTPException / RuntimeError must never kill the worker thread
+                logger.exception("worker loop error")
                 self.say(f"error: {exc}")
+                self._set_status("idle")
                 self._stop.wait(_IDLE_S)
 
     def _run_commands(self) -> None:
@@ -294,7 +300,11 @@ class Worker(threading.Thread):
             self.say(f"transcribed {Path(rel).name} [{result.status}]")
         except ModelUnavailable as exc:
             # Back to the queue, untouched - the next try loads the model afresh.
-            self.api.post("/api/worker/release", {"id": rel})
+            try:
+                self.api.post("/api/worker/release", {"id": rel})
+            except Exception:  # noqa: BLE001
+                pass
+            self._set_status("idle")
             self.say(f"transcription model not available yet ({exc}) - retrying in {_MODEL_RETRY_S:.0f} s")
             self._wake.wait(_MODEL_RETRY_S)  # a command (e.g. Uninstall) still gets through
             self._wake.clear()
@@ -302,7 +312,7 @@ class Worker(threading.Thread):
         except BaseException:
             try:
                 self.api.post("/api/worker/release", {"id": rel})
-            except (URLError, OSError):
+            except Exception:  # noqa: BLE001
                 pass
             raise
         finally:
@@ -360,7 +370,11 @@ class Worker(threading.Thread):
             target = root / rel
             if not (target.is_file() and target.stat().st_size == f["size"]):
                 self._set_status("copying")
-                self.api.download(rel, target)
+                try:
+                    self.api.download(rel, target)
+                except HTTPError as exc:
+                    self.say(f"skipped mirror of {Path(rel).name}: HTTP {exc.code}")
+                    continue
             if target.is_file() and target.stat().st_size == f["size"]:
                 verified.append(rel)
             if len(verified) >= 500:
@@ -380,17 +394,24 @@ class Worker(threading.Thread):
         todo = [(rel, path) for rel, path in self._local_files(root).items() if rel not in server]
         self._set_status("uploading")
         self.say(f"uploading {len(todo)} recordings")
+        skipped = 0
+        aborted = False
         for i, (rel, path) in enumerate(todo, 1):
             if self._stop.is_set():
+                aborted = True
                 break
             try:
                 self.api.upload(rel, path)
             except HTTPError as exc:
+                skipped += 1
                 self.say(f"skipped {rel}: {exc.code}")
             if i % 500 == 0:
                 self.say(f"uploaded {i}/{len(todo)}")
         self._import_local_metadata(force=True)
-        self._local_only = 0
+        if aborted:
+            self._count_local_only()
+        else:
+            self._local_only = skipped
         self.say("upload finished")
         self._set_status("idle")
 
@@ -415,15 +436,23 @@ class Worker(threading.Thread):
         server = {f["id"]: f["size"] for f in self.api.get("/api/worker/files")}
         items: dict[str, dict] = {}
         for key in set(transcripts) | set(quality) | set(favorites):
-            path_str, _, rest = key.rpartition("|")
-            path_str, _, size = path_str.rpartition("|")
+            path_str, _, _mtime = key.rpartition("|")
+            path_str, _, size_str = path_str.rpartition("|")
             try:
-                rel = Path(path_str).relative_to(root).as_posix()
+                size_int = int(size_str)
             except ValueError:
                 continue
-            if server.get(rel) != int(size) or parse_filename(Path(rel).name) is None:
+            p = Path(path_str)
+            if p.is_absolute() or p.root or p.drive:
+                try:
+                    rel = p.relative_to(root).as_posix()
+                except ValueError:
+                    continue
+            else:
+                rel = path_str.replace("\\", "/")
+            if not safe_rel(rel) or server.get(rel) != size_int:
                 continue
-            item = items.setdefault(rel, {"id": rel, "size": int(size)})
+            item = items.setdefault(rel, {"id": rel, "size": size_int})
             if key in transcripts:
                 item["transcript"] = transcripts[key]
             if key in quality:

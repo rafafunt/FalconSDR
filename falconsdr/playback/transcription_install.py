@@ -87,18 +87,21 @@ def _run_streamed(cmd: list[str], on_line: Callable[[str], None]) -> tuple[bool,
     on_line("$ " + " ".join(cmd))
     try:
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, errors="replace", bufsize=1,
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except OSError as exc:
         on_line(str(exc))
         return False, str(exc)
     lines: list[str] = []
-    for line in proc.stdout:
-        line = line.rstrip("\n")
-        lines.append(line)
-        on_line(line)
+    try:
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            lines.append(line)
+            on_line(line)
+    finally:
+        proc.stdout.close()
     proc.wait()
     return proc.returncode == 0, "\n".join(lines)
 
@@ -152,14 +155,26 @@ def delete_models(model_ids: list[str], on_line: Callable[[str], None]) -> None:
     if "faster_whisper" in sys.modules:
         from .transcription_engine import unload_models
         unload_models()  # loaded models keep their files open
-    cache = _hf_cache_dir()
+    cache = _hf_cache_dir().resolve()
     for model_id in model_ids:
+        if not model_id or "\\" in model_id or ".." in model_id or Path(model_id).is_dir():
+            on_line(f"model {model_id}: skipped (not a Hugging Face cache id)")
+            continue
         repo = model_id if "/" in model_id else _MODEL_REPOS.get(model_id, f"Systran/faster-whisper-{model_id}")
-        folder = cache / ("models--" + repo.replace("/", "--"))
+        folder = (cache / ("models--" + repo.replace("/", "--"))).resolve()
+        if cache not in folder.parents:
+            on_line(f"model {repo}: skipped (outside cache)")
+            continue
         if not folder.exists():
             on_line(f"model {repo}: not downloaded")
             continue
-        size = sum(f.stat().st_size for f in folder.rglob("*") if f.is_file() and not f.is_symlink())
+        size = 0
+        for f in folder.rglob("*"):
+            try:
+                if f.is_file() and not f.is_symlink():
+                    size += f.stat().st_size
+            except OSError:
+                pass
         shutil.rmtree(folder, ignore_errors=True)
         if folder.exists():
             on_line(f"model {repo}: some files are in use - delete {folder} by hand")
@@ -245,6 +260,8 @@ def install_transcription(with_gpu: bool, on_line: Callable[[str], None]) -> tup
     )
     ok, venv_output = run_streamed([sys.executable, "-m", "venv", "--system-site-packages", str(VENV_DIR)])
     if not ok:
+        # Remove any half-created venv (e.g. python3-venv missing ensurepip) so a later retry creates it cleanly.
+        shutil.rmtree(VENV_DIR, ignore_errors=True)
         return False, False, venv_output
     ok, output = pip_install(str(VENV_PYTHON))
     return ok, ok, "" if ok else output

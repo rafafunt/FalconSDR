@@ -2,14 +2,16 @@
 themselves are kept for days). Counts, who and which channel, and a few extremes - never the text."""
 from __future__ import annotations
 
+import copy
 import json
 import math
-import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
+
+from ..config import atomic_write_text
 
 RETENTION_DAYS = 90
 _FLUSH_EVERY_S = 30.0
@@ -19,12 +21,19 @@ _MAX_WHO_PER_HOUR = 300           # aircraft/stations remembered per hour; the r
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     p1, p2 = math.radians(lat1), math.radians(lat2)
     a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
-    return 6371.0 * 2 * math.asin(math.sqrt(a))
+    return 6371.0 * 2 * math.asin(math.sqrt(min(1.0, max(0.0, a))))
 
 
 def _who(event: dict) -> str:
     if event.get("kind") == "sensor":
         return f"{event.get('model', '?')} #{event.get('device_id')}"
+    if event.get("kind") == "tetra":
+        if event.get("gssi"):
+            return f"GSSI {event['gssi']}"
+        if event.get("src"):
+            return f"ISSI {event['src']}"
+        if event.get("mcc") is not None and event.get("mnc") is not None:
+            return f"MCC {event['mcc']}/{event['mnc']}"
     return str(event.get("registration") or event.get("source") or "")
 
 
@@ -36,6 +45,7 @@ class StatsStore:
         self._hours: dict[int, dict[str, dict]] = {}     # hour start (epoch) -> add-on -> bucket
         self._dirty: set[str] = set()                     # UTC days to write
         self._last_flush = time.monotonic()
+        self._pruned_day = ""
         self._load()
 
     # -- persistence --------------------------------------------------------------------------------------
@@ -71,15 +81,35 @@ class StatsStore:
                 return
             days, self._dirty = self._dirty, set()
             self._last_flush = time.monotonic()
-            payload = {d: {str(h): b for h, b in self._hours.items() if self._day(h) == d} for d in days}
-        try:
-            self._dir.mkdir(parents=True, exist_ok=True)
-            for day, data in payload.items():
-                tmp = self._dir / f".stats-{day}.tmp"
-                tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-                os.replace(tmp, self._dir / f"stats-{day}.json")
-        except OSError:
-            pass        # a full disk must not stop the decoder
+            # Deep-copy under the lock so concurrent record() calls cannot mutate dicts during json.dumps.
+            payload = {d: copy.deepcopy({str(h): b for h, b in self._hours.items() if self._day(h) == d}) for d in days}
+        failed: set[str] = set()
+        for day, data in payload.items():
+            try:
+                atomic_write_text(self._dir / f"stats-{day}.json", json.dumps(data, ensure_ascii=False))
+            except OSError:
+                failed.add(day)     # a full disk must not stop the decoder; retry on the next flush
+        if failed:
+            with self._lock:
+                self._dirty |= failed
+
+    def _maybe_prune(self) -> None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self._pruned_day == today:
+            return
+        self._pruned_day = today
+        oldest = datetime.now(timezone.utc).date() - timedelta(days=RETENTION_DAYS)
+        cutoff = int(datetime(oldest.year, oldest.month, oldest.day, tzinfo=timezone.utc).timestamp())
+        with self._lock:
+            for h in [h for h in self._hours if h < cutoff]:
+                del self._hours[h]
+        if self._dir is not None and self._dir.is_dir():
+            for path in self._dir.glob("stats-*.json"):
+                try:
+                    if datetime.strptime(path.stem[6:], "%Y-%m-%d").date() < oldest:
+                        path.unlink()
+                except (ValueError, OSError):
+                    continue
 
     @property
     def empty(self) -> bool:
@@ -117,6 +147,7 @@ class StatsStore:
                 b["n"] += 1
                 self._count(b, event, ts)
             self._dirty.add(self._day(hour))
+        self._maybe_prune()
         self.flush()
 
     def _count(self, b: dict, event: dict, ts: float) -> None:
@@ -168,7 +199,7 @@ class StatsStore:
         now = now or time.time()
         since = now - days * 86400 if days else 0
         with self._lock:
-            hours = {h: b for h, b in self._hours.items() if h + 3600 > since}
+            hours = copy.deepcopy({h: b for h, b in self._hours.items() if h + 3600 > since})
             available = len({self._day(h) for h in self._hours})
         out: dict[str, dict] = {}
         for hour in sorted(hours):
@@ -206,8 +237,8 @@ class StatsStore:
                     if "batt" in s and s["last"] >= t.get("batt_at", 0):
                         t["batt"], t["batt_at"] = s["batt"], s["last"]
         for a in out.values():
-            a["who"] = [[n, c, last] for n, (c, last) in sorted(a["who"].items(), key=lambda kv: -kv[1][0])[:60]]
             a["distinct"] = len(a["who"])
+            a["who"] = [[n, c, last] for n, (c, last) in sorted(a["who"].items(), key=lambda kv: -kv[1][0])[:60]]
             a["freq"] = [[int(f), n, round(a["lvl"][f][0] / a["lvl"][f][1], 1) if f in a["lvl"] else None]
                          for f, n in sorted(a["freq"].items(), key=lambda kv: -kv[1])]
             del a["lvl"]

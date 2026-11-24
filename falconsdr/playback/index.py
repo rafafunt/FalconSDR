@@ -12,6 +12,7 @@ mid-recording.
 """
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 import math
@@ -27,7 +28,7 @@ from falconsdr.config import AppConfig, atomic_write_text
 from falconsdr.military_presets import get_all_presets
 from falconsdr.models import airband_channel, snap_airband_hz
 from falconsdr.playback import stats
-from falconsdr.playback.audio_analysis import analyze_wav, compute_waveform_peaks
+from falconsdr.playback.audio_analysis import ANALYSIS_VERSION, analyze_wav, cleanup_temp_decodes, compute_waveform_peaks
 from falconsdr.playback.config import APP_DATA_DIR, UTC_TZ
 from falconsdr.playback.favorites_store import FavoritesStore
 from falconsdr.playback.models import MANUAL_FREQ_KHZ, QualityMetrics, Recording, TranscriptionResult
@@ -84,6 +85,12 @@ class Library:
         self._quality_saved_at = time.monotonic()
         self._dir_mtimes: dict[Path, int] = {}  # folder -> st_mtime_ns at the last rescan
         self._peaks: dict[str, list[float]] = {}
+        # Generation counters for facets()/stats() caches - bumped on library mutations.
+        # _stats_version ignores transcript updates (which don't affect non-language stats).
+        self._version = 0
+        self._stats_version = 0
+        self._facets_cache: tuple[int, tuple, dict] | None = None
+        self._stats_cache: dict[tuple, dict] = {}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -93,6 +100,7 @@ class Library:
         return Path(self.config.recording.output_dir)
 
     def start(self) -> None:
+        cleanup_temp_decodes()
         try:
             organize(self.root)  # legacy loose files -> date folders (never touches open files: those are in date folders)
         except OSError:
@@ -167,20 +175,25 @@ class Library:
 
     def _migrate_keys(self) -> None:
         """One-time: keys written by older versions start with the absolute folder path."""
-        prefix = str(self.root) + os.sep
+        roots = {str(self.root).rstrip("/\\"), str(self.root.resolve()).rstrip("/\\")}
+        prefixes = tuple(dict.fromkeys(
+            p + sep for r in roots if r for p in (r, r.replace("\\", "/")) for sep in ("/", "\\")
+        ))
         def relative(key: str) -> str:
-            if not key.startswith(prefix):
-                return key
-            return key[len(prefix):].replace(os.sep, "/")
+            for prefix in prefixes:
+                if key.startswith(prefix):
+                    return key[len(prefix):].replace("\\", "/")
+            return key
         changed = False
         for cache in (self.quality, self.transcripts):
-            for key in [k for k in cache._data if k.startswith(prefix)]:
+            for key in [k for k in cache._data if k.startswith(prefixes)]:
                 cache._data[relative(key)] = cache._data.pop(key)
                 cache.mark_changed()
                 changed = True
-        old_favorites = {k for k in self.favorites._keys if k.startswith(prefix)}
+        old_favorites = {k for k in self.favorites._keys if k.startswith(prefixes)}
         if old_favorites:
             self.favorites._keys = {relative(k) if k in old_favorites else k for k in self.favorites._keys}
+            self.favorites._rebuild_index()
             changed = True
         if changed:
             self._dirty = True
@@ -214,7 +227,11 @@ class Library:
         root = self.root
         if not root.is_dir():
             with self._lock:
+                had = bool(self._recs)
                 self._recs, self._blobs = {}, {}
+                if had:
+                    self._version += 1
+                    self._stats_version += 1
             return
         open_now = {p.resolve() for p in self._open_paths()}
         open_names = {p.name for p in open_now}
@@ -268,10 +285,17 @@ class Library:
             self._blobs = {rel: b for rel, b in self._blobs.items() if rel in found}
             # Forget what belongs to files that are gone (deleted by hand, moved away) - but never
             # on a scan that lost most of the library (a share half-mounted): that is not "gone".
+            # Favorites are never pruned on the initial startup scan (known is empty): a changed
+            # recordings folder or an upgrade path mismatch must never silently wipe the user's stars.
             if found and len(found) * 2 >= len(known):
                 valid = {r.key for r in found.values()}
-                dropped = self.quality.prune(valid) + self.transcripts.prune(valid) + self.favorites.prune(valid)
-                self._dirty = self._dirty or dropped > 0
+                dropped = self.quality.prune(valid) + self.transcripts.prune(valid)
+                if known:
+                    dropped += self.favorites.prune(valid)
+                self._dirty = self._dirty or dropped > 0 or self.favorites.changed
+            if found.keys() != known.keys() or any(found[k] is not known.get(k) for k in found):
+                self._version += 1
+                self._stats_version += 1
         self._dir_mtimes = mtimes
 
     def add_file(self, path: Path) -> None:
@@ -283,20 +307,30 @@ class Library:
             rel = self._rel(rec.path)
             self._recs[rel] = rec
             self._blobs.pop(rel, None)
+            self._version += 1
+            self._stats_version += 1
 
     def _analyze_some(self, budget_s: float) -> None:
         deadline = time.monotonic() + budget_s
         with self._lock:
-            todo = [r for r in self._recs.values() if r.quality is None]
-        todo.sort(key=lambda r: r.dt_utc, reverse=True)
+            # Never measured first, then results of an older scoring version (they keep showing until re-measured),
+            # newest recordings first within each group.
+            todo = [r for r in self._recs.values() if r.quality is None or r.quality.version < ANALYSIS_VERSION]
+        todo = heapq.nsmallest(256, todo, key=lambda r: (r.quality is not None, -r.dt_utc.timestamp()))   # no full sort of tens of thousands
+        analyzed = 0
         for rec in todo:
             if time.monotonic() > deadline or self._stop.is_set():
-                return
+                break
             quality = analyze_wav(rec.path)
             with self._lock:
                 rec.quality = quality
                 self.quality.put(rec.key, quality)
                 self._dirty = True
+            analyzed += 1
+        if analyzed:
+            with self._lock:
+                self._version += 1
+                self._stats_version += 1
 
     # -- reading ----------------------------------------------------------
     def get(self, rel: str) -> Optional[Recording]:
@@ -310,15 +344,23 @@ class Library:
             raise FileNotFoundError(rel)
         return rec.path
 
+    def invalidate_search(self) -> None:
+        with self._lock:
+            self._blobs.clear()
+            self._version += 1
+            self._stats_version += 1
+
     def _blob(self, rel: str, rec: Recording, names: dict[int, str]) -> str:
-        blob = self._blobs.get(rel)
+        with self._lock:
+            blob = self._blobs.get(rel)
         if blob is None:
             blob = " ".join((
                 f"{rec.freq_khz / 1000:.3f}", airband_channel(rec.freq_khz * 1000, ch833=True), names.get(rec.freq_khz, ""),
                 rec.dt_local.strftime("%Y-%m-%d %H:%M:%S"), rec.dt_utc.strftime("%Y-%m-%d %H:%M"),
                 rec.path.name, rec.transcript_text,
             )).lower()
-            self._blobs[rel] = blob
+            with self._lock:
+                self._blobs[rel] = blob
         return blob
 
     def _select(self, sel: Iterable[str], q: str, since: Optional[float], until: Optional[float],
@@ -367,6 +409,7 @@ class Library:
             "duration": qm.duration_sec if qm else None,
             "quality": round(qm.quality_score, 1) if qm and qm.readable else None,
             "snr": round(qm.snr_db, 1) if qm and qm.readable else None,
+            "speech": round(qm.speech_prob, 2) if qm and qm.readable else None,
             # Voice level in dBFS (the library's signal level is on the 16-bit scale): the player evens it out.
             "level": round(20.0 * math.log10(qm.signal_level / 32768.0), 1) if qm and qm.readable and qm.signal_level > 0 else None,
             "clipping": round(qm.clipping_ratio, 4) if qm and qm.readable else None,
@@ -401,7 +444,12 @@ class Library:
     def facets(self) -> dict:
         """Sidebar groups: frequencies, band presets and languages, each with
         a count and average quality (same idea as the old Playback sidebar)."""
+        presets = get_all_presets()
+        preset_sig = tuple((p.id, p.start_hz, p.stop_hz, p.label) for p in presets)
         with self._lock:
+            ver = self._version
+            if self._facets_cache is not None and self._facets_cache[0] == ver and self._facets_cache[1] == preset_sig:
+                return self._facets_cache[2]
             recs = list(self._recs.values())
         names = self._freq_names()
 
@@ -420,12 +468,12 @@ class Library:
             lang = r.transcript.language if r.transcript and r.transcript.language else ""
             by_lang.setdefault(lang, []).append(r)
         bands = []
-        for preset in get_all_presets():
+        for preset in presets:
             members = [r for r in recs if preset.start_hz <= r.freq_khz * 1000 <= preset.stop_hz]
             if members:
                 bands.append({"key": f"band:{preset.start_hz}-{preset.stop_hz}", "label": preset.label,
                               "start_hz": preset.start_hz, **agg(members)})
-        return {
+        out = {
             "total": len(recs),
             "favorites": sum(1 for r in recs if r.is_favorite),
             "frequencies": [{"key": f"freq:{f}", "freq_khz": f, "name": names.get(f, ""), **agg(g)}
@@ -433,12 +481,25 @@ class Library:
             "bands": bands,
             "languages": [{"key": f"lang:{lang}", "language": lang, **agg(g)} for lang, g in by_lang.items()],
         }
+        with self._lock:
+            if self._version == ver:
+                self._facets_cache = (ver, preset_sig, out)
+        return out
 
     def stats(self, sel=(), utc: bool = False) -> dict:
-        recs = [rec for _, rec in self._select(sel, "", None, None, 0.0)]
-        summary = stats.summarize(recs, use_utc=utc)
+        sel_key = tuple(sel)
+        needs_lang = any(s.startswith("lang:") for s in sel_key)
+        with self._lock:
+            ver = self._version if needs_lang else self._stats_version
+            cache_key = (needs_lang, ver, sel_key, bool(utc))
+            cached = self._stats_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        recs = [rec for _, rec in self._select(sel_key, "", None, None, 0.0)]
+        freq_st = stats.frequency_stats(recs, use_utc=utc)
+        summary = stats.summarize(recs, use_utc=utc, freq_st=freq_st)
         names = self._freq_names()
-        return {
+        out = {
             "summary": {
                 "count": summary.total_count,
                 "duration": summary.total_duration_sec,
@@ -452,40 +513,55 @@ class Library:
                 {"freq_khz": s.freq_khz, "name": names.get(s.freq_khz, ""), "count": s.count,
                  "quality": round(s.avg_quality, 1), "duration": s.total_duration_sec,
                  "last": s.last_heard.isoformat()}
-                for s in stats.frequency_stats(recs, use_utc=utc)
+                for s in freq_st
             ],
             "per_day": stats.counts_per_day(recs, use_utc=utc),
             "per_hour": stats.counts_per_hour(recs, use_utc=utc),
             "per_weekday": [c for _, c in stats.counts_per_weekday(recs, use_utc=utc)],
         }
+        with self._lock:
+            cur_ver = self._version if needs_lang else self._stats_version
+            if cur_ver == ver:
+                if len(self._stats_cache) >= 32:
+                    self._stats_cache = {
+                        k: v for k, v in self._stats_cache.items()
+                        if k[1] == (self._version if k[0] else self._stats_version)
+                    }
+                    if len(self._stats_cache) >= 32:
+                        self._stats_cache.clear()
+                self._stats_cache[cache_key] = out
+        return out
 
     def peaks(self, rel: str) -> list[float]:
-        cached = self._peaks.get(rel)
+        with self._lock:
+            cached = self._peaks.get(rel)
         if cached is None:
             values = compute_waveform_peaks(self.path_of(rel), 600)
             cached = [round(float(v), 3) for v in values] if values is not None else []
-            if len(self._peaks) > 300:
-                self._peaks.clear()
-            self._peaks[rel] = cached
+            with self._lock:
+                if len(self._peaks) > 300:
+                    self._peaks.clear()
+                self._peaks[rel] = cached
         return cached
 
     def storage(self) -> dict:
         import shutil
         with self._lock:
-            recs = list(self._recs.values())
+            items = list(self._recs.items())
+            mirrored_set = set(self._mirrored)
         try:
             disk = shutil.disk_usage(self.root if self.root.exists() else self.root.parent)
             disk_info = {"total": disk.total, "free": disk.free}
         except OSError:
             disk_info = {"total": None, "free": None}
-        oldest = min((r.dt_utc for r in recs), default=None)
+        oldest = min((r.dt_utc for _, r in items), default=None)
         return {
             "root": str(self.root),
-            "count": len(recs),
-            "bytes": sum(r.size for r in recs),
+            "count": len(items),
+            "bytes": sum(r.size for _, r in items),
             "oldest": oldest.isoformat() if oldest else None,
-            "mirrored": sum(1 for r in recs if self._rel_safe(r) in self._mirrored),
-            "favorites": sum(1 for r in recs if r.is_favorite),
+            "mirrored": sum(1 for rel, _ in items if rel in mirrored_set),
+            "favorites": sum(1 for _, r in items if r.is_favorite),
             **disk_info,
         }
 
@@ -509,34 +585,47 @@ class Library:
                 if rec is not None:
                     rec.is_favorite = favorite
                     self.favorites.set_favorite(rec.key, favorite)
+            self._version += 1
+            self._stats_version += 1
         self.favorites.save()  # once, and not while holding the lock the scan thread waits on
 
     def delete(self, rels: Iterable[str]) -> int:
+        with self._lock:
+            targets = [(rel, self._recs.get(rel)) for rel in rels]
+        # Unlink files outside self._lock so bulk deletes don't stall ScannerEngine.add_file() (gotcha 50).
+        removed: list[tuple[str, Recording]] = []
+        for rel, rec in targets:
+            if rec is None:
+                continue
+            try:
+                rec.path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.exception("Could not delete %s", rec.path)
+                continue
+            removed.append((rel, rec))
         deleted = 0
         with self._lock:
-            for rel in rels:
-                rec = self._recs.pop(rel, None)
-                if rec is None:
+            for rel, rec in removed:
+                if self._recs.get(rel) is not rec:
                     continue
-                try:
-                    rec.path.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    self._recs[rel] = rec
-                    logger.exception("Could not delete %s", rec.path)
-                    continue
+                self._recs.pop(rel, None)
                 self.quality.remove(rec.key)
                 self.transcripts.remove(rec.key)
                 self.favorites.remove(rec.key)
                 self._mirrored.discard(rel)
                 self._blobs.pop(rel, None)
+                self._peaks.pop(rel, None)
                 self._requests.pop(rel, None)
                 self._leases.pop(rel, None)
                 deleted += 1
             if deleted:
-                self.favorites.save()
                 self._dirty = True
+                self._version += 1
+                self._stats_version += 1
+        if deleted:
+            self.favorites.save()
         return deleted
 
     def set_transcript_text(self, rel: str, text: str) -> None:
@@ -552,6 +641,7 @@ class Library:
             self.transcripts.put(rec.key, rec.transcript)
             self._blobs.pop(rel, None)
             self._dirty = True
+            self._version += 1
 
     def request_transcription(self, rels: Iterable[str], language: Optional[str] = None) -> None:
         with self._lock:
@@ -607,12 +697,15 @@ class Library:
             rec = self._recs.get(rel)
             if rec is None or rec.key != key:
                 return False  # deleted or rewritten meanwhile
+            old_lang = rec.transcript.language if rec.transcript else ""
             rec.transcript = _from_fields(TranscriptionResult, result)
             if rec.transcript.status == "error":
                 self._failed.add(rel)
             self.transcripts.put(rec.key, rec.transcript)
             self._blobs.pop(rel, None)
             self._dirty = True
+            if rec.transcript.status != "error" and rec.transcript.language != old_lang:
+                self._version += 1
             done = (rec.freq_khz, rec.transcript.text, rec.transcript.status) if self.on_transcript else None
         if done and done[2] in ("ok", "low_confidence") and done[1]:
             try:
@@ -653,6 +746,8 @@ class Library:
                     rec.is_favorite = True
                     self.favorites.set_favorite(rec.key, True)
             self._dirty = True
+            self._version += 1
+            self._stats_version += 1
         self.favorites.save()
         return n
 

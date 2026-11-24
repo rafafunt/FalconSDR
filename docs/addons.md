@@ -28,8 +28,13 @@ channel (weight -1 in the primary choice).
 * `addons/tone.py` - `ToneDiscriminator` (audio -> frequency, streamed) and `BitClock` (a digital PLL).
 * `addons/aprs.py` - AFSK -> NRZI -> HDLC (flags, un-stuffing, CRC-16/X.25) -> AX.25 -> APRS (plain and
   compressed positions, Mic-E, objects, messages, status, weather).
-* `addons/acars.py` - MSK tones -> four tone-to-bit mappings tried in parallel (direct, inverted, and both
-  after differential decoding) -> preamble match -> 7-bit characters with odd parity -> CRC-16 -> fields.
+* `addons/acars.py` - MSK tones -> NRZI decoding (1200 Hz flips the bit, 2400 Hz keeps it; both start
+  levels tried in parallel) -> preamble match -> 7-bit characters with odd parity -> CRC-16 -> fields.
+* `addons/tetra.py` + `tetra-rs/` - experimental clear-mode TETRA (ETSI EN 300 392-2) decoder in zero-dependency
+  Rust (`falconsdr-tetra`, GPL-3.0-or-later): π/4-DQPSK RRC demodulator, Gardner timing, 4th-power AFC,
+  burst synchronizer, RM(30,14), 16-state RCPC Viterbi, BSCH/BNCH/MAC-RESOURCE/CMCE/SDS/LIP parsers. Strictly
+  clear-mode: encrypted slots (`encryption_mode != 0`, E2EE, cell AIE) are flagged and muted, never decrypted.
+  The ACELP speech codec is ETSI's code, never bundled: one click in the TETRA card downloads it from etsi.org and compiles it on the user's computer (`addons/tetra_codec.py`); `--codec <path>` takes any program with the same stdin/stdout protocol.
 * `addons/events.py` - `EventHub`: a ring in memory plus one JSON-lines file per day (`CONFIG_DIR/addons`).
 * `addons/external.py` - `ExternalRunner` (process, stdout lines, stderr tail) and the parsers of what
   rtl_433 and dumpvdl2 print.

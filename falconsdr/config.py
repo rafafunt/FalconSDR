@@ -132,6 +132,9 @@ class DeviceConfig:
     # DC power on the antenna input for an LNA/active antenna.
     # Off by default; only while scanning - sdr_backend switches it off on close.
     bias_tee: bool = False
+    # Antenna port name for multi-port SoapySDR receivers (e.g. SDRplay "Antenna A"/"Antenna B"/"Hi-Z").
+    # Empty = leave the driver's default port.
+    antenna: str = ""
     # RTL-SDR through librtlsdr (Windows, macOS, the packaged Linux build): once the scanner has
     # stayed on one frequency for a few reads, keep USB transfers queued (rtlsdr_read_async)
     # instead of one blocking read at a time - between two blocking reads the dongle drops
@@ -172,6 +175,7 @@ class VfoRangeConfig:
     noise_reduction_strength: float | None = None
     squelch_enabled: bool | None = None
     squelch_offset_db: float | None = None
+    antenna: str | None = None
 
     @property
     def has_advanced_overrides(self) -> bool:
@@ -182,7 +186,7 @@ class VfoRangeConfig:
             self.linger_time_ms is not None, self.gain_mode is not None,
             self.gain_db is not None, self.noise_reduction_enabled is not None,
             self.noise_reduction_strength is not None, self.squelch_enabled is not None,
-            self.squelch_offset_db is not None,
+            self.squelch_offset_db is not None, bool(self.antenna),
         ))
 
 
@@ -312,6 +316,7 @@ class AddonsConfig:
     # Channels the built-in decoders listen on while scanning (a slot there decodes instead of playing/recording).
     acars_frequencies_hz: list = field(default_factory=lambda: [131_525_000, 131_725_000, 131_825_000])
     aprs_frequencies_hz: list = field(default_factory=lambda: [144_800_000])
+    tetra_frequencies_hz: list = field(default_factory=list)
     vdl2_frequencies_hz: list = field(default_factory=lambda: [136_725_000, 136_775_000, 136_825_000, 136_875_000, 136_975_000])
     # Which receiver (index in the Controller's order: 0 = the main one, then the extra dongles) an add-on uses.
     # External programs hold that one receiver while the others keep scanning; a built-in decoder only decodes

@@ -105,7 +105,23 @@ def _checks():
             raise RuntimeError("python3.dll missing - abi3 add-ons (PyAV) can't load")
         return f"bundled pip {__version__}"
 
-    return [numpy_scipy, timezones, rtlsdr_library, native_receiver_libraries, web_ui, translations, band_presets, demodulator, mp3, addon_installer]
+    def tetra_decoder():
+        # Packaged builds carry our own falconsdr-tetra and the codec front end (the codec itself is fetched by the user).
+        if not getattr(sys, "frozen", False):
+            return "not a packaged build - built on demand from tetra-rs/"
+        import subprocess
+        from falconsdr.addons import tetra, tetra_codec
+        exe = tetra.tetra_executable()
+        if exe is None:
+            raise RuntimeError("falconsdr-tetra is missing from the bundle")
+        if not tetra_codec.can_install():
+            raise RuntimeError("the codec front end (tetra-rs/codec) is missing from the bundle")
+        r = subprocess.run([str(exe), "--selftest"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError("falconsdr-tetra --selftest failed")
+        return f"{exe.name} ok"
+
+    return [numpy_scipy, timezones, rtlsdr_library, native_receiver_libraries, web_ui, translations, band_presets, demodulator, mp3, addon_installer, tetra_decoder]
 
 
 def run() -> int:

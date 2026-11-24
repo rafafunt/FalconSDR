@@ -93,7 +93,8 @@ def split_by_range(default_windows: list, lanes: list, index: int, ranges: list[
             return None
         if len(freqs) == len(window.freqs):
             return window
-        return ScanWindow(center_hz=(freqs[0] + freqs[-1]) // 2, freqs=freqs, band=window.band)
+        step = min(25_000, freqs[1] - freqs[0]) if len(freqs) > 1 else 12_500
+        return ScanWindow(center_hz=(freqs[0] + freqs[-1]) // 2 + int(step * 0.37), freqs=freqs, band=window.band, antenna=window.antenna)
 
     kept = [w for w in map(restrict, default_windows) if w is not None]
     kept_lanes = []
@@ -124,11 +125,11 @@ def widen_windows(windows: list, rate_hz: float, channel_bw: dict, default_bw: f
         else:
             freqs = sorted({f for w in group for f in w.freqs})
             widest = max(bw(f) for f in freqs)
-            out.append(ScanWindow(center_hz=(freqs[0] + freqs[-1]) // 2 + int(widest * 0.37), freqs=freqs, band=group[0].band))
+            out.append(ScanWindow(center_hz=(freqs[0] + freqs[-1]) // 2 + int(widest * 0.37), freqs=freqs, band=group[0].band, antenna=group[0].antenna))
         group.clear()
 
     for window in sorted(windows, key=lambda w: w.center_hz):
-        if group and window.band is group[0].band:
+        if group and window.band is group[0].band and window.antenna == group[0].antenna:
             freqs = [f for w in group for f in w.freqs] + list(window.freqs)
             if max(freqs) - min(freqs) + max(bw(f) for f in freqs) <= usable:
                 group.append(window)

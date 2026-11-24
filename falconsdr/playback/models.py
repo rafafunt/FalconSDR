@@ -22,6 +22,8 @@ class QualityMetrics:
     quality_score: float         # overall 0-100 score, for sorting
     duration_sec: float
     readable: bool = True        # False = file corrupt/unreadable, the metrics above are placeholder zeros
+    speech_prob: float = 1.0     # 0-1: how likely the signal is speech (low = data burst, hiss); 1.0 where unknown
+    version: int = 0             # audio_analysis.ANALYSIS_VERSION that produced it; 0 = cached before versions existed
 
 
 TRANSCRIPT_STATUSES = ("ok", "low_confidence", "no_speech", "error", "skipped_short")

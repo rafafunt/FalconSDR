@@ -3,9 +3,9 @@
 import { NETWORK, groupDevices, groupOf, groupOfExtra, heldGroups, isTwice, nextGroup, takenByExtra, usableFor } from './dongles.js';
 import { api, confirmDialog, errorToast, fmtChannel, fmtMHz, h, icon, modal, mount, select, seg, slider, t, toast, toggle } from '../core.js';
 import { BOOST_STEPS_DB, liveAudio } from '../live-audio.js';
-import { S, cfg, confirmRecording, on, patchConfig, setFastPolling } from '../state.js';
+import { S, cfg, confirmRecording, loadSettings, on, patchConfig, setFastPolling } from '../state.js';
 import { NAMES, eventLine, fold, levelControl, passes } from './messages.js';
-import { askCustomRange, askSingleFrequency, bandEditor, bandRange, clearOverrides, hasOverrides, presetPicker } from './bands.js';
+import { askCustomRange, askSingleFrequency, bandEditor, bandRange, clearOverrides, hasOverrides, knownAntennas, presetPicker, supportsAntennaSwitch } from './bands.js';
 
 // Windows needs the WinUSB driver on the dongle (SDR++, SDR# and friends need the
 // same one, so most users already have it) - without it the device never opens.
@@ -352,7 +352,7 @@ export function listenView(root) {
     const missing = (caps.usb_seen || []).filter((f) => !listed.has(f));
     if (!missing.length) return null;
     const name = missing.map((f) => FAMILY_NAMES[f] || f).join(', ');
-    return h('span.small', { style: { color: '#ff9f0a' } }, caps.soapy
+    return h('span.small', { style: { color: 'var(--orange)' } }, caps.soapy
       ? t('{name} is plugged in but not listed. Install its SoapySDR module (e.g. soapysdr-module-hackrf), allow USB access (udev rules or the plugdev group), then reload this page.', { name })
       : t('{name} is plugged in, but SoapySDR is not available to FalconSDR (the Python module python3-soapysdr is not visible to it). Install python3-soapysdr and soapysdr-module-<your receiver>, then reinstall with install.sh --from-source, or install libhackrf0 / libairspy0 for the experimental native access.', { name }));
   }
@@ -399,6 +399,13 @@ export function listenView(root) {
       onchange: (e) => onset(parseAddr(e.target.value)) });
     const addr = c.device.driver === 'rtl_tcp' ? addrInput(c.device.device_args, (args) => { if (netEntry) netEntry.args = args; patchConfig({ device: { device_args: args } }); }) : null;
     const bw = h('input', { type: 'number', min: 0.25, max: 61.44, step: 0.01, value: (c.device.sample_rate_hz / 1e6).toFixed(2), onchange: (e) => patchConfig({ device: { sample_rate_hz: +e.target.value * 1e6 } }) });
+    const ants = knownAntennas();
+    const showAnt = supportsAntennaSwitch(c.device.driver) || !!c.device.antenna;
+    const antInput = showAnt
+      ? (ants.length
+        ? select([['', t('Driver default')], ...[...new Set([...ants, c.device.antenna].filter(Boolean))].map((a) => [a, a])], c.device.antenna || '', (v) => patchConfig({ device: { antenna: v } }))
+        : h('input', { value: c.device.antenna || '', placeholder: t('Driver default'), onchange: (e) => patchConfig({ device: { antenna: e.target.value.trim() } }) }))
+      : null;
     // Experimental: more dongles scanning together - each takes its share of the capture windows.
     const extra = c.device.extra_devices || [];
     // An extra dongle must be a specific one - and never a simulation next to real hardware (fake
@@ -438,7 +445,7 @@ export function listenView(root) {
       return h('div.col', { style: { gap: '6px' } }, h('label.field', t('Dongle {n}', { n: i + 2 }), h('div.row', s, del)),
         xMethod ? h('label.field', t('Access method'), xMethod) : null,
         xAddr ? h('label.field', t('rtl_tcp address'), xAddr) : null,
-        twice ? h('span.small', { style: { color: '#ff9f0a' } }, t('This receiver is already used above - it can only be opened once.')) : null,
+        twice ? h('span.small', { style: { color: 'var(--orange)' } }, t('This receiver is already used above - it can only be opened once.')) : null,
         h('label.field', t('Capture width (MHz)'), xWidth), xBias, xRange);
     });
     const add = h('button.ghost.small', {
@@ -449,14 +456,22 @@ export function listenView(root) {
         setExtra([...extra, { driver: d.driver, device_args: d.driver === NETWORK ? '' : d.args }]);
       },
     }, icon('plus'), t('Scan with another dongle (experimental)'));
-    deviceInputs = [sel, ...(methods ? [methods] : []), ...(addr ? [addr] : []), bw, bias.querySelector('input'), add, ...extraInputs];
+    const refreshBtn = h('button.icon.ghost', {
+      title: t('Refresh devices'),
+      onclick: async () => {
+        refreshBtn.disabled = true;
+        try { await loadSettings({ refreshDevices: true }); renderDevice(); } catch (e) { errorToast(e); refreshBtn.disabled = false; }
+      },
+    }, icon('refresh'));
+    deviceInputs = [sel, ...(methods ? [methods] : []), ...(addr ? [addr] : []), bw, ...(antInput ? [antInput] : []), bias.querySelector('input'), add, refreshBtn, ...extraInputs];
     mount(device,
-      h('div.card-head', h('h2', t('SDR device'))),
+      h('div.card-head', h('h2', t('SDR device')), refreshBtn),
       h('div.fields',
         h('label.field', t('Device'), sel),
         methods ? h('label.field', t('Access method'), methods) : null,
         addr ? h('label.field', t('rtl_tcp address'), addr) : null,
-        h('label.field', t('Capture width (MHz)'), bw)),
+        h('label.field', t('Capture width (MHz)'), bw),
+        antInput ? h('label.field', t('Antenna input'), antInput) : null),
       addr ? h('span.faint.small', t('The RTL-SDR on another computer, through its rtl_tcp server (host or host:port, default port 1234). It serves one program at a time, the stream is not encrypted - use it on a trusted network. Retuning takes longer than with a local dongle, so scanning many windows is slower.')) : null,
       methods ? h('span.faint.small', t('How FalconSDR talks to this receiver. The first choice is the default; the other one is the fallback when it will not open, and a way to compare.')) : null,
       missingReceiverNotice(devices),
@@ -558,12 +573,66 @@ export function listenView(root) {
   }
 
   const expanded = new Set();
+
+  // Moves a band; the solo choice is an index on the server, so it follows the band.
+  async function moveBand(from, to) {
+    const bands = cfg().bands;
+    if (from === to || to < 0 || to >= bands.length) return;
+    const solo = S.live && S.live.solo_band;
+    const soloBand = solo != null ? bands[solo] : null;
+    bands.splice(to, 0, bands.splice(from, 1)[0]);
+    expanded.clear();
+    await patchConfig({ bands });
+    if (soloBand) api.post('/api/scanner/solo', { band: bands.indexOf(soloBand) }).catch(errorToast);
+    renderBands();
+    const grip = bandsBody.querySelectorAll('.grip')[to];
+    if (grip && document.activeElement === document.body) grip.focus();
+  }
+
+  // Drag by the handle with pointer events (mouse and touch alike); arrows move it from the keyboard.
+  function bandGrip(i) {
+    let gap = null;
+    const row = () => grip.closest('.band');   // the row does not exist yet while its parts are built
+    const rows = () => [...bandsBody.querySelectorAll('.band')];
+    const clear = () => rows().forEach((r) => r.classList.remove('drop-before', 'drop-after'));
+    const grip = h('button.icon.ghost.grip', {
+      title: t('Drag to change the order'),
+      onpointerdown: (e) => {
+        if (e.button) return;
+        grip.setPointerCapture(e.pointerId);
+        row().classList.add('dragging');
+        gap = i;
+      },
+      onpointermove: (e) => {
+        if (gap === null) return;
+        const all = rows();
+        gap = all.findIndex((r) => { const b = r.getBoundingClientRect(); return e.clientY < b.top + b.height / 2; });
+        if (gap < 0) gap = all.length;
+        clear();
+        if (gap < all.length) all[gap].classList.add('drop-before'); else all[all.length - 1].classList.add('drop-after');
+      },
+      onpointerup: () => {
+        if (gap === null) return;
+        const to = gap > i ? gap - 1 : gap;
+        gap = null; clear(); row().classList.remove('dragging');
+        moveBand(i, to);
+      },
+      onpointercancel: () => { gap = null; clear(); row().classList.remove('dragging'); },
+      onkeydown: (e) => {
+        const d = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
+        if (d) { e.preventDefault(); moveBand(i, i + d); }
+      },
+    }, icon('grip'));
+    return grip;
+  }
+
   function bandRow(b, i) {
     const save = () => patchConfig({ bands: cfg().bands });
     const solo = S.live && S.live.solo_band === i;
     const custom = hasOverrides(b);
     const row = h('div.band', { class: (b.enabled ? '' : 'disabled') + (solo ? ' solo' : '') },
       h('div.band-main',
+        cfg().bands.length > 1 ? bandGrip(i) : null,
         h('label.switch', h('input', {
           type: 'checkbox', checked: b.enabled, disabled: scheduleLocked(),
           title: scheduleLocked() ? t('Schedule mode is on') : t('Scan this band'),

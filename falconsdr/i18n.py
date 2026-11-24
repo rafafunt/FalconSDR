@@ -152,8 +152,10 @@ def system_language_code() -> str:
 def catalog_for(lang: str) -> dict[str, str]:
     """The msgid -> msgstr table for ``lang`` ({} for English or an unknown
     code) - what the web UI fetches to translate itself."""
+    if not lang or lang == "en" or not re.fullmatch(r"[A-Za-z0-9_-]+", lang):
+        return {}
     path = LOCALE_DIR / f"{lang}.po"
-    if lang == "en" or not path.exists():
+    if not path.exists():
         return {}
     try:
         return parse_po(path.read_text(encoding="utf-8"))

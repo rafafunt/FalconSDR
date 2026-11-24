@@ -138,6 +138,9 @@ const ICONS = {
   link: 'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1',
   clock: 'M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0M12 7v5l3 2',
   globe: 'M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18',
+  grip: 'M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01',
+  up: 'M18 15l-6-6-6 6',
+  down: 'M6 9l6 6 6-6',
 };
 
 export function icon(name, cls) {
@@ -192,9 +195,17 @@ export function tabs(options, value, onchange) {
 export function seg(options, value, onchange) {
   const wrap = h('div.seg');
   for (const [v, label] of options) {
+    const active = String(v) === String(value);
     wrap.append(h('button', {
-      class: String(v) === String(value) ? 'active' : '',
-      onclick: () => { [...wrap.children].forEach((b) => b.classList.remove('active')); btn(v).classList.add('active'); onchange(v); },
+      class: active ? 'active' : '',
+      'aria-pressed': String(active),
+      onclick: () => {
+        [...wrap.children].forEach((b) => { b.classList.remove('active'); b.setAttribute('aria-pressed', 'false'); });
+        const cur = btn(v);
+        cur.classList.add('active');
+        cur.setAttribute('aria-pressed', 'true');
+        onchange(v);
+      },
       'data-v': v,
     }, label));
   }
@@ -281,9 +292,30 @@ export async function formDialog(title, fields, okLabel) {
 }
 
 // ---------------------------------------------------------------- formatting
+export function applyTheme(mode) {
+  const root = document.documentElement;
+  if (mode === 'dark' || mode === 'light') root.dataset.theme = mode;
+  else delete root.dataset.theme;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) {
+    const dark = mode === 'dark' || (mode !== 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    meta.content = dark ? '#000000' : '#f2f2f7';
+  }
+}
+
 export const prefs = {
   get utc() { return localStorage.getItem('utc') === '1'; },
   set utc(v) { localStorage.setItem('utc', v ? '1' : '0'); },
+  get theme() {
+    const v = localStorage.getItem('theme');
+    return v === 'dark' || v === 'light' ? v : 'auto';
+  },
+  set theme(v) {
+    const mode = v === 'dark' || v === 'light' ? v : 'auto';
+    if (mode === 'auto') localStorage.removeItem('theme');
+    else localStorage.setItem('theme', mode);
+    applyTheme(mode);
+  },
 };
 
 export function fmtMHz(hz, digits = 4) { return (hz / 1e6).toFixed(digits); }
@@ -379,8 +411,10 @@ export function fmtAgo(iso) {
   return t('{n} days ago', { n: Math.round(sec / 86400) });
 }
 
-export function qualityBadge(q) {
+// speech: 0-1 chance that the recording is speech (the library's analysis); low = a data burst or hiss, shown muted.
+export function qualityBadge(q, speech) {
   if (q === null || q === undefined) return h('span.q', '–');
+  if (typeof speech === 'number' && speech < 0.25) return h('span.q.nospeech', { title: t('Probably no speech (data or noise)') }, Math.round(q));
   return h('span.q', { class: q >= 70 ? 'hi' : q >= 40 ? 'mid' : 'lo', title: t('Quality') }, Math.round(q));
 }
 

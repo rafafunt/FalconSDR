@@ -2,32 +2,52 @@
 import { carrierHz, fmtChannel, fmtMHz, formDialog, h, icon, mount, select, slider, t, toggle } from '../core.js';
 import { S, cfg } from '../state.js';
 
-export const MODULATIONS = ['AM', 'NFM', 'WFM', 'SSB', 'DMR', 'YSF'];
+export const MODULATIONS = ['AM', 'NFM', 'WFM', 'SSB', 'DMR', 'YSF', 'TETRA'];
 const DIGITAL = ['DMR', 'YSF'];
-export const modLabel = (m) => (m === 'YSF' ? 'C4FM (YSF)' : m);
+export const isDigitalMod = (m) => ['DMR', 'YSF', 'TETRA'].includes(m);
+export const modLabel = (m) => (m === 'YSF' ? 'C4FM (YSF)' : m === 'TETRA' ? t('TETRA (experimental)') : m);
 
 // Digital voice is an optional add-on (Settings → Digital voice): until it is
 // installed DMR/C4FM show greyed out, and picking one leads there instead.
+// Same for the experimental clear-mode TETRA decoder (Add-ons).
 export function modOptions() {
   const ready = S.settings.capabilities.digital;
-  return MODULATIONS.map((m) => (DIGITAL.includes(m) && !ready
-    ? [m, `${modLabel(m)} · ${t('optional download')}`, offerDigital]
-    : [m, modLabel(m)]));
+  const tetraReady = S.settings.capabilities.tetra;
+  return MODULATIONS.map((m) => {
+    if (DIGITAL.includes(m) && !ready) return [m, `${modLabel(m)} · ${t('optional download')}`, offerDigital];
+    if (m === 'TETRA' && !tetraReady) return [m, `${modLabel(m)} · ${t('build in Add-ons')}`, offerAddons];
+    return [m, modLabel(m)];
+  });
 }
 
 function offerDigital() {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));  // closes the form dialog it was picked in
   location.hash = '#/addons/digital';
 }
-export const OVERRIDES = ['trigger_level_dbfs', 'tuning_time_ms', 'linger_time_ms', 'gain_mode', 'gain_db', 'noise_reduction_enabled', 'noise_reduction_strength', 'squelch_enabled', 'squelch_offset_db'];
-export const hasOverrides = (b) => OVERRIDES.some((k) => b[k] !== null && b[k] !== undefined);
+
+function offerAddons() {
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  location.hash = '#/addons';
+}
+export const OVERRIDES = ['trigger_level_dbfs', 'tuning_time_ms', 'linger_time_ms', 'gain_mode', 'gain_db', 'noise_reduction_enabled', 'noise_reduction_strength', 'squelch_enabled', 'squelch_offset_db', 'antenna'];
+export const hasOverrides = (b) => OVERRIDES.some((k) => b[k] !== null && b[k] !== undefined && b[k] !== '');
 export const clearOverrides = (b) => OVERRIDES.forEach((k) => { b[k] = null; });
+
+// Known SoapySDR antenna ports reported by the receiver (live or cached).
+export function knownAntennas() {
+  const live = (S.live && S.live.antennas && S.live.antennas.length) ? S.live.antennas : [];
+  const saved = (S.settings && S.settings.antennas && S.settings.antennas.length) ? S.settings.antennas : [];
+  return live.length ? live : saved;
+}
+
+const NON_SOAPY = new Set(['', 'auto', 'rtlsdr_native', 'rtl_tcp', 'simulated', 'hackrf_native', 'airspy_native']);
+export const supportsAntennaSwitch = (driver) => knownAntennas().length > 1 || (!!driver && !NON_SOAPY.has(driver));
 
 // The id is made here, not by the server: a schedule entry refers to the band right away.
 export function newBand(fields) {
   return { id: Math.random().toString(36).slice(2, 10), enabled: true, modulation: 'AM', weight: 0, label: '',
     trigger_level_dbfs: null, tuning_time_ms: null, linger_time_ms: null,
-    gain_mode: null, gain_db: null, noise_reduction_enabled: null, noise_reduction_strength: null, ...fields };
+    gain_mode: null, gain_db: null, noise_reduction_enabled: null, noise_reduction_strength: null, antenna: null, ...fields };
 }
 
 export function bandRange(b) {
@@ -75,7 +95,7 @@ export function bandEditor(b, save, rerender) {
     num(single ? t('Frequency (MHz)') : t('Start (MHz)'), (b.start_hz / 1e6).toFixed(4), (v) => { b.start_hz = Math.round(v * 1e6); if (single) b.stop_hz = b.start_hz; }),
     single ? null : num(t('Stop (MHz)'), (b.stop_hz / 1e6).toFixed(4), (v) => { b.stop_hz = Math.round(v * 1e6); }),
     single ? null : num(t('Step (kHz)'), b.step_hz / 1000, (v) => { b.step_hz = Math.round(v * 1000); }),
-    h('label.field', t('Modulation'), select(modOptions(), b.modulation, (v) => { b.modulation = v; save(); })),
+    h('label.field', t('Modulation'), select(modOptions(), b.modulation, (v) => { b.modulation = v; syncAnalogOnly(); save(); })),
     num(t('Priority weight'), b.weight, (v) => { b.weight = v; }, { min: 0, max: 20, step: 0.5, title: t('0 = normal. Higher = visited more often than other weighted bands (1 vs 2 = twice as often).') }));
   // Per-band overrides: unticked = follow the global setting. Values that
   // only make sense together (on/off + strength, mode + gain) share one tile.
@@ -85,6 +105,7 @@ export function bandEditor(b, save, rerender) {
     gain_mode: c.device.gain_mode, gain_db: c.device.gain_db,
     noise_reduction_enabled: c.noise_reduction.enabled, noise_reduction_strength: c.noise_reduction.strength,
     squelch_enabled: c.squelch_enabled, squelch_offset_db: c.squelch_offset_db,
+    antenna: c.device.antenna || knownAntennas()[0] || '',
   };
   const ov = (keys, label, makeInput, globalValue) => {
     const own = () => keys.some((k) => b[k] !== null && b[k] !== undefined);
@@ -100,26 +121,42 @@ export function bandEditor(b, save, rerender) {
   };
   const rangeInput = (key, min, max, step, fmt, scale = 1) => slider({ name: '', min, max, step, value: (b[key] ?? defaults[key]) * scale, format: fmt, oninput: (v) => { b[key] = v / scale; save(); } });
   const gainModes = [['manual', t('Manual')], ['auto', t('Auto (hardware)')], ['sw_auto', t('Auto (software)')]];
-  const overrides = h('div.overrides',
-    ov(['trigger_level_dbfs'], t('Trigger level'), () => rangeInput('trigger_level_dbfs', -90, 0, 1, (v) => `${v} dBFS`), `${c.trigger_level_dbfs} dBFS`),
-    ov(['squelch_enabled', 'squelch_offset_db'], t('Squelch'), (redraw) => {
+  const sqTile = ov(['squelch_enabled', 'squelch_offset_db'], t('Squelch'), (redraw) => {
       const on = b.squelch_enabled ?? defaults.squelch_enabled;
       const offset = rangeInput('squelch_offset_db', -40, 0, 1, (v) => `${v} dB`);
       offset.input.disabled = !on;
       return [toggle(t('On'), on, (v) => { b.squelch_enabled = v; save(); redraw(); }), offset];
-    }, c.squelch_enabled ? `${t('On')}, ${c.squelch_offset_db} dB` : t('Off')),
+    }, c.squelch_enabled ? `${t('On')}, ${c.squelch_offset_db} dB` : t('Off'));
+  const nrTile = ov(['noise_reduction_enabled', 'noise_reduction_strength'], t('Noise reduction'), (redraw) => {
+      const on = b.noise_reduction_enabled ?? defaults.noise_reduction_enabled;
+      const strength = rangeInput('noise_reduction_strength', 0, 100, 1, (v) => `${v}%`, 100);
+      strength.input.disabled = !on;
+      return [toggle(t('On'), on, (v) => { b.noise_reduction_enabled = v; save(); redraw(); }), strength];
+    }, c.noise_reduction.enabled ? `${t('On')}, ${Math.round(c.noise_reduction.strength * 100)}%` : t('Off'));
+  const syncAnalogOnly = () => {
+    const hide = isDigitalMod(b.modulation);
+    sqTile.classList.toggle('hidden', hide);
+    nrTile.classList.toggle('hidden', hide);
+  };
+  syncAnalogOnly();
+  const overrides = h('div.overrides',
+    ov(['trigger_level_dbfs'], t('Trigger level'), () => rangeInput('trigger_level_dbfs', -90, 0, 1, (v) => `${v} dBFS`), `${c.trigger_level_dbfs} dBFS`),
+    sqTile,
     ov(['tuning_time_ms'], t('Tuning time'), () => rangeInput('tuning_time_ms', 0, 1000, 10, (v) => `${v} ms`), `${c.timing.tuning_time_ms} ms`),
     ov(['linger_time_ms'], t('Hold after a transmission'), () => rangeInput('linger_time_ms', 0, 30000, 100, (v) => `${(v / 1000).toFixed(1)} s`), `${(c.timing.linger_time_ms / 1000).toFixed(1)} s`),
     ov(['gain_mode', 'gain_db'], t('Gain'), (redraw) => [
       select(gainModes, b.gain_mode ?? defaults.gain_mode, (v) => { b.gain_mode = v; save(); redraw(); }),
       (b.gain_mode ?? defaults.gain_mode) === 'auto' ? null : rangeInput('gain_db', 0, 50, 0.1, (v) => `${(+v).toFixed(1)} dB`),
     ], `${gainModes.find(([k]) => k === c.device.gain_mode)?.[1] ?? c.device.gain_mode}, ${c.device.gain_db} dB`),
-    ov(['noise_reduction_enabled', 'noise_reduction_strength'], t('Noise reduction'), (redraw) => {
-      const on = b.noise_reduction_enabled ?? defaults.noise_reduction_enabled;
-      const strength = rangeInput('noise_reduction_strength', 0, 100, 1, (v) => `${v}%`, 100);
-      strength.input.disabled = !on;
-      return [toggle(t('On'), on, (v) => { b.noise_reduction_enabled = v; save(); redraw(); }), strength];
-    }, c.noise_reduction.enabled ? `${t('On')}, ${Math.round(c.noise_reduction.strength * 100)}%` : t('Off')));
+    nrTile,
+    (supportsAntennaSwitch(c.device.driver) || b.antenna) ? ov(['antenna'], t('Antenna input'), () => {
+      const ants = knownAntennas();
+      if (ants.length) {
+        const opts = [...new Set([...ants, b.antenna].filter(Boolean))].map((a) => [a, a]);
+        return select(opts, b.antenna ?? ants[0], (v) => { b.antenna = v || null; save(); });
+      }
+      return h('input', { value: b.antenna || '', placeholder: t('e.g. Antenna A, Antenna B, Hi-Z'), onchange: (e) => { b.antenna = e.target.value.trim() || null; save(); } });
+    }, c.device.antenna || t('Driver default')) : null);
   return h('div.col', fields,
     h('div.row.wrap', h('h3', t('Own settings for this band')), h('span.spacer'),
       hasOverrides(b) ? h('button.ghost.small', { onclick: () => { clearOverrides(b); save(); rerender(); } }, icon('refresh'), t('Restore general settings')) : null),

@@ -138,19 +138,15 @@ def _acars_block(text: bytes, registration: str = ".SP-LWA", label: str = "H1", 
     return chars + bytes([crc & 0xFF, crc >> 8])
 
 
-def _acars_audio(block: bytes, mapping: str) -> np.ndarray:
+def _acars_audio(block: bytes, start_level: int = 1) -> np.ndarray:
+    """NRZI like the real thing: the 1200 Hz tone flips the bit level, 2400 Hz keeps it."""
     from falconsdr.addons import acars
     head = [b for c in (0x2B, 0x2A, acars.SYN, acars.SYN, acars.SOH) for b in acars.char_bits(acars.with_parity(c))]
     bits = [1] * 16 + head + [b for byte in block for b in acars.char_bits(byte)] + [b for b in acars.char_bits(acars.DEL)]
-    tones, tone = [], 1
+    tones, level = [], start_level
     for b in bits:
-        if mapping == "direct":
-            tone = b
-        elif mapping == "inverted":
-            tone = 1 - b
-        elif mapping == "diff":              # no change = 1
-            tone = tone if b else 1 - tone
-        tones.append(tone)
+        tones.append(1 if b == level else 0)
+        level = b
     freqs = _per_symbol([2400.0 if t else 1200.0 for t in tones], 2400)
     return np.concatenate([np.zeros(300, np.float32), _fm(freqs), np.zeros(300, np.float32)])
 
@@ -165,15 +161,27 @@ def _decode_acars(audio: np.ndarray, **kw) -> list[dict]:
 
 
 class AcarsTest(unittest.TestCase):
-    def test_a_block_is_decoded_whatever_the_tone_mapping(self) -> None:
+    def test_a_block_is_decoded_whatever_level_the_stream_starts_at(self) -> None:
         block = _acars_block(b"M01AAB1234HELLO FROM THE COCKPIT\r\n")
-        for mapping in ("direct", "inverted", "diff"):
-            ev = _decode_acars(_acars_audio(block, mapping))
-            self.assertEqual(len(ev), 1, mapping)
+        for level in (0, 1):
+            ev = _decode_acars(_acars_audio(block, level))
+            self.assertEqual(len(ev), 1, level)
             e = ev[0]
-            self.assertTrue(e["crc_ok"], mapping)
-            self.assertEqual((e["registration"], e["label"], e["msg_no"], e["flight"]), ("SP-LWA", "H1", "M01A", "AB1234"), mapping)
+            self.assertTrue(e["crc_ok"], level)
+            self.assertEqual((e["registration"], e["label"], e["msg_no"], e["flight"]), ("SP-LWA", "H1", "M01A", "AB1234"), level)
             self.assertIn("HELLO FROM THE COCKPIT", e["text"])
+
+    def test_a_real_burst_from_131_825_mhz_is_decoded(self) -> None:
+        # 0.25 s of audio recorded by a real receiver (a short acknowledgement block). The synthetic signals
+        # above once agreed with a wrong tone mapping, so the real thing has to stay in the tests.
+        import wave
+        from pathlib import Path
+        with wave.open(str(Path(__file__).parent / "data" / "acars_real_131825.wav")) as w:
+            audio = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float32) / 32768
+        ev = _decode_acars(audio)
+        self.assertEqual(len(ev), 1)
+        self.assertTrue(ev[0]["crc_ok"])
+        self.assertEqual((ev[0]["registration"], ev[0]["flight"]), ("TC-JHM", "TK07DB"))
 
     def test_noise_and_a_damaged_block_give_nothing(self) -> None:
         rng = np.random.default_rng(3)
@@ -181,10 +189,10 @@ class AcarsTest(unittest.TestCase):
         block = bytearray(_acars_block(b"M01AAB1234TEXT"))
         parity = bytearray(block)
         parity[20] ^= 0x01                                       # a character with a parity error: not a block
-        self.assertEqual(_decode_acars(_acars_audio(bytes(parity), "direct"), check_crc=False), [])
+        self.assertEqual(_decode_acars(_acars_audio(bytes(parity)), check_crc=False), [])
         block[-1] ^= 0x01                                        # only the check sequence is wrong
-        self.assertEqual(_decode_acars(_acars_audio(bytes(block), "direct")), [])
-        shown = _decode_acars(_acars_audio(bytes(block), "direct"), check_crc=False)    # kept when asked (diagnostics)
+        self.assertEqual(_decode_acars(_acars_audio(bytes(block))), [])
+        shown = _decode_acars(_acars_audio(bytes(block)), check_crc=False)    # kept when asked (diagnostics)
         self.assertEqual((len(shown), shown[0]["crc_ok"]), (1, False))
 
     def test_crc16_matches_the_known_check_value(self) -> None:
@@ -211,6 +219,18 @@ class HubTest(unittest.TestCase):
         self.assertFalse(old.exists())
         again = EventHub(folder, keep_days=7)                     # what is on disk comes back
         self.assertEqual([e["summary"] for e in again.since(0)], ["one", "two"])
+
+    def test_earlier_days_come_back_after_a_restart_not_only_today(self) -> None:
+        import json
+        from datetime import date, timedelta
+        from pathlib import Path
+        from falconsdr.addons.events import EventHub
+        folder = Path(tempfile.mkdtemp(dir=_HOME))
+        for back, text in ((3, "three days ago"), (1, "yesterday")):
+            day = folder / f"events-{(date.today() - timedelta(days=back)).isoformat()}.jsonl"
+            day.write_text(json.dumps({"addon": "acars", "ts": 1.0, "summary": text}) + "\n", encoding="utf-8")
+        hub = EventHub(folder, keep_days=7)                        # nothing received today
+        self.assertEqual([e["summary"] for e in hub.since(0)], ["three days ago", "yesterday"])
 
 
 class ManagerTest(unittest.TestCase):
@@ -1292,5 +1312,264 @@ class DongleChoiceTest(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr[-1500:])
 
 
+class AuditAddonsRegressionsTest(unittest.TestCase):
+    def test_clean_options_validates_stored_current_values(self) -> None:
+        from falconsdr.addons.manager import clean_options
+
+        cleaned = clean_options("rtl_433", {"gain": "; rm -rf /", "sample_rate": "99999k", "hop_s": -5}, {"band": "433"})
+        self.assertEqual(cleaned["gain"], "")
+        self.assertEqual(cleaned["sample_rate"], "")
+        self.assertGreaterEqual(cleaned["hop_s"], 1)
+
+    def test_stats_store_distinct_counts_past_60(self) -> None:
+        import time
+        from falconsdr.addons.stats import StatsStore
+
+        store = StatsStore(Path(tempfile.mkdtemp(dir=_HOME)) / "stats.json")
+        now = time.time()
+        for i in range(75):
+            store.record({"addon": "acars", "kind": "acars", "ts": now, "registration": f"SP-{i:03d}"})
+        snap = store.snapshot(days=1)["addons"]["acars"]
+        self.assertEqual(len(snap["who"]), 60)
+        self.assertEqual(snap["distinct"], 75)
+
+    def test_aprs_rejects_bad_base91_and_out_of_range_coords(self) -> None:
+        from falconsdr.addons.aprs import _position
+
+        # Invalid base-91 compressed characters (< 33) must return None instead of bogus coordinates.
+        self.assertIsNone(_position("!\x01\x01\x01\x01\x01\x01\x01\x01/000"))
+        # Out-of-range uncompressed latitude (95 deg N).
+        self.assertIsNone(_position("!9500.00N/02100.00E-"))
+
+    def test_schedule_dedups_external_addons_across_receivers(self) -> None:
+        from datetime import datetime
+        from falconsdr.config import AppConfig, ScheduleConfig, ScheduleEntry
+        from falconsdr.schedule import assignments
+
+        cfg = AppConfig()
+        cfg.schedule = ScheduleConfig(
+            enabled=True,
+            entries=[
+                ScheduleEntry(start="00:00", end="23:59", days=[0, 1, 2, 3, 4, 5, 6], addon="rtl_433", receivers=[0]),
+                ScheduleEntry(start="00:00", end="23:59", days=[0, 1, 2, 3, 4, 5, 6], addon="rtl_433", receivers=[1]),
+            ],
+        )
+        got = assignments(cfg, count=2, now=datetime(2026, 1, 5, 12, 0), addon_receiver=lambda _: 0, addon_ok=lambda _: True)
+        addons = [r.addon for r in got if r.addon]
+        self.assertEqual(addons, ["rtl_433"])
+
+    def test_addon_manager_log_runs_outside_lock(self) -> None:
+        from unittest import mock
+        from falconsdr.addons import manager as mgr_mod
+        from falconsdr.config import AppConfig
+
+        seen_unlocked = []
+        captured_exit = []
+        mgr = None
+
+        def check_log(_msg: str) -> None:
+            # Must be able to acquire mgr._lock without deadlocking (non-reentrant Lock).
+            acquired = mgr._lock.acquire(blocking=False)
+            if acquired:
+                mgr._lock.release()
+            seen_unlocked.append(acquired)
+
+        class FakeRunner:
+            def __init__(self, argv, on_line, on_exit):
+                captured_exit.append(on_exit)
+            def stderr_lines(self): return ["fatal error"]
+            def start(self): pass
+            def stop(self): pass
+
+        mgr = mgr_mod.AddonManager(AppConfig(), log=check_log)
+        with mock.patch.object(mgr, "program", lambda _id: "/usr/bin/rtl_433"), \
+             mock.patch.object(mgr_mod, "ExternalRunner", FakeRunner), \
+             mock.patch.object(mgr_mod.SoapyBackend, "_wait_for_reopen_cooldown", lambda: None):
+            mgr.start_external("rtl_433", {"driver": "auto", "device_args": ""})
+            captured_exit[0](1)
+        self.assertGreaterEqual(len(seen_unlocked), 2)
+        self.assertTrue(all(seen_unlocked))
+
+
+class TetraDecoderTest(unittest.TestCase):
+    def test_channelize_iq_shifts_and_decimates_to_72k(self) -> None:
+        from falconsdr.dsp import Demodulator
+        fs = 2_400_000
+        offset = 150_000.0
+        n = 48_000
+        t = np.arange(n, dtype=np.float64) / fs
+        iq = np.exp(2j * np.pi * (offset + 5_000.0) * t).astype(np.complex64)
+        dem = Demodulator(fs, 12500)
+        out = dem.channelize_iq(iq, offset_hz=offset, rate=72_000)
+        self.assertEqual(out.dtype, np.complex64)
+        self.assertGreater(out.size, 1000)
+        # Peak FFT bin of channelized baseband should sit right at +5 kHz.
+        spec = np.abs(np.fft.fft(out[-1024:]))
+        freqs = np.fft.fftfreq(1024, d=1.0 / 72_000)
+        peak_hz = float(freqs[int(np.argmax(spec))])
+        self.assertAlmostEqual(peak_hz, 5_000.0, delta=250.0)
+
+    def test_summarize_and_manager_catalog_for_tetra(self) -> None:
+        from falconsdr.addons.manager import AddonManager, summarize
+        from falconsdr.config import AppConfig
+        self.assertIn("MCC 260 / MNC 42", summarize({"kind": "tetra", "subtype": "sync", "mcc": 260, "mnc": 42, "cc": 7, "ts": 1}))
+        self.assertIn("Encrypted", summarize({"kind": "tetra", "subtype": "sysinfo", "mcc": 260, "mnc": 42, "la": 101, "encrypted": True}))
+        self.assertIn("GSSI 1001", summarize({"kind": "tetra", "subtype": "call", "event": "setup", "gssi": 1001, "issi": 2601111, "ts": 2}))
+        self.assertIn("muted", summarize({"kind": "tetra", "subtype": "encrypted", "gssi": 9999, "ts": 3}))
+        self.assertIn("TEST CLEAR SDS", summarize({"kind": "tetra", "subtype": "sds", "src": 2602222, "dst": 1001, "text": "TEST CLEAR SDS"}))
+        self.assertIn("50.0619", summarize({"kind": "tetra", "subtype": "lip", "src": 2603333, "lat": 50.0619, "lon": 19.9368}))
+
+        cfg = AppConfig()
+        mgr = AddonManager(cfg)
+        mgr.configure("tetra", {"enabled": True, "frequencies": [392_412_500], "codec_path": "/tmp/fake-codec"})
+        self.assertIn("tetra", cfg.addons.enabled)
+        self.assertEqual(cfg.addons.tetra_frequencies_hz, [392_412_500])
+        self.assertEqual(cfg.addons.paths.get("tetra_codec"), "/tmp/fake-codec")
+        entry = next(a for a in mgr.status() if a["id"] == "tetra")
+        self.assertTrue(entry["experimental"])
+        self.assertEqual(entry["codec_path"], "/tmp/fake-codec")
+
+    def test_tetra_slot_decoder_end_to_end_pipe_and_encrypted_silence(self) -> None:
+        import subprocess
+        import time
+        from falconsdr.addons import tetra as tetra_mod
+        from falconsdr.addons.manager import AddonManager
+        from falconsdr.config import AppConfig
+        exe = tetra_mod.tetra_executable()
+        if exe is None:
+            self.skipTest("falconsdr-tetra binary not built")
+        raw = subprocess.check_output([str(exe), "--emit-test-iq"], timeout=15)
+        iq = np.frombuffer(raw, dtype="<c8")
+        self.assertGreater(iq.size, 4000)
+
+        dec = tetra_mod.TetraSlotDecoder(392_412_500, out_rate=12500)
+        try:
+            for i in range(0, iq.size, 2160):
+                dec.feed(iq[i:i + 2160])
+            # Give the subprocess pipe a moment to flush stdout JSON lines.
+            events = []
+            for _ in range(40):
+                events.extend(dec.drain_events())
+                if len(events) >= 6:
+                    break
+                time.sleep(0.05)
+            audio = dec.read(500)
+        finally:
+            dec.close()
+
+        # Without a clear-mode vocoder (and on encrypted slots), output audio MUST be exact silence.
+        self.assertEqual(audio.shape, (500,))
+        self.assertFalse(bool(audio.any()))
+        self.assertEqual((dec.mcc, dec.mnc, dec.cc, dec.la), (260, 42, 7, 101))
+        self.assertTrue(dec.encrypted)
+
+        subtypes = {e["subtype"] for e in events}
+        self.assertTrue({"sync", "sysinfo", "call", "encrypted", "sds", "lip"}.issubset(subtypes), f"got {subtypes}")
+        sds = next(e for e in events if e["subtype"] == "sds")
+        self.assertEqual(sds["text"], "TEST CLEAR SDS")
+        lip = next(e for e in events if e["subtype"] == "lip")
+        self.assertAlmostEqual(lip["lat"], 50.0619, places=3)
+        self.assertAlmostEqual(lip["lon"], 19.9368, places=3)
+
+        # Verify AddonManager publishes them cleanly into EventHub + StatsStore.
+        mgr = AddonManager(AppConfig())
+        mgr.publish_decoded("tetra", 392_412_500, events)
+        rows = mgr.hub.since(0, addon="tetra")
+        self.assertGreaterEqual(len(rows), 6)
+        self.assertTrue(any("TEST CLEAR SDS" in r["summary"] for r in rows))
+
+    def test_codec_path_requires_local_or_password_on_addons_configure(self) -> None:
+        from unittest import mock
+        from falconsdr.web import server
+        # Simulate a non-local client trying to set tetra codec_path without an access password.
+        self.assertFalse(server.may_change_command_line("", "192.168.50.99"))
+        self.assertTrue(server.may_change_command_line("secret", "192.168.50.99"))
+        self.assertTrue(server.may_change_command_line("", "127.0.0.1"))
+        # Verify server.Handler.addons actually returns 403 for codec_path from a remote IP.
+        errors = []
+        app = mock.Mock(token="", controller=mock.Mock())
+        Handler = server.make_handler(app)
+        h = Handler.__new__(Handler)
+        h.path = "/api/addons/configure"
+        h.command = "POST"
+        h.client_address = ("192.168.50.99", 12345)
+        h._body = lambda: {"id": "tetra", "codec_path": "/bin/sh"}
+        h._error = lambda code, msg: errors.append((code, msg))
+        h._json = mock.Mock()
+        h.addons({})
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0][0], 403)
+        app.controller.addons.configure.assert_not_called()
+
+    def test_tetra_scanner_integration_visit_cap_recording_limit_and_reflections(self) -> None:
+        import time
+        from types import SimpleNamespace
+        from falconsdr.channelizer import ScanWindow
+        from falconsdr.config import AppConfig
+        from falconsdr.models import Modulation
+        from falconsdr.scanner_engine import ScannerEngine, _TETRA_SCAN_VISIT_S
+
+        cfg = AppConfig()
+        cfg.recording.enabled = True
+        cfg.recording.max_concurrent_recordings = 2
+        eng = ScannerEngine(cfg, [], [])
+        # Two windows -> multi-window scan mode
+        w1 = ScanWindow(center_hz=391_000_000, freqs=[390_337_500, 392_037_500])
+        w2 = ScanWindow(center_hz=426_000_000, freqs=[426_087_500, 426_112_500])
+        eng._default_lane.windows = [w1, w2]
+        eng._channel_mod_map = {
+            390_337_500: Modulation.TETRA,
+            392_037_500: Modulation.TETRA,
+            392_237_500: Modulation.TETRA,
+            121_500_000: Modulation.AM,
+        }
+
+        def fake_tetra_slot(freq, age_s, active_voice=False, has_codec=False):
+            tetra = SimpleNamespace(has_codec=has_codec, has_active_voice=lambda: active_voice)
+            return SimpleNamespace(
+                freq_hz=freq, modulation=Modulation.TETRA, tetra=tetra, data_decoder=None,
+                opened_at=time.monotonic() - age_s, level_history=[-35.0] * 30,
+            )
+
+        # 1. Codec-less TETRA slots must NOT consume max_concurrent_recordings (2).
+        eng._slots[390_337_500] = fake_tetra_slot(390_337_500, age_s=1.0)
+        eng._slots[392_037_500] = fake_tetra_slot(392_037_500, age_s=1.0)
+        self.assertFalse(eng._at_recording_capacity(392_237_500))  # 3rd TETRA slot allowed
+        self.assertFalse(eng._at_recording_capacity(121_500_000))  # voice channel still allowed!
+
+        # 2. Multi-window TETRA visit completes after _TETRA_SCAN_VISIT_S, unless Held or active voice.
+        self.assertFalse(eng._tetra_visit_done())
+        eng._slots[390_337_500].opened_at = time.monotonic() - (_TETRA_SCAN_VISIT_S + 0.5)
+        self.assertTrue(eng._tetra_visit_done())
+        eng._hold = True
+        self.assertFalse(eng._tetra_visit_done())
+        eng._hold = False
+        eng._slots[390_337_500] = fake_tetra_slot(390_337_500, age_s=_TETRA_SCAN_VISIT_S + 1.0, active_voice=True, has_codec=True)
+        self.assertFalse(eng._tetra_visit_done())
+
+        # Single-window scan stays parked indefinitely on TETRA.
+        eng._slots[390_337_500] = fake_tetra_slot(390_337_500, age_s=_TETRA_SCAN_VISIT_S + 5.0)
+        eng._default_lane.windows = [w1]
+        self.assertFalse(eng._tetra_visit_done())
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TetraCodecExtractTest(unittest.TestCase):
+    def test_extract_keeps_only_lowercased_c_code_files(self) -> None:
+        import tempfile
+        import zipfile
+        from falconsdr.addons import tetra_codec
+        with tempfile.TemporaryDirectory() as d:
+            z = Path(d) / "c.zip"
+            with zipfile.ZipFile(z, "w") as zf:
+                zf.writestr("C-CODE/SDEC_TET.C", "a")
+                zf.writestr("C-CODE/../evil.c", "b")        # a path that tries to leave the folder
+                zf.writestr("AMR-CODE/x.c", "c")            # not needed
+            out = Path(d) / "out"
+            out.mkdir()
+            tetra_codec._extract(z, out)
+            self.assertEqual([p.name for p in out.iterdir()], ["sdec_tet.c"])
+            self.assertFalse((Path(d) / "evil.c").exists())

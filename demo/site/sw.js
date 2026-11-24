@@ -1090,8 +1090,8 @@ function axSnapshot(days) {
     }
   }
   for (const a of Object.values(out)) {
+    a.distinct = Object.keys(a.who).length;
     a.who = Object.entries(a.who).sort((x, y) => y[1][0] - x[1][0]).slice(0, 60).map(([n, [c, last]]) => [n, c, last]);
-    a.distinct = a.who.length;
     a.freq = Object.entries(a.freq).sort((x, y) => y[1] - x[1]).map(([f, n]) => [+f, n, a.lvl[f] ? Math.round((a.lvl[f][0] / a.lvl[f][1]) * 10) / 10 : null]);
     delete a.lvl;
     a.labels = Object.entries(a.labels).sort((x, y) => y[1] - x[1]).slice(0, 20);
@@ -1183,8 +1183,9 @@ function axRun(id, byTimer = false) {
   ax.running = id; ax.since = Date.now() / 1000; ax.next = []; ax.byTimer = byTimer;
   addLog(tr('{name} started - the scanner is paused while it runs.', { name: spec.name }));
 }
-function axStop() {
+function axStop(bySchedule = false) {
   if (!ax.running) return;
+  if (ax.byTimer && !bySchedule) ax.suppressed = true;
   ax.running = null; ax.since = 0; ax.byTimer = false;
   if (ax.resume) { ax.resume = false; startScanner(); }
 }
@@ -1194,7 +1195,7 @@ function axSchedule() {
   const wanted = c.schedule.enabled ? (activeIndices(c).map((i) => c.schedule.entries[i]).find((e) => e.addon) || {}).addon || '' : '';
   if (wanted && !ax.running && !ax.suppressed) { try { axRun(wanted, true); } catch { ax.suppressed = true; } }
   if (!wanted) ax.suppressed = false;
-  if (ax.running && ax.byTimer && ax.running !== wanted) axStop();
+  if (ax.running && ax.byTimer && ax.running !== wanted) axStop(true);
 }
 
 function axStatus() {
@@ -1280,6 +1281,58 @@ function axScheduleNow() {
     const addon = ax.running && k === 0 ? ax.running : '';
     return { receiver: k, addon, by_schedule: !!(addon && ax.byTimer), scanning: !addon, memory: !addon && !!c.memory_list_enabled, bands: addon ? [] : c.bands.filter((b) => b.enabled).map((b) => b.label), entries: names };
   });
+}
+
+// Minimal stored-only ZIP builder for multi-file downloads in the online demo.
+const zipJobs = new Map();
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function buildZip(entries) {
+  const enc = new TextEncoder();
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const { name, data } of entries) {
+    const nb = enc.encode(name);
+    const crc = crc32(data);
+    const lh = new ArrayBuffer(30 + nb.length);
+    const lv = new DataView(lh);
+    lv.setUint32(0, 0x04034b50, true); lv.setUint16(4, 20, true);
+    lv.setUint32(14, crc, true); lv.setUint32(18, data.length, true); lv.setUint32(22, data.length, true);
+    lv.setUint16(26, nb.length, true);
+    new Uint8Array(lh, 30).set(nb);
+    locals.push(new Uint8Array(lh), data);
+    const ch = new ArrayBuffer(46 + nb.length);
+    const cv = new DataView(ch);
+    cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true);
+    cv.setUint32(16, crc, true); cv.setUint32(20, data.length, true); cv.setUint32(24, data.length, true);
+    cv.setUint16(28, nb.length, true); cv.setUint32(42, offset, true);
+    new Uint8Array(ch, 46).set(nb);
+    centrals.push(new Uint8Array(ch));
+    offset += 30 + nb.length + data.length;
+  }
+  const cdSize = centrals.reduce((a, b) => a + b.length, 0);
+  const eocd = new ArrayBuffer(22);
+  const ev = new DataView(eocd);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, entries.length, true); ev.setUint16(10, entries.length, true);
+  ev.setUint32(12, cdSize, true); ev.setUint32(16, offset, true);
+  const out = new Uint8Array(offset + cdSize + 22);
+  let pos = 0;
+  for (const p of [...locals, ...centrals, new Uint8Array(eocd)]) { out.set(p, pos); pos += p.length; }
+  return out;
 }
 
 // ------------------------------------------------------------------ routes
@@ -1432,6 +1485,32 @@ const ROUTES = {
     save();
     return { ok: true };
   },
+  'POST /api/library/favorite_state': async (req) => {
+    const ids = new Set((await body(req)).ids || []);
+    const matched = st.library.filter((e) => ids.has(e.id));
+    return { count: matched.length, favorites: matched.filter((e) => e.favorite).length };
+  },
+  'POST /api/library/zip': async (req) => {
+    const ids = new Set((await body(req)).ids || []);
+    const matched = st.library.filter((e) => ids.has(e.id));
+    if (!matched.length) throw new Error('No recordings selected');
+    const token = Math.random().toString(16).slice(2) + Date.now().toString(16);
+    if (zipJobs.size > 8) zipJobs.clear();
+    zipJobs.set(token, matched.map((e) => e.id));
+    return { token, count: matched.length, bytes: matched.reduce((a, e) => a + sizeOf(e), 0) };
+  },
+  'GET /api/library/zip': async (req, q) => {
+    const ids = zipJobs.get(q.get('token') || '');
+    if (!ids) return fail(404, 'Not found');
+    zipJobs.delete(q.get('token'));
+    const entries = [];
+    for (const id of ids) {
+      const e = st.library.find((x) => x.id === id);
+      if (e) entries.push({ name: e.id.split('/').pop(), data: await wavOf(e) });
+    }
+    const zip = buildZip(entries);
+    return new Response(zip, { headers: { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="falconsdr-recordings.zip"', 'Content-Length': String(zip.length) } });
+  },
   'POST /api/library/transcript': async (req) => {
     const b = await body(req), e = st.library.find((x) => x.id === b.id);
     if (e) { e.transcript = { ...(e.transcript || transcriptFor(e)), text: String(b.text || ''), status: 'ok' }; save(); }
@@ -1462,10 +1541,20 @@ async function handle(req, url) {
   await init();
   if (url.pathname === '/api/recording') return recording(req, url.searchParams);
   if (url.pathname === '/api/demo/reset') {
-    axStop();
+    axStop(true);
     stopScanner();
     st = freshState(null);
     log.length = 0;
+    wavCache.clear();
+    zipJobs.clear();
+    ax.ring.length = 0;
+    ax.link.length = 0;
+    ax.hours.clear();
+    ax.notices.length = 0;
+    ax.counts = {};
+    ax.cool.clear();
+    ax.suppressed = false;
+    axSeed();
     save();
     return json({ ok: true });
   }

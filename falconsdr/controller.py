@@ -31,6 +31,7 @@ from .playback.index import Library
 from .playback.transcription_availability import is_transcription_installed
 from . import sdr_native
 from .addons.manager import AddonManager
+from .addons import tetra as tetra_addon
 from .notifier import Notifier, clean_channel, clean_rule, mask
 from .scanner_engine import AUDIO_RATE, ScannerEngine, SharedFrequencies
 from .sdr_backend import HAVE_SOAPY, RTLTCP_DRIVER, device_family, device_method, enumerate_devices
@@ -91,13 +92,36 @@ def merge_patch(obj: Any, patch: dict) -> None:
             setattr(obj, key, _coerce(current, value))
 
 
+def _opt_int(val: Any) -> int | None:
+    return int(val) if val is not None and val != "" else None
+
+
+def _opt_float(val: Any) -> float | None:
+    return float(val) if val is not None and val != "" else None
+
+
+def _opt_bool(val: Any) -> bool | None:
+    return bool(val) if val is not None and val != "" else None
+
+
 def channel_from_dict(d: dict) -> Channel:
     mod = str(d.get("modulation", "AM"))
+    bw = _opt_int(d.get("bandwidth_hz"))
+    sq_off = _opt_float(d.get("squelch_offset_db"))
+    linger = _opt_int(d.get("linger_time_ms"))
+    nr_str = _opt_float(d.get("noise_reduction_strength"))
     return Channel(
         freq_hz=snap_airband_hz(int(d["freq_hz"])), name=str(d.get("name", "")),
         modulation=Modulation(mod) if mod in Modulation._value2member_map_ else Modulation.AM,
         enabled=bool(d.get("enabled", True)), folder=str(d.get("folder", "")), weight=float(d.get("weight", 0.0)),
         ch833=bool(d.get("ch833", False)),
+        bandwidth_hz=max(1000, bw) if bw is not None else None,
+        trigger_level_dbfs=_opt_float(d.get("trigger_level_dbfs")),
+        squelch_enabled=_opt_bool(d.get("squelch_enabled")),
+        squelch_offset_db=min(0.0, sq_off) if sq_off is not None else None,
+        linger_time_ms=max(0, linger) if linger is not None else None,
+        noise_reduction_enabled=_opt_bool(d.get("noise_reduction_enabled")),
+        noise_reduction_strength=min(1.0, max(0.0, nr_str)) if nr_str is not None else None,
     )
 
 
@@ -141,13 +165,16 @@ class Controller:
         self._bg_stop = threading.Event()
         self._shared: Optional[SharedFrequencies] = None
         self._resume = False    # one receiver only: the scanner was running when an add-on took it
+        self._known_antennas: list[str] = []
+        self._devices_cache: tuple[float, list[dict], list[str]] | None = None
         self.log(i18n.tr("Ready."))
 
     @staticmethod
     def _idle_live() -> dict[str, Any]:
         return {
             "state": "IDLE", "level": -120.0, "frequencies": [], "recording": False,
-            "manual_recording": False, "raw_iq": False, "hold": False, "cycle_time": None, "gain_range": [0.0, 50.0],
+            "manual_recording": False, "raw_iq": False, "hold": False, "cycle_time": None,
+            "gain_range": [0.0, 50.0], "antennas": [],
         }
 
     def start_background(self) -> None:
@@ -180,7 +207,9 @@ class Controller:
         return names
 
     def open_recording_paths(self) -> set[Path]:
-        return set().union(*(engine.open_recording_paths() for engine in self._engines))
+        with self._lock:
+            engines = list(self._engines)
+        return set().union(*(engine.open_recording_paths() for engine in engines))
 
     def log(self, message: str) -> None:
         with self._lock:
@@ -249,6 +278,7 @@ class Controller:
         s.raw_iq_recording_changed.connect(lambda active, _p: self._set_live(k, raw_iq=bool(active)))
         s.cycle_time_changed.connect(lambda v: self._set_live(k, cycle_time=round(float(v), 2)))
         s.gain_range_changed.connect(lambda lo, hi: self._set_live(k, gain_range=[float(lo), float(hi)]))
+        s.antennas_changed.connect(lambda ants: self._on_antennas(k, ants))
         s.recording_finished.connect(lambda path: self.library.add_file(Path(path)))
         s.recording_finished.connect(self._notify_recording)
         s.spectrum_ready.connect(lambda *a: self._on_spectrum(k, *a))
@@ -304,10 +334,11 @@ class Controller:
     def stop_addon(self, addon_id: str = "") -> None:
         """Stops one add-on (or all). Stopping a scheduled one by hand keeps the schedule from starting it again
         until its time range has passed."""
-        ids = [addon_id] if addon_id else list(self._addon_dongles)
-        for i in ids:
-            if i in self._sched_started or self._scheduled_receiver(i) is not None:
-                self._sched_suppressed[i] = self._schedule_key(i)
+        with self._start_lock:
+            ids = [addon_id] if addon_id else list(self._addon_dongles)
+            for i in ids:
+                if i in self._sched_started or self._scheduled_receiver(i) is not None:
+                    self._sched_suppressed[i] = self._schedule_key(i)
         self.addons.stop_external(addon_id)
         with self._start_lock:
             for i in ids or list(self._addon_dongles):
@@ -520,12 +551,26 @@ class Controller:
                 "custom": bool(custom),
             }
 
+    def _on_antennas(self, k: int, ants: tuple[str, ...]) -> None:
+        items = [str(a) for a in ants if a]
+        self._set_live(k, antennas=items)
+        if k == 0 and items:
+            with self._lock:
+                self._known_antennas = items
+
     def _on_blacklisted(self, freq_hz: int) -> None:
         entry = BlacklistEntry(
             freq_hz=int(freq_hz), margin_hz=self.config.default_blacklist_margin_hz,
             label="Auto-lockout (SKIP)", date_added=dt.date.today().isoformat(),
         )
-        self.set_blacklist(self.blacklist + [entry])
+        with self._lock:
+            updated = self.blacklist + [entry]
+            self.blacklist = updated
+        storage.save_blacklist(updated)
+        with self._lock:
+            engines = list(self._engines)
+        for engine in engines:
+            engine.update_blacklist(updated)
 
     def _on_live_audio(self, k: int, mono: Any) -> None:
         with self._lock:
@@ -631,7 +676,24 @@ class Controller:
             raise ValueError("No such channel")
         return self.notifier.test(channel)
 
-    def settings(self) -> dict:
+    def _enumerated_hardware(self, refresh: bool = False) -> tuple[list[dict], list[str]]:
+        """Caches hardware enumeration so opening UI tabs while scanning does not
+        re-probe SoapySDR/USB (slow, noisy ALSA/Avahi stderr, and busy-device errors).
+        Refreshed automatically every 60 s while stopped, or on demand via refresh=True."""
+        if not isinstance(self, Controller):
+            return enumerate_devices(), sdr_native.usb_receivers_seen()
+        now = time.monotonic()
+        cached = self._devices_cache
+        if cached is not None and not refresh and (self.running or now - cached[0] < 60.0):
+            return cached[1], cached[2]
+        devs = enumerate_devices()
+        usb = sdr_native.usb_receivers_seen()
+        self._devices_cache = (now, devs, usb)
+        return devs, usb
+
+    def settings(self, refresh_devices: bool = False) -> dict:
+        devices = self.devices(refresh=refresh_devices)
+        _, usb_seen = self._enumerated_hardware(refresh=False)
         return {
             "version": __version__,
             "config": asdict(self.config),
@@ -641,26 +703,29 @@ class Controller:
                 {**p.to_dict(), "user": military_presets.is_user_owned_preset(p.id)}
                 for p in military_presets.get_all_presets()
             ],
-            "devices": self.devices(),
+            "devices": devices,
+            "antennas": list(self._known_antennas),
             "languages": [{"code": c, "name": i18n.LANGUAGE_NAMES.get(c, c)} for c in i18n.available_languages()],
             "capabilities": {
                 "ffmpeg": ffmpeg_available(),
                 "addon_messages": bool(self.addons.hub.since(0, limit=1)),     # something was decoded: Messages is worth showing
                 "transcription_installed": is_transcription_installed(),
                 "digital": digital_voice.is_digital_installed(),
+                "tetra": tetra_addon.is_tetra_installed(str(self.config.addons.paths.get("tetra", ""))),
                 "platform": sys.platform,
                 "soapy": HAVE_SOAPY,
                 "native": {k: sdr_native.native_status()[k] for k in ("hackrf", "airspy")},
-                "usb_seen": sdr_native.usb_receivers_seen(),
+                "usb_seen": usb_seen,
                 "autostart": autostart.is_enabled() if autostart.supported() else None,
             },
         }
 
-    def devices(self) -> list[dict]:
+    def devices(self, refresh: bool = False) -> list[dict]:
         """Every way to open a receiver, one entry each: the UI groups them by ``group`` (one physical
         receiver) and offers ``method`` as "how to access it". The first entry of a group is its default."""
+        raw_devs, usb_seen = Controller._enumerated_hardware(self, refresh=refresh)
         out = [{"driver": "auto", "args": "", "label": i18n.tr("Automatic (first detected)"), "group": "auto", "method": ""}]
-        for dev in enumerate_devices():
+        for dev in raw_devs:
             out.append(self._device_entry(dev.get("driver", "auto"), {k: str(v) for k, v in dev.items()},
                                           dev.get("label") or dev.get("driver", "device")))
         # An RTL-SDR on another computer (rtl_tcp): nothing to detect - its address is typed on the Listen page and
@@ -686,7 +751,7 @@ class Controller:
         # it fails with the exact thing to install (the Listen page shows the error while RECONNECTING).
         have = {e.get("family") for e in out}
         for family, name in (("hackrf", "HackRF"), ("airspy", "Airspy")):
-            if family in sdr_native.usb_receivers_seen() and family not in have:
+            if family in usb_seen and family not in have:
                 label = f"{name} (plugged in - needs libhackrf/SoapySDR)" if family == "hackrf" else f"{name} (plugged in - needs libairspy/SoapySDR)"
                 entry = self._device_entry(f"{family}_native", {"label": label}, label)
                 entry["missing"] = True
@@ -730,16 +795,21 @@ class Controller:
             self._rebuild()
 
     def set_channels(self, channels: list[Channel]) -> None:
-        self.channels = channels
+        with self._lock:
+            self.channels = channels
+            engines = list(self._engines)
         storage.save_channels(channels)
-        for engine in self._engines:
+        self.library.invalidate_search()
+        for engine in engines:
             engine.update_channels(channels)
             engine.request_rebuild()
 
     def set_blacklist(self, blacklist: list[BlacklistEntry]) -> None:
-        self.blacklist = blacklist
+        with self._lock:
+            self.blacklist = blacklist
+            engines = list(self._engines)
         storage.save_blacklist(blacklist)
-        for engine in self._engines:
+        for engine in engines:
             engine.update_blacklist(blacklist)
 
     def _rebuild(self) -> None:

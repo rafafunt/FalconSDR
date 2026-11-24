@@ -624,23 +624,11 @@ msgstr "Powrót do tego okna: {seconds:.2f}s temu"
 msgid "Channel"
 msgstr "Kanał"
 
-msgid "Frequency:"
-msgstr "Częstotliwość:"
-
-msgid "Name:"
-msgstr "Nazwa:"
-
 msgid "Modulation:"
 msgstr "Modulacja:"
 
 msgid "Folder in the Memory List (for organizing/bulk enable-disable).\nPick an existing one or type a new name to create it right away."
 msgstr "Folder w Liście pamięci (do organizacji/grupowego włączania-wyłączania).\nWybierz istniejący albo wpisz nową nazwę, żeby go od razu utworzyć."
-
-msgid "(no folder)"
-msgstr "(brak folderu)"
-
-msgid "Folder:"
-msgstr "Folder:"
 
 msgid "Scan priority weight (0 = default, no special treatment). You can\nalso set/preview it more conveniently in the Scanner tab, in the\nexpandable Memory List next to each channel."
 msgstr "Waga priorytetu skanowania (0 = domyślna, bez wyróżnienia). Można ją\nteż ustawić/podejrzeć wygodniej w zakładce Skaner, w rozwijanej\nLiście pamięci obok każdego kanału."
@@ -663,17 +651,11 @@ msgstr "Szukaj (częstotliwość, nazwa, modulacja, folder)... [Ctrl+F]"
 msgid "Enabled"
 msgstr "Włączony"
 
-msgid "Add"
-msgstr "Dodaj"
-
 msgid "Edit"
 msgstr "Edytuj"
 
 msgid "Edit the selected channel, or rename the selected folder."
 msgstr "Edytuj zaznaczony kanał, albo zmień nazwę zaznaczonego folderu."
-
-msgid "Delete"
-msgstr "Usuń"
 
 msgid "New folder"
 msgstr "Nowy folder"
@@ -755,9 +737,6 @@ msgstr "Sortuj: język"
 
 msgid "Search languages..."
 msgstr "Szukaj języka..."
-
-msgid "All"
-msgstr "Wszystkie"
 
 msgid "★ Favorites"
 msgstr "★ Ulubione"
@@ -861,9 +840,6 @@ msgstr "Data"
 msgid "Time"
 msgstr "Godzina"
 
-msgid "Frequency"
-msgstr "Częstotliwość"
-
 msgid "Duration"
 msgstr "Czas trwania"
 
@@ -875,9 +851,6 @@ msgstr "Jakość"
 
 msgid "Size"
 msgstr "Rozmiar"
-
-msgid "Transcript"
-msgstr "Transkrypcja"
 
 msgid "⏳ queued"
 msgstr "⏳ w kolejce"
@@ -1548,6 +1521,9 @@ msgstr "własne ustawienia"
 
 msgid "Back to scanning everything"
 msgstr "Wróć do skanowania wszystkiego"
+
+msgid "Drag to change the order"
+msgstr "Przeciągnij, aby zmienić kolejność"
 
 msgid "Scan only this band for now"
 msgstr "Skanuj na razie tylko to pasmo"
@@ -2867,8 +2843,8 @@ msgstr "Podczas skanowania transmisja na jednym z tych kanałów jest tu dekodow
 msgid "Channels heard: {slots} · messages decoded: {events}"
 msgstr "Usłyszane kanały: {slots} · odczytane wiadomości: {events}"
 
-msgid "Only tested on synthetic signals so far. If channels are heard but nothing is decoded, please report it."
-msgstr "Na razie testowane tylko na sygnałach syntetycznych. Jeśli kanały są słyszane, a nic się nie dekoduje, zgłoś to."
+msgid "Experimental, tested on few real signals so far. If channels are heard but nothing is decoded, please report it."
+msgstr "Eksperymentalne, na razie sprawdzone na niewielu prawdziwych sygnałach. Jeśli kanały są słyszane, a nic się nie dekoduje, zgłoś to."
 
 msgid "Path of the program"
 msgstr "Ścieżka programu"
@@ -3890,3 +3866,198 @@ msgstr "Ten odbiornik jest już używany przez dodatkowy dongiel."
 
 msgid "This receiver is already used above - it can only be opened once."
 msgstr "Ten odbiornik jest już użyty wyżej - można go otworzyć tylko raz."
+
+msgid "no limit"
+msgstr "bez limitu"
+
+msgid "Changing a program's path or options needs an access password (Settings) or this computer."
+msgstr "Zmiana ścieżki programu lub opcji wymaga hasła dostępu (Ustawienia) albo tego komputera."
+
+msgid "Installation is in progress - wait for it to finish."
+msgstr "Trwa instalacja - poczekaj, aż się zakończy."
+
+msgid "“Automatic” follows this device's light or dark setting. Stored in this browser."
+msgstr "„Automatycznie” dopasowuje się do jasnego lub ciemnego motywu tego urządzenia. Zapisywane w tej przeglądarce."
+
+msgid "clipped {pct}%"
+msgstr "przesterowanie {pct}%"
+
+msgid "Filter statistics"
+msgstr "Filtruj statystyki"
+
+msgid "Scope:"
+msgstr "Zakres:"
+
+msgid "Show all"
+msgstr "Pokaż wszystko"
+
+msgid "Open recordings"
+msgstr "Otwórz nagrania"
+
+msgid "No recordings match this filter."
+msgstr "Żadne nagrania nie pasują do tego filtra."
+
+msgid "Show statistics for this frequency"
+msgstr "Pokaż statystyki dla tej częstotliwości"
+
+msgid "Global / band"
+msgstr "Ogólne / pasmo"
+
+msgid "Custom settings for this channel"
+msgstr "Własne ustawienia dla tego kanału"
+
+msgid "Leave empty to use the band or global setting."
+msgstr "Pozostaw puste, aby użyć ustawienia pasma lub ogólnego."
+
+msgid "Channel bandwidth (kHz)"
+msgstr "Szerokość kanału (kHz)"
+
+msgid "Trigger level (dBFS)"
+msgstr "Poziom wyzwalania (dBFS)"
+
+msgid "Hold after a transmission (s)"
+msgstr "Podtrzymanie po transmisji (s)"
+
+msgid "Squelch offset (dB)"
+msgstr "Przesunięcie squelcha (dB)"
+
+msgid "Noise reduction strength (%)"
+msgstr "Siła odszumiania (%)"
+
+msgid "Move up"
+msgstr "Przesuń wyżej"
+
+msgid "Move down"
+msgstr "Przesuń niżej"
+
+msgid "Drag rows or use the arrows to arrange channels in your own order. Scan priority is controlled by Weight."
+msgstr "Przeciągaj wiersze lub używaj strzałek, aby ułożyć kanały we własnej kolejności. Priorytet skanowania określa kolumna Waga."
+
+msgid "Custom order"
+msgstr "Własna kolejność"
+
+msgid "Antenna input"
+msgstr "Wejście antenowe"
+
+msgid "e.g. Antenna A, Antenna B, Hi-Z"
+msgstr "np. Antenna A, Antenna B, Hi-Z"
+
+msgid "Driver default"
+msgstr "Domyślne sterownika"
+
+msgid "Show all {n}"
+msgstr "Pokaż wszystkie ({n})"
+
+msgid "Top {n} frequencies"
+msgstr "Najczęstsze częstotliwości (top {n})"
+
+msgid "Refresh devices"
+msgstr "Odśwież listę urządzeń"
+
+msgid "TETRA (experimental)"
+msgstr "TETRA (eksperymentalne)"
+
+msgid "build in Add-ons"
+msgstr "zbuduj w Dodatkach"
+
+msgid "Decodes unencrypted TETRA downlink control channels (MCC/MNC/LA, clear calls, SDS text, LIP GPS). Encrypted networks and calls stay muted and are never decrypted."
+msgstr "Dekoduje nieszyfrowane kanały sterujące TETRA downlink (MCC/MNC/LA, jawne wywołania, tekst SDS, pozycje GPS LIP). Sieci i rozmowy szyfrowane pozostają wyciszone i nigdy nie są odszyfrowywane."
+
+msgid "FalconSDR can compile the bundled Rust TETRA decoder locally (needs cargo/rustc), or put falconsdr-tetra in {folder}."
+msgstr "FalconSDR może skompilować wbudowany dekoder TETRA w Rust lokalnie (wymaga cargo/rustc) lub możesz umieścić plik falconsdr-tetra w {folder}."
+
+msgid "Put falconsdr-tetra in {folder} or set its path below."
+msgstr "Umieść plik falconsdr-tetra w {folder} lub wskaż jego ścieżkę poniżej."
+
+msgid "TETRA source code (tetra-rs/) is not present in this installation."
+msgstr "Brak kodu źródłowego TETRA (tetra-rs/) w tej instalacji."
+
+msgid "Rust compiler (cargo) was not found."
+msgstr "Nie znaleziono kompilatora Rust (cargo)."
+
+msgid "TETRA decoder is not available ({error}) - playing TETRA channels as NFM"
+msgstr "Dekoder TETRA nie jest dostępny ({error}) - kanały TETRA są odtwarzane jako NFM"
+
+msgid "Encrypted network"
+msgstr "Sieć szyfrowana"
+
+msgid "Clear network"
+msgstr "Sieć nieszyfrowana"
+
+msgid "Encrypted"
+msgstr "Szyfrowane"
+
+msgid "Encrypted (muted)"
+msgstr "Szyfrowane (wyciszone)"
+
+msgid "Build decoder"
+msgstr "Zbuduj dekoder"
+
+msgid "Clear-mode only: encrypted networks and calls are detected and muted, never decrypted. You can also choose TETRA directly as the modulation of any band or Memory List channel."
+msgstr "Tylko tryb jawny (clear-mode): szyfrowane sieci i połączenia są wykrywane oraz wyciszane, nigdy odszyfrowywane. Możesz też wybrać TETRA bezpośrednio jako modulację dowolnego pasma lub kanału z Listy pamięci."
+
+msgid "Optional: automatically decode these carriers as TETRA even inside an NFM band."
+msgstr "Opcjonalnie: automatycznie dekoduj te nośne jako TETRA nawet wewnątrz pasma NFM."
+
+msgid "Optional path to external ACELP speech codec helper"
+msgstr "Opcjonalna ścieżka do zewnętrznego kodeka mowy ACELP"
+
+msgid "External ACELP voice codec (optional)"
+msgstr "Zewnętrzny kodek mowy ACELP (opcjonalny)"
+
+msgid "FalconSDR does not ship a TETRA speech codec. Without one, control channels, SDS text and LIP GPS still decode."
+msgstr "FalconSDR nie zawiera kodeka mowy TETRA. Bez niego kanały sterujące, wiadomości SDS oraz lokalizacja GPS LIP nadal działają."
+
+msgid "Could not switch antenna to \"{antenna}\" ({error})"
+msgstr "Nie udało się przełączyć anteny na „{antenna}” ({error})"
+
+msgid "TETRA Europe 390-395 MHz (+12.5 kHz grid, experimental)"
+msgstr "TETRA Europa 390-395 MHz (siatka +12,5 kHz, eksperymentalne)"
+
+msgid "TETRA Europe 420-430 MHz (+12.5 kHz grid, experimental)"
+msgstr "TETRA Europa 420-430 MHz (siatka +12,5 kHz, eksperymentalne)"
+
+msgid "Speech codec installed"
+msgstr "Kodek mowy zainstalowany"
+
+msgid "Remove the codec"
+msgstr "Usuń kodek"
+
+msgid "Download the speech codec from ETSI"
+msgstr "Pobierz kodek mowy z ETSI"
+
+msgid "Clear (unencrypted) calls need ETSI's speech codec. FalconSDR does not contain it: one click downloads it from etsi.org to this computer and compiles it here (a C compiler is needed). ETSI publishes this code for implementers of TETRA, but that covers the code only, not patents - the codec may be patented in your country, check before you use it. Encrypted calls are never decoded."
+msgstr "Rozmowy jawne (niezaszyfrowane) wymagają kodeka mowy ETSI. FalconSDR go nie zawiera: jedno kliknięcie pobiera go z etsi.org na ten komputer i kompiluje tutaj (potrzebny kompilator C). ETSI udostępnia ten kod implementatorom TETRA, ale dotyczy to samego kodu, nie patentów - kodek może być opatentowany w Twoim kraju, sprawdź to, zanim go użyjesz. Rozmowy szyfrowane nigdy nie są dekodowane."
+
+msgid "A C compiler (gcc or clang) was not found."
+msgstr "Nie znaleziono kompilatora C (gcc ani clang)."
+
+msgid "The codec front end (tetra-rs/codec/) is not present in this installation."
+msgstr "W tej instalacji brakuje nakładki kodeka (tetra-rs/codec/)."
+
+msgid "A C compiler is needed to build the codec and none was found. Install one (below), then try again."
+msgstr "Do zbudowania kodeka potrzebny jest kompilator C, a żadnego nie znaleziono. Zainstaluj go (poniżej) i spróbuj ponownie."
+
+msgid "Could not download from etsi.org ({error}). Check the internet connection and try again."
+msgstr "Nie udało się pobrać z etsi.org ({error}). Sprawdź połączenie z internetem i spróbuj ponownie."
+
+msgid "The file from etsi.org is not the version FalconSDR was tested with, so it was not used."
+msgstr "Plik z etsi.org nie jest wersją, z którą testowano FalconSDR, więc go nie użyto."
+
+msgid "Building the codec failed. The last lines are above; you can also build it yourself from ETSI's code and enter the program's path below."
+msgstr "Zbudowanie kodeka się nie powiodło. Ostatnie linie są wyżej; możesz też zbudować go samodzielnie z kodu ETSI i wpisać ścieżkę programu poniżej."
+
+msgid "Could not download a small C compiler ({error}). Check the internet connection, or install one yourself (below) and try again."
+msgstr "Nie udało się pobrać małego kompilatora C ({error}). Sprawdź połączenie z internetem albo zainstaluj kompilator samodzielnie (poniżej) i spróbuj ponownie."
+
+msgid "The compiler download is not the version FalconSDR was tested with, so it was not used."
+msgstr "Pobrany kompilator nie jest wersją, z którą testowano FalconSDR, więc go nie użyto."
+
+msgid "Nothing in this time range, but {n} older messages are stored."
+msgstr "W tym przedziale czasu nic nie ma, ale zapisanych jest {n} starszych wiadomości."
+
+msgid "Show everything"
+msgstr "Pokaż wszystko"
+
+msgid "Probably no speech (data or noise)"
+msgstr "Prawdopodobnie bez mowy (dane lub szum)"

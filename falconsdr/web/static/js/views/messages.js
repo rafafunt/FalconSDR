@@ -5,7 +5,7 @@
 import { api, fmtTime, h, icon, mount, select, seg, t } from '../core.js';
 import { S, cfg, on } from '../state.js';
 
-export const NAMES = () => ({ acars: 'ACARS', aprs: 'APRS', rtl_433: t('Sensors'), vdl2: 'VDL2' });
+export const NAMES = () => ({ acars: 'ACARS', aprs: 'APRS', tetra: 'TETRA', rtl_433: t('Sensors'), vdl2: 'VDL2' });
 const MAX_ROWS = 800;
 const REPEAT_WINDOW_S = 180;
 
@@ -62,11 +62,42 @@ function body(e) {
     const where = e.lat !== undefined ? `${(+e.lat).toFixed(4)}, ${(+e.lon).toFixed(4)}` : '';
     return [h('b', e.source), h('span.muted', e.type || ''), where ? h('span', where) : null, e.comment || e.text ? h('span', e.comment || e.text) : null, mapLink(e)];
   }
+  if (e.kind === 'tetra') {
+    const sub = e.subtype || '';
+    if (sub === 'sync') {
+      return [h('b', `MCC ${e.mcc} / MNC ${e.mnc}`), h('span.chip', `CC ${e.cc}`), h('span.muted', `TS ${e.ts || 1}`)];
+    }
+    if (sub === 'sysinfo') {
+      return [h('b', `MCC ${e.mcc} / MNC ${e.mnc}`), h('span.chip', `LA ${e.la}`),
+        h('span.chip', { class: e.encrypted ? 'warn' : 'good' }, e.encrypted ? t('Encrypted network') : t('Clear network'))];
+    }
+    if (sub === 'call') {
+      return [h('b', `GSSI ${e.gssi || 0}`), e.issi ? h('span.muted', `← ISSI ${e.issi}`) : null,
+        h('span.chip', e.event || 'call'), h('span.muted', `TS ${e.ts || 1}`)];
+    }
+    if (sub === 'encrypted') {
+      return [h('b', e.gssi ? `GSSI ${e.gssi}` : t('Encrypted')), h('span.chip.warn', t('Encrypted (muted)')),
+        h('span.muted', `TS ${e.ts || 1}`)];
+    }
+    if (sub === 'sds') {
+      return [h('b', `ISSI ${e.src || 0}`), h('span.muted', `→ ${e.dst || 0}`), h('span.chip', 'SDS'),
+        e.text ? h('span.mono.msg-text', e.text) : null];
+    }
+    if (sub === 'lip') {
+      const where = e.lat !== undefined ? `${(+e.lat).toFixed(4)}, ${(+e.lon).toFixed(4)}` : '';
+      return [h('b', `ISSI ${e.src || 0}`), h('span.chip', 'LIP'), where ? h('span', where) : null, mapLink(e)];
+    }
+  }
   return [h('span', e.summary)];
 }
 
 export function whoOf(e) {
   if (e.kind === 'sensor') return `${e.model} #${e.device_id}`;      // as the summary spells it, so the search finds it
+  if (e.kind === 'tetra') {
+    if (e.gssi) return `GSSI ${e.gssi}`;
+    if (e.src) return `ISSI ${e.src}`;
+    if (e.mcc !== undefined) return `MCC ${e.mcc} / MNC ${e.mnc}`;
+  }
   return e.registration || e.source || e.src || e.model || '';
 }
 
@@ -158,7 +189,7 @@ export function messagesView(root) {
 
   const pick = (who) => { query = who.toLowerCase(); search.value = who; draw(); };
   const handed = sessionStorage.getItem('msgQuery');       // from the statistics: "show me this aircraft"
-  if (handed) { sessionStorage.removeItem('msgQuery'); range = 0; query = handed.toLowerCase(); search.value = handed; }
+  if (handed) { sessionStorage.removeItem('msgQuery'); range = 0; rangeSel.value = '0'; query = handed.toLowerCase(); search.value = handed; }
 
   // -- what is shown ---------------------------------------------------------------------------------------
   function selected() {
@@ -211,7 +242,9 @@ export function messagesView(root) {
       const main = readings.find((r) => r.key === e.primary) || readings[0];
       const rest = readings.filter((r) => r !== main).slice(0, 4);
       const id = `s${e.model}${e.device_id}${e.channel}`;
-      return h('div.sensor', { tabindex: 0, role: 'button', onclick: () => { if (open.has(id)) open.delete(id); else open.add(id); draw(); } },
+      const toggleSensor = () => { if (open.has(id)) open.delete(id); else open.add(id); draw(); };
+      return h('div.sensor', { tabindex: 0, role: 'button', onclick: toggleSensor,
+        onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggleSensor(); } } },
         h('div.row', h('b', deviceName(e)), h('span.spacer'), batteryChip(e)),
         h('div.faint.small', CATEGORY()[e.category || 'other'] || ''),
         main ? h('div.big', `${isPlain(main) ? '' : t(main.label) + ' '}${readingText(main)}`) : h('div.row.wrap', { style: { gap: '4px', minHeight: '34px' } }, ...(e.status || []).map(statusChip)),
@@ -255,7 +288,12 @@ export function messagesView(root) {
     drawChips(rows.filter((e) => passes(e) && e.ts * 1000 > clearedAt));
     drawToolbar();
     if (!base.length) {
-      mount(list, h('div.empty', rows.length ? t('Nothing matches the filters.') : t('Nothing decoded yet. Turn an add-on on in Add-ons and scan a band that contains its channels.')));
+      // Something was received, only not in the chosen time range: say so and offer the way out.
+      const older = range && !filter && !query && !freq ? rows.filter((e) => passes(e) && e.ts * 1000 > clearedAt).length : 0;
+      mount(list, older
+        ? h('div.empty', h('p', t('Nothing in this time range, but {n} older messages are stored.', { n: older })),
+          h('button.primary', { onclick: () => { range = 0; rangeSel.value = '0'; setPrefS('msgRange', '0'); draw(); } }, t('Show everything')))
+        : h('div.empty', rows.length ? t('Nothing matches the filters.') : t('Nothing decoded yet. Turn an add-on on in Add-ons and scan a band that contains its channels.')));
       return;
     }
     if (filter === 'rtl_433') { mount(list, sensorCards(base)); return; }

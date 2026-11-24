@@ -36,7 +36,11 @@ export function transcriptStatus(tr, queued) {
 export function recordingsView(root) {
   const offs = [];
   const preset = sessionStorage.getItem('openFreq');  // from Statistics
-  if (preset) { F.sel = [preset]; F.mode = 'frequencies'; sessionStorage.removeItem('openFreq'); }
+  if (preset) {
+    F.sel = [preset];
+    F.mode = preset.startsWith('band:') ? 'bands' : preset.startsWith('lang:') ? 'languages' : 'frequencies';
+    sessionStorage.removeItem('openFreq');
+  }
   let items = [], total = 0, loading = false, current = null, selected = new Set(), facets = null, anchor = null, lastRes = null;
   const audio = new Audio();
   audio.preload = 'metadata';
@@ -76,6 +80,7 @@ export function recordingsView(root) {
   async function reload() {
     items = [];
     total = 0;
+    anchor = null;
     selected.clear();
     list.replaceChildren(h('div.empty', t('Loading…')));
     await load(true);
@@ -117,15 +122,20 @@ export function recordingsView(root) {
   // ---------------------------------------------------------- sidebar
   function facetRow(key, label, sub, count, quality) {
     const active = key === 'all' ? !F.sel.length : F.sel.includes(key);
+    const choose = (e) => {
+      if (key === 'all') F.sel = [];
+      else if (e.ctrlKey || e.metaKey) F.sel = F.sel.includes(key) ? F.sel.filter((k) => k !== key) : [...F.sel, key];
+      else F.sel = F.sel.length === 1 && F.sel[0] === key ? [] : [key];
+      renderFacets();
+      reload();
+    };
     return h('div.facet', {
       class: active ? 'active' : '',
-      onclick: (e) => {
-        if (key === 'all') F.sel = [];
-        else if (e.ctrlKey || e.metaKey) F.sel = F.sel.includes(key) ? F.sel.filter((k) => k !== key) : [...F.sel, key];
-        else F.sel = F.sel.length === 1 && F.sel[0] === key ? [] : [key];
-        renderFacets();
-        reload();
-      },
+      tabindex: 0,
+      role: 'button',
+      'aria-pressed': String(active),
+      onclick: choose,
+      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(e); } },
       title: t('Ctrl+click to pick several'),
     }, quality === undefined ? h('span') : qualityBadge(quality), h('div.label', label, sub ? h('small', sub) : null), h('span.count', count.toLocaleString()));
   }
@@ -155,12 +165,21 @@ export function recordingsView(root) {
   function row(it) {
     const tr = it.transcript;
     const text = tr && tr.text ? tr.text : transcriptStatus(tr, it.queued);
-    const el = h('div.rec', { class: (current && current.id === it.id ? 'active ' : '') + (selected.has(it.id) ? 'selected' : ''), onclick: (e) => pick(it, e) },
+    const el = h('div.rec', {
+      class: [current && current.id === it.id ? 'active' : '', selected.has(it.id) ? 'selected' : '', it.favorite ? 'fav' : ''].filter(Boolean).join(' '),
+      tabindex: 0,
+      role: 'button',
+      onclick: (e) => pick(it, e),
+      onkeydown: (e) => {
+        if (e.target !== el) return;
+        if (e.key === 'Enter') { e.preventDefault(); pick(it, e); }
+      },
+    },
       h('input.chk', { type: 'checkbox', checked: selected.has(it.id), 'aria-label': t('Select'), onclick: (e) => { e.stopPropagation(); pick(it, e, true); } }),
       h('div.when', h('b', fmtTime(it.time)), fmtDateShort(it.time)),
       h('div.what', h('b', freqLabel(it)), it.name ? h('span.name', it.name) : null, h('p', { class: tr && tr.text ? '' : 'none' }, text)),
       h('span.dur', fmtDuration(it.duration)),
-      h('span.qcell', qualityBadge(it.quality)),
+      h('span.qcell', qualityBadge(it.quality, it.speech)),
       h('button.star', { class: it.favorite ? 'on' : '', title: t('Favorite'), onclick: (e) => { e.stopPropagation(); setFavorite([it.id], !it.favorite); } }, icon('star')));
     el.dataset.id = it.id;
     return el;
@@ -170,7 +189,8 @@ export function recordingsView(root) {
   function pick(it, e, fromCheckbox = false) {
     if (e.shiftKey && anchor) {
       const a = items.findIndex((x) => x.id === anchor), b = items.findIndex((x) => x.id === it.id);
-      items.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((x) => selected.add(x.id));
+      if (a >= 0 && b >= 0) items.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((x) => selected.add(x.id));
+      else { selected.add(it.id); anchor = it.id; }
     } else if (e.ctrlKey || e.metaKey || fromCheckbox) {
       selected.has(it.id) ? selected.delete(it.id) : selected.add(it.id);
       anchor = it.id;
@@ -230,9 +250,11 @@ export function recordingsView(root) {
   }
 
   async function selectAll() {
-    const ids = await api.get('/api/library/ids' + qs(params()));
-    ids.forEach((id) => selected.add(id));
-    syncSelection();
+    try {
+      const ids = await api.get('/api/library/ids' + qs(params()));
+      ids.forEach((id) => selected.add(id));
+      syncSelection();
+    } catch (e) { errorToast(e); }
   }
 
   // ---------------------------------------------------------- actions
@@ -385,8 +407,9 @@ export function recordingsView(root) {
         h('div.grow',
           h('div', h('b.mono', { style: { fontSize: '16px' } }, freqLabel(it)), it.name ? h('span.muted', ` · ${it.name}`) : null),
           h('div.small.muted', `${fmtDate(it.time)} ${fmtTime(it.time)}${prefs.utc ? ' UTC' : ''}`, ' · ', fmtDuration(it.duration),
-            it.snr !== null ? ` · SNR ${it.snr} dB` : '')),
-        qualityBadge(it.quality),
+            it.snr !== null ? ` · SNR ${it.snr} dB` : '',
+            it.clipping !== null && it.clipping >= 0.005 ? ` · ${t('clipped {pct}%', { pct: (it.clipping * 100).toFixed(1) })}` : '')),
+        qualityBadge(it.quality, it.speech),
         h('button.icon.star', { class: it.favorite ? 'on' : '', title: t('Favorite'), onclick: () => setFavorite([it.id], !it.favorite) }, icon('star')),
         h('button.icon.ghost', { title: t('Close'), onclick: closePlayer }, icon('x'))),
       waveBox,
@@ -484,7 +507,8 @@ export function recordingsView(root) {
   audio.addEventListener('play', () => setMediaActions(true));
 
   const onKey = (e) => {
-    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) || document.querySelector('.modal-back')) return;
+    const active = document.activeElement;
+    if ((active && active.matches('textarea, select, input:not([type=checkbox])')) || document.querySelector('.modal-back')) return;
     if (e.key === 'Delete' || e.key === 'Backspace') {
       const ids = selected.size ? [...selected] : current ? [current.id] : [];
       if (ids.length) { e.preventDefault(); remove(ids); }
@@ -493,7 +517,10 @@ export function recordingsView(root) {
     if (e.key === 'Escape' && selected.size) { selected.clear(); syncSelection(); return; }
     if (e.key === 'a' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); selectAll(); return; }
     if (!current) return;
-    if (e.key === ' ') { e.preventDefault(); audio.paused ? audio.play() : audio.pause(); }
+    if (e.key === ' ') {
+      if (active && active.matches('button, a, input, [role=button]:not(.rec)')) return;
+      e.preventDefault(); audio.paused ? audio.play() : audio.pause();
+    }
     else if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); step(1); }
     else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); step(-1); }
   };
