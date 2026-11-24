@@ -14,10 +14,12 @@ const isWindows = () => S.settings.capabilities.platform === 'win32';
 // How a receiver is opened (config.device.driver): the label is chosen here, at the point of use, so it follows the language.
 const methodLabel = (m) => ({
   soapy: t('SoapySDR'), librtlsdr: t('librtlsdr'), rtl_tcp: t('rtl_tcp'),
-  libhackrf: t('libhackrf (experimental)'), libairspy: t('libairspy (experimental)'),
+  libhackrf: t('libhackrf (experimental)'), libairspy: t('libairspy (experimental)'), sdrplay_api: t('SDRplay API (experimental)'),
 }[m] || m);
-const stripMethod = (label) => label.replace(/ \((librtlsdr|libhackrf|libairspy)\)/, '');
-const FAMILY_NAMES = { hackrf: 'HackRF', airspy: 'Airspy', airspyhf: 'Airspy HF+' };
+const stripMethod = (label) => label.replace(/ \((librtlsdr|libhackrf|libairspy|SDRplay API)\)/, '');
+const FAMILY_NAMES = { hackrf: 'HackRF', airspy: 'Airspy', airspyhf: 'Airspy HF+', sdrplay: 'SDRplay' };
+// The SDRplay API's installer brings its own WinUSB driver: Zadig on an RSP would replace it.
+const isSdrplay = (driver) => /^sdrplay/.test(driver || '');
 export function driverHelp() {
   return modal(t('RTL-SDR driver for Windows'), h('div.col', { style: { gap: '10px' } },
     h('p', t('Windows only talks to an RTL-SDR dongle through the WinUSB driver, installed once with the free Zadig tool. If SDR++, SDR# or another SDR program already works with this dongle, the driver is already there.')),
@@ -246,7 +248,7 @@ export function listenView(root) {
     if (!live) return;
     syncAddonPanel();
     stateChip.className = 'chip state ' + stateClass(live);
-    driverHint.classList.toggle('hidden', !(live.state === 'RECONNECTING' && isWindows()));
+    driverHint.classList.toggle('hidden', !(live.state === 'RECONNECTING' && isWindows() && !isSdrplay(cfg().device.driver)));
     const here = S.settings.devices.find((d) => d.driver === S.settings.config.device.driver && d.args === S.settings.config.device.device_args);
     const other = here && live.state === 'RECONNECTING' ? S.settings.devices.find((d) => d.group && d.group === here.group && d !== here) : null;
     methodHint.classList.toggle('hidden', !other);
@@ -349,12 +351,27 @@ export function listenView(root) {
   function missingReceiverNotice(devices) {
     const caps = S.settings.capabilities;
     const listed = new Set(devices.filter((d) => !d.missing).map((d) => d.family));
-    const missing = (caps.usb_seen || []).filter((f) => !listed.has(f));
+    const missing = (caps.usb_seen || []).filter((f) => !listed.has(f) && f !== 'sdrplay');   // SDRplay: sdrplayNotice()
     if (!missing.length) return null;
     const name = missing.map((f) => FAMILY_NAMES[f] || f).join(', ');
     return h('span.small', { style: { color: 'var(--orange)' } }, caps.soapy
       ? t('{name} is plugged in but not listed. Install its SoapySDR module (e.g. soapysdr-module-hackrf), allow USB access (udev rules or the plugdev group), then reload this page.', { name })
       : t('{name} is plugged in, but SoapySDR is not available to FalconSDR (the Python module python3-soapysdr is not visible to it). Install python3-soapysdr and soapysdr-module-<your receiver>, then reinstall with install.sh --from-source, or install libhackrf0 / libairspy0 for the experimental native access.', { name }));
+  }
+
+  // SDRplay works through the SDRplay API, installed once from sdrplay.com (sdr_sdrplay.py): say so when an RSP is
+  // plugged in but cannot be listed, or when the API is there but refuses (too old, service not running).
+  function sdrplayNotice(devices) {
+    const caps = S.settings.capabilities;
+    const api = (caps.native || {}).sdrplay || {};
+    const plugged = (caps.usb_seen || []).includes('sdrplay') || isSdrplay(cfg().device.driver);
+    const listed = devices.some((d) => d.family === 'sdrplay' && !d.missing);
+    if (!api.error && (listed || !plugged)) return null;
+    const text = api.error || (api.loads
+      ? t('The SDRplay API is installed but lists no receiver. Is the RSP connected, and not open in another program (SDRconnect, SDR++)?')
+      : t('An SDRplay receiver is plugged in. FalconSDR talks to it through the free SDRplay API: install it once from sdrplay.com (it brings the driver too, no Zadig needed), then reload this page.'));
+    return h('div.notice', icon('external'), h('span', { style: { flex: '1 1 240px' } }, text),
+      h('a.btn.small', { href: 'https://www.sdrplay.com/api/', target: '_blank', rel: 'noopener' }, t('Download the SDRplay API')));
   }
 
   let deviceInputs = [];
@@ -475,6 +492,7 @@ export function listenView(root) {
       addr ? h('span.faint.small', t('The RTL-SDR on another computer, through its rtl_tcp server (host or host:port, default port 1234). It serves one program at a time, the stream is not encrypted - use it on a trusted network. Retuning takes longer than with a local dongle, so scanning many windows is slower.')) : null,
       methods ? h('span.faint.small', t('How FalconSDR talks to this receiver. The first choice is the default; the other one is the fallback when it will not open, and a way to compare.')) : null,
       missingReceiverNotice(devices),
+      sdrplayNotice(devices),
       bias,
       rangeFields(c.device.range_start_hz || 0, c.device.range_stop_hz || 0, (p) => { patchConfig({ device: p }); renderDevice(); }),
       ...extraRows,
@@ -485,7 +503,7 @@ export function listenView(root) {
       h('span.faint.small.lockhint', t('Stop the scanner to change the device or capture width.')),
       // Picked by USB order (no serial of its own) - that order can change when dongles are replugged.
       devices.some((d) => /(^|,)index=/.test(d.args)) ? h('span.faint.small', t('Some dongles share a serial number (often 00000001) and are told apart only by USB order, which can change after replugging. To keep your choice for good, give each one its own serial with rtl_eeprom -s.')) : null,
-      isWindows() ? h('button.ghost.small', { onclick: () => driverHelp() }, t('Dongle not detected? Driver (Zadig) instructions')) : null);
+      isWindows() && !isSdrplay(c.device.driver) ? h('button.ghost.small', { onclick: () => driverHelp() }, t('Dongle not detected? Driver (Zadig) instructions')) : null);
     lockDevice(S.live && S.live.running);
   }
   // Antenna range: optional and per dongle; 0 in the config = no limit on that side. Applies live

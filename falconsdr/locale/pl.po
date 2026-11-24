@@ -4253,3 +4253,15 @@ msgstr "Później"
 
 msgid "Skip this version"
 msgstr "Pomiń tę wersję"
+
+msgid "SDRplay API (experimental)"
+msgstr "SDRplay API (eksperymentalnie)"
+
+msgid "The SDRplay API is installed but lists no receiver. Is the RSP connected, and not open in another program (SDRconnect, SDR++)?"
+msgstr "SDRplay API jest zainstalowane, ale nie widzi odbiornika. Czy RSP jest podłączony i nie jest otwarty w innym programie (SDRconnect, SDR++)?"
+
+msgid "An SDRplay receiver is plugged in. FalconSDR talks to it through the free SDRplay API: install it once from sdrplay.com (it brings the driver too, no Zadig needed), then reload this page."
+msgstr "Podłączony jest odbiornik SDRplay. FalconSDR komunikuje się z nim przez darmowe SDRplay API: zainstaluj je raz ze strony sdrplay.com (zawiera też sterownik, Zadig nie jest potrzebny), a potem odśwież tę stronę."
+
+msgid "Download the SDRplay API"
+msgstr "Pobierz SDRplay API"

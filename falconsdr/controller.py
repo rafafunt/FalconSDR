@@ -731,7 +731,7 @@ class Controller:
                 "tetra": tetra_addon.is_tetra_installed(str(self.config.addons.paths.get("tetra", ""))),
                 "platform": sys.platform,
                 "soapy": HAVE_SOAPY,
-                "native": {k: sdr_native.native_status()[k] for k in ("hackrf", "airspy")},
+                "native": {k: sdr_native.native_status()[k] for k in ("hackrf", "airspy", "sdrplay")},
                 "usb_seen": usb_seen,
                 "autostart": autostart.is_enabled() if autostart.supported() else None,
             },
@@ -767,9 +767,10 @@ class Controller:
         # Plugged in (USB ids) but nothing here can open it: still list it, so it is not "missing" - choosing
         # it fails with the exact thing to install (the Listen page shows the error while RECONNECTING).
         have = {e.get("family") for e in out}
-        for family, name in (("hackrf", "HackRF"), ("airspy", "Airspy")):
+        needs = {"hackrf": "libhackrf/SoapySDR", "airspy": "libairspy/SoapySDR", "sdrplay": "the SDRplay API"}
+        for family, name in (("hackrf", "HackRF"), ("airspy", "Airspy"), ("sdrplay", "SDRplay")):
             if family in usb_seen and family not in have:
-                label = f"{name} (plugged in - needs libhackrf/SoapySDR)" if family == "hackrf" else f"{name} (plugged in - needs libairspy/SoapySDR)"
+                label = f"{name} (plugged in - needs {needs[family]})"
                 entry = self._device_entry(f"{family}_native", {"label": label}, label)
                 entry["missing"] = True
                 out.append(entry)
@@ -788,6 +789,8 @@ class Controller:
         }
         if family == "airspy":
             entry["default_rate_hz"] = 2_500_000  # the R2's slow mode; a Mini needs 3 MHz - the error says so
+        elif family == "sdrplay":
+            entry["default_rate_hz"] = 6_000_000  # 5 MHz of analog bandwidth (sdr_sdrplay.bandwidth_khz); 2.4 MS/s would give 1.5
         return entry
 
     # -- edits -------------------------------------------------------------------

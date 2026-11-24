@@ -6,6 +6,7 @@ job/copy protocol, and the HTTP layer's password/CSRF checks.
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import tempfile
@@ -1180,6 +1181,129 @@ class UpdatesTest(unittest.TestCase):
         self.assertIn("SHA256SUMS", checker._install["error"])
         started.assert_not_called()
         self.assertFalse((Path(os.environ["HOME"]) / "falconsdr-update" / self.ASSETS[4]["name"]).exists())
+
+
+
+class SdrplayTest(unittest.TestCase):
+    """No RSP here: what can be checked without one (sdr_sdrplay.py, gotcha 62)."""
+
+    @unittest.skipUnless(ctypes.sizeof(ctypes.c_void_p) == 8, "layout measured on 64-bit")
+    def test_structures_match_the_3_15_headers(self) -> None:
+        # Measured with gcc from SDRplay's own 3.15 headers (identical copies in SatDump and sdrtrunk); MSVC x64 lays
+        # these out the same way. A wrong offset here writes into the API's memory at the wrong place.
+        from falconsdr import sdr_sdrplay as s
+        sizes = {s._DevParams: 64, s._RxChannelParams: 144, s._TunerParams: 72, s._ControlParams: 32, s._Device: 96,
+                 s._DeviceParams: 24, s._StreamCbParams: 20, s._EventParams: 16, s._CallbackFns: 24, s._Gain: 24, s._Agc: 20,
+                 s._RspDuoTunerParams: 16, s._Rsp2TunerParams: 16, s._RspDxParams: 12}
+        self.assertEqual({k.__name__: ctypes.sizeof(k) for k in sizes}, {k.__name__: v for k, v in sizes.items()})
+        offsets = [(s._DevParams.rspDxParams, 52), (s._DevParams.samplesPerPkt, 40), (s._RxChannelParams.ctrlParams, 72),
+                   (s._RxChannelParams.rsp2TunerParams, 108), (s._RxChannelParams.rspDuoTunerParams, 124),
+                   (s._RxChannelParams.rspDxTunerParams, 140), (s._TunerParams.rfFreq, 40), (s._ControlParams.agc, 8),
+                   (s._Device.hwVer, 64), (s._Device.dev, 88), (s._StreamCbParams.rfChanged, 8)]
+        self.assertEqual([o.offset for o, _ in offsets], [v for _, v in offsets])
+
+    def test_gain_split_bandwidth_and_tables(self) -> None:
+        from falconsdr import sdr_sdrplay as s
+        # Each band's row has as many LNA states as the header says (RSPIA/RSPII/RSPDX_NUM_LNA_STATES*).
+        self.assertEqual([len(s.lna_table(255, f)) for f in (30e6, 125e6, 450e6, 1500e6)], [7, 10, 10, 9])
+        self.assertEqual([len(s.lna_table(4, f)) for f in (125e6, 300e6, 450e6, 1500e6)], [27, 28, 21, 19])
+        self.assertEqual(len(s.lna_table(2, 125e6)), 9)
+        for hw in s.MODELS:
+            top = s.max_reduction(hw)
+            lo, hi = s.gain_range(hw)
+            for freq in (125e6, 450e6):
+                for gain in range(int(lo), int(hi) + 1):
+                    state, if_gr = s.gain_split(hw, freq, gain)
+                    table = s.lna_table(hw, freq)
+                    self.assertTrue(0 <= state < len(table) and 20 <= if_gr <= 59, (hw, freq, gain, state, if_gr))
+                    achievable = min(table) + 20 <= top - gain <= max(table) + 59
+                    if achievable:   # the same physical dB in every band, to the dB
+                        self.assertLessEqual(abs((top - gain) - (table[state] + if_gr)), 1, (hw, freq, gain))
+        self.assertEqual(s.gain_split(255, 125e6, 90), (0, 33))     # plenty of gain: LNA at full gain, the IF does the rest
+        self.assertEqual(s.gain_split(255, 125e6, 30), (7, 55))     # little gain: the LNA reduces only what the IF cannot
+        self.assertEqual([s.bandwidth_khz(r) for r in (2e6, 2.4e6, 6e6, 8e6, 10e6)], [1536, 1536, 5000, 6000, 8000])
+
+    def test_open_stream_retune_and_close_against_a_fake_api(self) -> None:
+        from unittest import mock
+        import numpy as np
+        from falconsdr import sdr_sdrplay as s
+        from falconsdr.sdr_backend import SoapyBackend
+        calls = []
+
+        class FakeApi:
+            def __init__(self):
+                self.dev_params, self.rx_a, self.rx_b = s._DevParams(), s._RxChannelParams(), s._RxChannelParams()
+                self.params = s._DeviceParams(ctypes.pointer(self.dev_params), ctypes.pointer(self.rx_a), ctypes.pointer(self.rx_b))
+                self.fail_init = False
+
+            def __getattr__(self, name):          # the calls whose answer does not matter: Success, and recorded
+                return lambda *a: calls.append(name[12:]) or 0
+
+            def sdrplay_api_ApiVersion(self, ver):
+                ver._obj.value = 3.15
+                return 0
+
+            def sdrplay_api_GetDevices(self, devices, count, _max):
+                devices[0].SerNo, devices[0].hwVer = b"1234567890", 255
+                count._obj.value = 1
+                return 0
+
+            def sdrplay_api_GetDeviceParams(self, _dev, out):
+                out._obj.contents = self.params
+                return 0
+
+            def sdrplay_api_Init(self, _dev, cbs, _ctx):
+                calls.append("Init")
+                self.cbs = cbs._obj
+                return 1 if self.fail_init else 0
+
+            def sdrplay_api_Update(self, _dev, _tuner, reason, ext):
+                calls.append(("Update", reason, ext))
+                return 0
+
+            def sdrplay_api_GetErrorString(self, _code):
+                return b"Fail"
+
+        def feed(api, n, rf=0, value=1000):
+            xi, xq = (ctypes.c_short * n)(*[value] * n), (ctypes.c_short * n)(*[-value] * n)
+            api.cbs.StreamACbFn(xi, xq, ctypes.pointer(s._StreamCbParams(0, 0, rf, 0, n)), n, 0, None)
+
+        api = FakeApi()
+        with mock.patch.object(s, "sdrplay_library", lambda: api), mock.patch.object(s, "_api_users", 0), \
+                mock.patch.object(SoapyBackend, "_wait_for_reopen_cooldown", lambda: None), \
+                mock.patch.object(SoapyBackend, "_record_close_time", lambda: None):
+            be = s.SdrplayBackend("serial=1234567890", 6e6, "manual", 30.0, bias_tee=True)
+            self.assertEqual((be.model, api.dev_params.fsFreq.fsHz, api.rx_a.tunerParams.bwType), ("RSP1A", 6e6, 5000))
+            self.assertEqual((api.rx_a.rsp1aTunerParams.biasTEnable, calls[-1]), (1, ("Update", 0x10, 0)))   # Bias-T last
+            feed(api, 100)
+            be.set_frequency(131.5e6)
+            feed(api, 100)                       # still the old frequency: dropped
+            feed(api, 100, rf=1)                 # the change happens inside this one: dropped too
+            feed(api, 50, value=16384)
+            iq = be.read(50)
+            self.assertEqual((iq.dtype, iq[0]), (np.complex64, np.complex64(0.5 - 0.5j)))
+            api.cbs.EventCbFn(1, 1, ctypes.pointer(s._EventParams()), None)       # overload detected: counted, acknowledged
+            self.assertEqual((be.overloads, calls[-1]), (1, ("Update", 0x04000000, 0)))
+            be.close()
+            self.assertEqual(calls[-4:], [("Update", 0x10, 0), "Uninit", "ReleaseDevice", "Close"])   # Bias-T off first
+            self.assertEqual(api.rx_a.rsp1aTunerParams.biasTEnable, 0)
+
+            calls.clear()
+            api.fail_init = True                 # a failed start must still let go of the RSP and the API
+            with self.assertRaises(RuntimeError):
+                s.SdrplayBackend("", 6e6, "manual", 30.0)
+            self.assertEqual(calls[-2:], ["ReleaseDevice", "Close"])
+            with self.assertRaises(RuntimeError):
+                s.SdrplayBackend("", 2.4e5, "manual", 30.0)     # below 2 MS/s: said, not attempted
+
+    def test_no_api_installed(self) -> None:
+        from unittest import mock
+        from falconsdr import sdr_backend, sdr_sdrplay as s
+        with mock.patch.object(s, "sdrplay_library", lambda: None):
+            self.assertEqual(s.enumerate_devices(), [])
+            self.assertEqual(s.api_status(), {"loads": False, "version": "", "error": ""})
+            with self.assertRaisesRegex(RuntimeError, "sdrplay.com"):
+                sdr_backend.open_real_backend("sdrplay_native", "", 6e6, "manual", 30.0)
 
 
 class ProbeRunTest(unittest.TestCase):

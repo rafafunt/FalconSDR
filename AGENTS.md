@@ -577,6 +577,12 @@ Gotchas 1, 2 and 26 are retired (Qt UI, PortAudio playback) and their numbers ar
     AppImage, only in local mode, and only a file whose SHA-256 matches the release's `SHA256SUMS`. AppImage restarts
     by exec'ing `$APPIMAGE` (`main._restart`): `sys.executable` is the old mount. The Windows path is untested on Windows.
 
+62. **SDRplay (`sdr_sdrplay.py`, driver `sdrplay_native`) goes through the user-installed SDRplay API, never a bundled
+    library**: the API is a service plus a library that must be the same version. ctypes structures are the 3.15 headers
+    (`SdrplayTest` pins sizes/offsets measured with gcc); 3.08 -> 3.15 changed the layout, so `_api_acquire` refuses
+    older. Stale blocks after a retune/gain step go by the stream's `rfChanged`/`grChanged`, overloads must be acked.
+    Never run on a real RSP; the Zadig hints are hidden for it (Zadig would replace SDRplay's driver).
+
 ## Testing without touching the user's real config/recordings
 
 Unit tests: `python -m unittest tests/test_core.py` (sets its own scratch
