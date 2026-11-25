@@ -356,7 +356,7 @@ Gotchas 1, 2 and 26 are retired (Qt UI, PortAudio playback) and their numbers ar
     exception is printed, never allowed to kill the engine thread.
 37. **The library only ever lists *closed* recordings.** `Library.rescan()`
     skips `ScannerEngine.open_recording_paths()` (open slots + manual
-    recording), and `transcode_to_mp3()` writes `*.mp3.part` and renames —
+    recording + WAVs waiting for their mp3 transcode), and `transcode_to_mp3()` writes `*.mp3.part` and renames —
     a listed file may be downloaded, mirrored, transcribed or deleted, which
     must never happen mid-write (real, earlier bug: a sync deleted a
     recording still being written). New files join via

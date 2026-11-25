@@ -305,7 +305,7 @@ class LibraryTest(_LibCase):
                     mock.patch.object(ti.shutil, "which", return_value=nvidia_smi), mock.patch.object(ti, "amd_gpu", return_value=amd), \
                     mock.patch.object(ti, "_run_streamed", side_effect=lambda cmd, _l: (cmds.append(cmd), (True, ""))[1]), \
                     mock.patch.object(ti, "_install_rocm", return_value=(True, "")) as rocm, \
-                    mock.patch.object(ti, "_loaded", return_value=True):
+                    mock.patch.object(ti, "_loaded", return_value=True), mock.patch.object(ti.sys, "platform", "linux"):
                 ok, restart, _ = ti.install_transcription(True, lambda _l: None)
             self.assertTrue(ok)
             self.assertEqual(restart, expect_amd)  # an already imported ctranslate2 stays the CPU/CUDA build
@@ -2325,6 +2325,20 @@ class MixedReceiversPlanTest(unittest.TestCase):
         self.assertEqual(engine._calibration_key("sw_auto"), "sw_auto@soapysdr@2.4")
         engine._backend, engine._actual_rate = SimpleNamespace(label="hackrf_native"), 10_000_000
         self.assertEqual(engine._calibration_key("sw_auto"), "sw_auto@hackrf_native@10")
+
+    def test_a_wav_being_transcoded_stays_open_for_the_library(self) -> None:
+        from unittest import mock
+        from falconsdr import scanner_engine as se
+        cfg = AppConfig()
+        cfg.recording.output_format = "mp3"
+        engine = se.ScannerEngine(cfg, [], [])
+        wav = Path("/rec/2026-11-25/a.wav")
+        seen: list = []
+        with mock.patch.object(se, "transcode_to_mp3", side_effect=lambda p: (seen.append(engine.open_recording_paths()), None)[1]), \
+                mock.patch.object(engine, "_slot_pool", mock.Mock(submit=lambda f: f())):
+            engine._finish_recording(wav)
+        self.assertIn(wav, seen[0])                               # mid-transcode: a rescan must not list it
+        self.assertNotIn(wav, engine.open_recording_paths())      # done: the mp3 (or the kept wav) is listed
 
 
 class MultiDongleTest(unittest.TestCase):

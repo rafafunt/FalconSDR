@@ -564,6 +564,9 @@ class ScannerEngine(threading.Thread):
         # pool, hence its own lock.
         self._manual_recorder: Recorder | None = None
         self._manual_recorder_lock = threading.Lock()
+        # WAVs closed but not yet replaced by their mp3: still "open" to the library (gotcha 37) - a rescan in
+        # that window listed a WAV the transcode then deleted, and workers got 404 for it.
+        self._transcoding: set[Path] = set()
         # First frequency heard during a manual recording; the file is renamed
         # to it when the recording stops (gotcha 13).
         self._manual_recording_first_freq: int | None = None
@@ -663,7 +666,7 @@ class ScannerEngine(threading.Thread):
         with self._manual_recorder_lock:
             if self._manual_recorder is not None:
                 recorders.append(self._manual_recorder)
-        return {Path(r.current_path) for r in recorders if r.current_path}
+        return {Path(r.current_path) for r in recorders if r.current_path} | set(self._transcoding)
 
     def _feed_manual_recording(self, audio: np.ndarray, freq_hz: int | None = None) -> None:
         """Writes ``audio`` to the manual recording, if one is running.
@@ -2190,8 +2193,12 @@ class ScannerEngine(threading.Thread):
             return
 
         def _transcode() -> None:
-            self.signals.recording_finished.emit(str(transcode_to_mp3(path) or path))
+            try:
+                self.signals.recording_finished.emit(str(transcode_to_mp3(path) or path))
+            finally:
+                self._transcoding.discard(path)
 
+        self._transcoding.add(path)
         try:
             self._slot_pool.submit(_transcode)
         except RuntimeError:  # pool already shut down - engine has stopped, nothing left to stall
