@@ -233,7 +233,7 @@ Gotchas 1, 2 and 26 are retired (Qt UI, PortAudio playback) and their numbers ar
     `_get_models` reloads on `_model_key` only. A worker without Whisper never claims jobs; an `"error"` result is not
     re-queued in the same session (`Library._failed`). **AMD = CTranslate2's ROCm build + AMD's `rocm-sdk-*` wheels** (`_install_rocm`, pinned, NVIDIA
     wins when `nvidia-smi` exists); on Linux it links the HIP runtime directly, so `_preload_rocm_libs()` must run before
-    anything imports `faster_whisper`/`ctranslate2`, else ImportError. Device name stays `"cuda"`. Full text: `docs/gotchas/18.md`.
+    anything imports `faster_whisper`/`ctranslate2`, else ImportError; runtime installed before that wheel. Device name stays `"cuda"`. Full text: `docs/gotchas/18.md`.
 19. **A frequency-less filename (`..._session.wav`, manual recording, gotcha 13) must be recognised by
     `FILENAME_REGEX`/`parse_filename()`** (`playback/config.py`/`organizer.py`) and mapped to `models.MANUAL_FREQ_KHZ` (0),
     or the file is silently skipped forever. `FILENAME_REGEX` is the single source of truth and must match `\.mp3$` too;

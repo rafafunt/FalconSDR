@@ -899,7 +899,14 @@ class RtlTcpBackend(SdrBackend):
         if self._sock is not None and self.bias_tee:
             try:
                 self._send(_RTLTCP_BIAS_TEE, 0)  # never leave the antenna powered once FalconSDR lets go
-            except RuntimeError:
+                # Closing with unread stream data sends a reset, which can discard that command before the
+                # server reads it (Windows did): end our side, read until the server hangs up (<= 1 s).
+                self._sock.shutdown(socket.SHUT_WR)
+                self._sock.settimeout(0.2)
+                deadline = time.monotonic() + 1.0
+                while self._sock.recv(65536) and time.monotonic() < deadline:
+                    pass
+            except (RuntimeError, OSError):
                 pass
         self._close_socket()
 

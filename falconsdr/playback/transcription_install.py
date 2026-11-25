@@ -268,7 +268,8 @@ def amd_gpu() -> Optional[tuple[str, str]]:
     if sys.platform == "win32":
         from ..audio_transcode import system_env
         try:
-            out = subprocess.run(["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
+            powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+            out = subprocess.run([str(powershell), "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
                                  capture_output=True, text=True, errors="replace", timeout=15, env=system_env(),
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
         except (OSError, subprocess.TimeoutExpired):
@@ -306,12 +307,14 @@ def _install_rocm(pip: list[str], family: str, on_line: Callable[[str], None]) -
             if member is None:
                 return False, f"no ROCm build of ctranslate2 for {wheel}"
             path = z.extract(member, work)
-        ok, output = _run_streamed([*pip, "--upgrade", "--force-reinstall", "--no-deps", path], on_line)
+        # Runtime first: the ROCm ctranslate2 does not even import without it, so a
+        # download that fails half-way must leave the CPU build in place.
+        ok, output = _run_streamed([*pip, "--upgrade", "--index-url", _ROCM_INDEX.format(family=family),
+                                    f"rocm-sdk-core=={_ROCM_SDK_VERSION}",
+                                    f"rocm-sdk-libraries-{family.lower()}=={_ROCM_SDK_VERSION}"], on_line)
         if not ok:
             return ok, output
-        return _run_streamed([*pip, "--upgrade", "--index-url", _ROCM_INDEX.format(family=family),
-                              f"rocm-sdk-core=={_ROCM_SDK_VERSION}",
-                              f"rocm-sdk-libraries-{family.lower()}=={_ROCM_SDK_VERSION}"], on_line)
+        return _run_streamed([*pip, "--upgrade", "--force-reinstall", "--no-deps", path], on_line)
     except OSError as exc:
         on_line(str(exc))
         return False, str(exc)
@@ -331,6 +334,8 @@ def install_transcription(with_gpu: bool, on_line: Callable[[str], None]) -> tup
         return False, False, message
     if amd:
         on_line(f"GPU: {amd[0]} - installing the AMD ROCm build (several GB)")
+    # ctranslate2 already imported in this process stays the old (CPU/CUDA) build until a restart.
+    amd_restart = bool(amd) and _loaded()
 
     def run_streamed(cmd: list[str]) -> tuple[bool, str]:
         return _run_streamed(cmd, on_line)
@@ -359,17 +364,17 @@ def install_transcription(with_gpu: bool, on_line: Callable[[str], None]) -> tup
         pip = [sys.executable, "--pip", "install", "--only-binary=:all:", "--disable-pip-version-check",
                "--target", str(ADDONS_DIR)]
         ok, output = with_rocm(pip, run_streamed([*pip, *([] if _loaded() else ["--upgrade"]), *packages]))
-        return ok, False, "" if ok else output
+        return ok, ok and amd_restart, "" if ok else output
     in_venv = Path(sys.prefix).resolve() == VENV_DIR.resolve()
     # An existing .venv means this machine already needed the fallback
     # once before - go straight there instead of re-discovering PEP 668.
     if VENV_PYTHON.exists():
         ok, output = pip_install(str(VENV_PYTHON))
-        return ok, ok and not in_venv, "" if ok else output
+        return ok, ok and (not in_venv or amd_restart), "" if ok else output
 
     ok, output = pip_install(sys.executable)
     if ok:
-        return True, False, ""
+        return True, amd_restart, ""
     if _EXTERNALLY_MANAGED_MARKER not in output:
         return False, False, output  # a real failure unrelated to PEP 668 - a venv wouldn't fix it
     on_line(

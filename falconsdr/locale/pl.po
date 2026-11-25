@@ -1888,8 +1888,8 @@ msgstr "Precyzja modelu"
 msgid "Full precision gives slightly different, not clearly better text on radio audio, and needs twice the graphics memory; on a CPU it is several times slower."
 msgstr "Pełna precyzja daje na nagraniach radiowych nieco inny, ale nie wyraźnie lepszy tekst i potrzebuje dwa razy więcej pamięci karty graficznej; na CPU jest kilka razy wolniejsza."
 
-msgid "Compressed (int8) - fast and accurate, recommended"
-msgstr "Skompresowany (int8) - szybki i dokładny, zalecany"
+msgid "Automatic - fast and accurate, recommended"
+msgstr "Automatycznie - szybko i dokładnie, zalecane"
 
 msgid "Full precision (float16 on GPU, float32 on CPU)"
 msgstr "Pełna precyzja (float16 na GPU, float32 na CPU)"

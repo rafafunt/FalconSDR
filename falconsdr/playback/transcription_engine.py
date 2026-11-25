@@ -132,7 +132,10 @@ def _gpu_compute_type_for(config: TranscriptionConfig) -> str:
     for "auto")."""
     if _gpu_compute_type is not None:
         return _gpu_compute_type
-    return _DEFAULT_AUTO_GPU_COMPUTE_TYPE if config.compute_type == "auto" else config.compute_type
+    if config.compute_type != "auto":
+        return config.compute_type
+    # ROCm (RX 9070): float16 15 % faster than int8_float16, same text; a card short of VRAM falls back as above.
+    return "float16" if _rocm_preloaded else _DEFAULT_AUTO_GPU_COMPUTE_TYPE
 
 
 def _is_cuda_error(exc: BaseException) -> bool:

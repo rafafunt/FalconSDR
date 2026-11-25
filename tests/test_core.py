@@ -304,8 +304,11 @@ class LibraryTest(_LibCase):
             with mock.patch.object(ti, "VENV_PYTHON", Path(sys.executable)), mock.patch.object(ti, "VENV_DIR", Path(sys.prefix)), \
                     mock.patch.object(ti.shutil, "which", return_value=nvidia_smi), mock.patch.object(ti, "amd_gpu", return_value=amd), \
                     mock.patch.object(ti, "_run_streamed", side_effect=lambda cmd, _l: (cmds.append(cmd), (True, ""))[1]), \
-                    mock.patch.object(ti, "_install_rocm", return_value=(True, "")) as rocm:
-                self.assertTrue(ti.install_transcription(True, lambda _l: None)[0])
+                    mock.patch.object(ti, "_install_rocm", return_value=(True, "")) as rocm, \
+                    mock.patch.object(ti, "_loaded", return_value=True):
+                ok, restart, _ = ti.install_transcription(True, lambda _l: None)
+            self.assertTrue(ok)
+            self.assertEqual(restart, expect_amd)  # an already imported ctranslate2 stays the CPU/CUDA build
             self.assertEqual("nvidia-cublas-cu12" in cmds[0], not expect_amd)  # NVIDIA path unchanged
             self.assertEqual(rocm.call_args[0][1:2] if rocm.called else None, ("gfx120X-all",) if expect_amd else None)
 

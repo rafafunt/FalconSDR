@@ -205,7 +205,7 @@ export function settingsView(root, hash, scope = 'settings') {
       h('div.col', { style: { marginTop: '12px' } },
         setting(t('Run on'), '', select([['auto', t('Automatic (GPU if available)')], ['cuda', 'GPU (NVIDIA CUDA / AMD ROCm)'], ['cpu', 'CPU']], tc.device, (v) => patchConfig({ transcription: { device: v } }))),
         setting(t('Model precision'), t('Full precision gives slightly different, not clearly better text on radio audio, and needs twice the graphics memory; on a CPU it is several times slower.'),
-          select([['auto', t('Compressed (int8) - fast and accurate, recommended')], ['float16', t('Full precision (float16 on GPU, float32 on CPU)')]], tc.compute_type, (v) => patchConfig({ transcription: { compute_type: v } }))),
+          select([['auto', t('Automatic - fast and accurate, recommended')], ['float16', t('Full precision (float16 on GPU, float32 on CPU)')]], tc.compute_type, (v) => patchConfig({ transcription: { compute_type: v } }))),
         setting(t('Skip recordings shorter than'), t('Seconds - a squelch crackle is not worth transcribing.'), numberInput(tc.min_duration_sec, (v) => patchConfig({ transcription: { min_duration_sec: Math.max(0, v) } }), { min: 0, step: 0.1 }))));
     mount(body('transcription'),
       setting(t('Transcribe new recordings automatically'), t('Transcription runs on whichever computers below have it switched on - the server itself, or your PC with a GPU.'),

@@ -131,9 +131,10 @@ record (at 2× that is up to about 30 minutes of audio per hour). A GPU is
 5-20 times faster, worth it for a big backlog or a busy band: Nvidia, or AMD
 Radeon RX 6600-6950, 7000 and 9000 series and Ryzen 780M/880M/890M/8060S
 graphics ("Install with GPU support" fetches AMD's ROCm runtime, several GB;
-AMD on Windows is untested). A Radeon RX 9070 did real recordings with
-`large-v3` + the English ATC model and language detection in 0.7 s each
-(~11× real time; 14× faster than a 24-thread CPU). Intel GPUs are not used. Plan at least 4 CPU threads for scanning plus transcription,
+AMD on Windows is untested). A Radeon RX 9070 did real ~7 s recordings with
+`large-v3` + the English ATC model and language detection in 0.6 s each
+(16× faster than a 24-thread CPU; `large-v3` alone 0.084×, about the Nvidia
+figure above). Intel GPUs are not used. Plan at least 4 CPU threads for scanning plus transcription,
 8 is comfortable. `tiny` and `base` are not usable.
 
 \*4-core i5-6500T, short ~6 s recordings, without language detection (adds
