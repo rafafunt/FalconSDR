@@ -293,6 +293,22 @@ class LibraryTest(_LibCase):
             self.assertFalse((ti.ADDONS_DIR / "faster_whisper").exists())
             self.assertFalse(ti._REMOVE_MARKER.exists())
 
+    def test_gpu_install_picks_nvidia_else_amd(self) -> None:
+        import sys
+        from unittest import mock
+        from falconsdr.playback import transcription_install as ti
+        self.assertEqual([ti._gfx_target(v) for v in (120001, 110501, 100300)], ["gfx1201", "gfx1151", "gfx1030"])
+        amd = ("AMD Radeon (gfx1201)", "gfx120X-all")
+        for nvidia_smi, expect_amd in (("/usr/bin/nvidia-smi", False), (None, True)):
+            cmds: list = []
+            with mock.patch.object(ti, "VENV_PYTHON", Path(sys.executable)), mock.patch.object(ti, "VENV_DIR", Path(sys.prefix)), \
+                    mock.patch.object(ti.shutil, "which", return_value=nvidia_smi), mock.patch.object(ti, "amd_gpu", return_value=amd), \
+                    mock.patch.object(ti, "_run_streamed", side_effect=lambda cmd, _l: (cmds.append(cmd), (True, ""))[1]), \
+                    mock.patch.object(ti, "_install_rocm", return_value=(True, "")) as rocm:
+                self.assertTrue(ti.install_transcription(True, lambda _l: None)[0])
+            self.assertEqual("nvidia-cublas-cu12" in cmds[0], not expect_amd)  # NVIDIA path unchanged
+            self.assertEqual(rocm.call_args[0][1:2] if rocm.called else None, ("gfx120X-all",) if expect_amd else None)
+
     def test_uninstall_deletes_only_the_chosen_models(self) -> None:
         from unittest import mock
         from falconsdr.playback import transcription_install as ti

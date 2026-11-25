@@ -34,7 +34,7 @@ from .config import CONFIG_DIR, TranscriptionConfig, _from_dict, atomic_write_te
 from .playback.models import QualityMetrics, Recording
 from .playback.organizer import iter_all_recordings, parse_filename
 from .playback.transcription_availability import is_transcription_installed
-from .playback.transcription_install import model_cached, model_download_bytes, removal_pending
+from .playback.transcription_install import amd_gpu, model_cached, model_download_bytes, removal_pending
 
 logger = logging.getLogger(__name__)
 
@@ -492,7 +492,8 @@ def _save_state(state: dict) -> None:
 
 
 def _gpu_name() -> str:
-    """Best-effort NVIDIA GPU name for the UI ("" if none / unknown)."""
+    """Best-effort name of a GPU transcription can use (NVIDIA, else a
+    supported AMD card) for the UI ("" if none / unknown)."""
     global _GPU_CACHE
     if _GPU_CACHE is None:
         _GPU_CACHE = ""
@@ -505,6 +506,9 @@ def _gpu_name() -> str:
                 _GPU_CACHE = out.stdout.strip().splitlines()[0] if out.returncode == 0 and out.stdout.strip() else ""
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        if not _GPU_CACHE:
+            amd = amd_gpu()
+            _GPU_CACHE = amd[0] if amd else ""
     return _GPU_CACHE
 
 

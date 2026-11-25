@@ -1,6 +1,7 @@
-"""Installs the optional transcription extra (faster-whisper, + CUDA libs if
-requested) from inside the running app - see worker.py, which runs it on
-whichever computer was asked to (Settings → Transcription & computers).
+"""Installs the optional transcription extra (faster-whisper, + GPU libs if
+requested: NVIDIA's CUDA wheels, or for an AMD card CTranslate2's ROCm build
+and AMD's ROCm runtime wheels - see _install_rocm) from inside the running
+app - see worker.py, which runs it on whichever computer was asked to (Settings → Transcription & computers).
 pip installing this can take a while (ctranslate2/av/tokenizers are
 sizeable downloads).
 
@@ -17,13 +18,16 @@ prebuilt wheels into ``ADDONS_DIR`` in the user's profile, which
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 
 from ..venv_paths import VENV_DIR, VENV_PYTHON
@@ -35,8 +39,37 @@ ADDONS_DIR = APP_DATA_DIR / "addons" / f"cp{sys.version_info[0]}{sys.version_inf
 _REMOVE_MARKER = ADDONS_DIR.with_name(ADDONS_DIR.name + ".remove")
 # What uninstalling removes - faster-whisper's own heavy parts; small shared
 # helpers (huggingface_hub, numpy...) stay, other programs may use them.
+# AMD (ROCm): CTranslate2's own ROCm build (one zip per OS on its GitHub release,
+# every Python version inside) + AMD's ROCm runtime as pip wheels, one index per
+# GPU family. Only the families that build was compiled for (`strings
+# libctranslate2*.so | grep gfx`). Bump a version and its hashes together.
+_CT2_ROCM_VERSION = "4.9.1"
+_CT2_ROCM_ZIPS = {  # sys.platform -> (asset, SHA-256, wheel platform tag)
+    "linux": ("rocm-python-wheels-Linux.zip",
+              "283c6800475961a13120f8ad2761a00ebe645aac3c155a6794f6d784b1111593",
+              "manylinux_2_27_x86_64.manylinux_2_28_x86_64"),
+    "win32": ("rocm-python-wheels-Windows.zip",
+              "59ea928a2219dde5f9fdf3bb63fc340e751103467f73d75a4e1cdec9e1e9863f", "win_amd64"),
+}
+_ROCM_SDK_VERSION = "7.13.0"
+_ROCM_INDEX = "https://repo.amd.com/rocm/whl/{family}/"
+_ROCM_FAMILIES = {
+    "gfx1030": "gfx103X-all", "gfx1031": "gfx103X-all", "gfx1032": "gfx103X-all", "gfx1035": "gfx103X-all",
+    "gfx1100": "gfx110X-all", "gfx1101": "gfx110X-all", "gfx1102": "gfx110X-all", "gfx1103": "gfx110X-all",
+    "gfx1150": "gfx1150", "gfx1151": "gfx1151", "gfx1200": "gfx120X-all", "gfx1201": "gfx120X-all",
+}
+# shortcut: Windows has no KFD to ask for the gfx target, so it goes by the
+# marketing name - extend when AMD ships new cards (untested on real Windows).
+_ROCM_WINDOWS_NAMES = [
+    (r"RX 9\d{3}|AI PRO R9\d{3}", "gfx120X-all"),
+    (r"RX 7\d{3}|PRO W7\d{3}|7[468]0M", "gfx110X-all"),
+    (r"RX 6[6-9]\d{2}|PRO W6[6-9]\d{2}|6[68]0M", "gfx103X-all"),
+    (r"8[89]0M", "gfx1150"),
+    (r"80[456]0S", "gfx1151"),
+]
 _UNINSTALL_PACKAGES = ["faster-whisper", "ctranslate2", "av", "onnxruntime", "tokenizers",
-                       "nvidia-cublas-cu12", "nvidia-cudnn-cu12", "nvidia-cuda-nvrtc-cu12"]
+                       "nvidia-cublas-cu12", "nvidia-cudnn-cu12", "nvidia-cuda-nvrtc-cu12", "rocm-sdk-core",
+                       *sorted({f"rocm-sdk-libraries-{f.lower()}" for f in _ROCM_FAMILIES.values()})]
 
 
 def _loaded() -> bool:
@@ -212,16 +245,102 @@ def uninstall_transcription(model_ids: list[str], on_line: Callable[[str], None]
     return ok, False, "" if ok else output
 
 
+def _gfx_target(version: int) -> str:
+    """KFD's gfx_target_version (120001) -> "gfx1201"."""
+    return f"gfx{version // 10000}{version // 100 % 100}{version % 100:x}"
+
+
+def amd_gpu() -> Optional[tuple[str, str]]:
+    """(name for the UI, AMD's wheel-index family) of an AMD card the ROCm
+    build of CTranslate2 supports, else None."""
+    if sys.platform.startswith("linux"):
+        if not os.access("/dev/kfd", os.R_OK | os.W_OK):  # no ROCm access for this user (render group)
+            return None
+        for props in sorted(Path("/sys/class/kfd/kfd/topology/nodes").glob("*/properties")):
+            try:
+                fields = dict(line.split(" ", 1) for line in props.read_text().splitlines() if " " in line)
+                gfx = _gfx_target(int(fields.get("gfx_target_version", 0)))
+            except (OSError, ValueError):
+                continue
+            if gfx in _ROCM_FAMILIES:
+                return f"AMD Radeon ({gfx})", _ROCM_FAMILIES[gfx]
+        return None
+    if sys.platform == "win32":
+        from ..audio_transcode import system_env
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
+                                 capture_output=True, text=True, errors="replace", timeout=15, env=system_env(),
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        for name in (n.strip() for n in out.splitlines()):
+            for pattern, family in _ROCM_WINDOWS_NAMES:
+                if "AMD" in name.upper() and re.search(pattern, name, re.IGNORECASE):
+                    return name, family
+    return None
+
+
+def _install_rocm(pip: list[str], family: str, on_line: Callable[[str], None]) -> tuple[bool, str]:
+    """After faster-whisper is in: swaps ctranslate2 for its ROCm build and
+    adds AMD's ROCm runtime. ``pip`` is the "pip install" command line for the
+    target (same Python version as this process: the venv is made from it)."""
+    from ..digital_voice import _urlopen  # the certificate fallbacks of a packaged build
+    asset, sha256, platform_tag = _CT2_ROCM_ZIPS["win32" if sys.platform == "win32" else "linux"]
+    tag = f"cp{sys.version_info[0]}{sys.version_info[1]}"
+    wheel = f"ctranslate2-{_CT2_ROCM_VERSION}-{tag}-{tag}-{platform_tag}.whl"
+    work = APP_DATA_DIR / "rocm-download"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    try:
+        url = f"https://github.com/OpenNMT/CTranslate2/releases/download/v{_CT2_ROCM_VERSION}/{asset}"
+        on_line(f"downloading {url}")
+        digest = hashlib.sha256()
+        with _urlopen(url) as resp, open(work / asset, "wb") as out:
+            while chunk := resp.read(1 << 20):
+                digest.update(chunk)
+                out.write(chunk)
+        if digest.hexdigest() != sha256:
+            return False, f"{asset}: SHA-256 mismatch, not installed"
+        with zipfile.ZipFile(work / asset) as z:
+            member = next((m for m in z.namelist() if m.rsplit("/", 1)[-1] == wheel), None)
+            if member is None:
+                return False, f"no ROCm build of ctranslate2 for {wheel}"
+            path = z.extract(member, work)
+        ok, output = _run_streamed([*pip, "--upgrade", "--force-reinstall", "--no-deps", path], on_line)
+        if not ok:
+            return ok, output
+        return _run_streamed([*pip, "--upgrade", "--index-url", _ROCM_INDEX.format(family=family),
+                              f"rocm-sdk-core=={_ROCM_SDK_VERSION}",
+                              f"rocm-sdk-libraries-{family.lower()}=={_ROCM_SDK_VERSION}"], on_line)
+    except OSError as exc:
+        on_line(str(exc))
+        return False, str(exc)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def install_transcription(with_gpu: bool, on_line: Callable[[str], None]) -> tuple[bool, bool, str]:
     """Returns (success, needs_restart, error_message - "" on success);
-    every line of pip's output goes to ``on_line`` as it arrives."""
-    packages = _PACKAGES + (_GPU_PACKAGES if with_gpu else [])
+    every line of pip's output goes to ``on_line`` as it arrives. GPU: NVIDIA
+    whenever nvidia-smi is there (as before), else a supported AMD card."""
+    amd = amd_gpu() if with_gpu and not shutil.which("nvidia-smi") else None
+    packages = _PACKAGES + (_GPU_PACKAGES if with_gpu and not amd else [])
+    if amd and sys.platform == "win32" and _loaded():
+        message = "Transcription has run in this session and Windows keeps its files locked - restart FalconSDR, then install again."
+        on_line(message)
+        return False, False, message
+    if amd:
+        on_line(f"GPU: {amd[0]} - installing the AMD ROCm build (several GB)")
 
     def run_streamed(cmd: list[str]) -> tuple[bool, str]:
         return _run_streamed(cmd, on_line)
 
+    def with_rocm(pip: list[str], result: tuple[bool, str]) -> tuple[bool, str]:
+        return _install_rocm(pip, amd[1], on_line) if amd and result[0] else result
+
     def pip_install(python_exe: str) -> tuple[bool, str]:
-        return run_streamed([python_exe, "-m", "pip", "install", "--upgrade", *packages])
+        pip = [python_exe, "-m", "pip", "install"]
+        return with_rocm(pip, run_streamed([*pip, "--upgrade", *packages]))
 
     # A PyInstaller-frozen build's own sys.executable *is* the app itself,
     # not a real Python interpreter - `-m pip` would re-launch the app.
@@ -237,10 +356,9 @@ def install_transcription(with_gpu: bool, on_line: Callable[[str], None]) -> tup
         # Windows locks a loaded .pyd: once transcription has run in this
         # process, --upgrade can't replace those folders - only add what's
         # missing (e.g. the GPU libraries on a second "Install").
-        ok, output = run_streamed([
-            sys.executable, "--pip", "install", *([] if _loaded() else ["--upgrade"]), "--only-binary=:all:",
-            "--disable-pip-version-check", "--target", str(ADDONS_DIR), *packages,
-        ])
+        pip = [sys.executable, "--pip", "install", "--only-binary=:all:", "--disable-pip-version-check",
+               "--target", str(ADDONS_DIR)]
+        ok, output = with_rocm(pip, run_streamed([*pip, *([] if _loaded() else ["--upgrade"]), *packages]))
         return ok, False, "" if ok else output
     in_venv = Path(sys.prefix).resolve() == VENV_DIR.resolve()
     # An existing .venv means this machine already needed the fallback

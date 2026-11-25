@@ -127,9 +127,13 @@ optional speech-to-text needs more; it can run on another computer
 | `large-v3` - default | 3.9 GB (3.3 GB) | 21 % / 38 % | 6.0× / 2.1× / 0.08× |
 
 A CPU is enough while scanning - it only has to keep up with how much you
-record (at 2× that is up to about 30 minutes of audio per hour). An Nvidia GPU
-is 5-20 times faster, worth it for a big backlog or a busy band; AMD/Intel GPUs
-are not used. Plan at least 4 CPU threads for scanning plus transcription,
+record (at 2× that is up to about 30 minutes of audio per hour). A GPU is
+5-20 times faster, worth it for a big backlog or a busy band: Nvidia, or AMD
+Radeon RX 6600-6950, 7000 and 9000 series and Ryzen 780M/880M/890M/8060S
+graphics ("Install with GPU support" fetches AMD's ROCm runtime, several GB;
+AMD on Windows is untested). A Radeon RX 9070 did real recordings with
+`large-v3` + the English ATC model and language detection in 0.7 s each
+(~11× real time; 14× faster than a 24-thread CPU). Intel GPUs are not used. Plan at least 4 CPU threads for scanning plus transcription,
 8 is comfortable. `tiny` and `base` are not usable.
 
 \*4-core i5-6500T, short ~6 s recordings, without language detection (adds

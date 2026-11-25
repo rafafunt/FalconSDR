@@ -60,6 +60,34 @@ def _preload_cuda_libs() -> None:
                     logger.debug("Failed to load %s: %s", so, exc)
 
 
+# AMD: the ROCm build of ctranslate2 links the HIP runtime directly, so it has
+# to be loadable before ctranslate2 is even imported (CUDA libs load lazily).
+# The runtime comes from AMD's rocm-sdk-* wheels (_rocm_sdk_core +
+# _rocm_sdk_libraries_<family>, transcription_install.py); their own RPATHs
+# find the rest. Device name stays "cuda" - CTranslate2's HIP build keeps it.
+# Windows needs nothing here: that wheel's own __init__ adds those bin folders.
+_rocm_preloaded = False
+_ROCM_LIBS = ("libamdhip64.so.7", "libhipblas.so.3", "libhiprand.so.1")  # what libctranslate2 NEEDs (4.9.1)
+
+
+def _preload_rocm_libs() -> None:
+    global _rocm_preloaded
+    if _rocm_preloaded or sys.platform == "win32":
+        return
+    roots = sorted({d for p in sys.path if p for d in Path(p).glob("_rocm_sdk_*") if d.is_dir()})
+    if not roots:
+        return  # not an AMD install; don't latch, install_gpu may add it later
+    _rocm_preloaded = True
+    for name in _ROCM_LIBS:
+        for so in (r / "lib" / name for r in roots):
+            if so.exists():
+                try:
+                    ctypes.CDLL(str(so), mode=ctypes.RTLD_GLOBAL)
+                except OSError as exc:
+                    logger.warning("Failed to load %s: %s", so, exc)
+                break
+
+
 # No initial_prompt with aviation phraseology on purpose: on noisy audio
 # Whisper copied the prompt into the "transcription".
 
@@ -109,7 +137,7 @@ def _gpu_compute_type_for(config: TranscriptionConfig) -> str:
 
 def _is_cuda_error(exc: BaseException) -> bool:
     message = str(exc).lower()
-    return any(token in message for token in ("cuda", "cudnn", "cublas"))
+    return any(token in message for token in ("cuda", "cudnn", "cublas", "hiperror", "hipblas", "hip failed"))
 
 
 def _set_force_cpu(value: bool) -> None:
@@ -127,6 +155,7 @@ def _cpu_thread_count() -> int:
 
 def _load_model(model_id: str, config: TranscriptionConfig):
     global _gpu_compute_type
+    _preload_rocm_libs()
     from faster_whisper import WhisperModel
 
     device = "cpu" if _force_cpu else config.device
@@ -162,7 +191,8 @@ def _load_model(model_id: str, config: TranscriptionConfig):
                 model_id, _gpu_compute_type_for(config), exc, _GPU_RETRY_COOLDOWN_S / 60,
             )
             _set_force_cpu(True)
-    ct = config.compute_type if config.compute_type != "auto" else "int8"
+    # CPU has no float16 (ctranslate2 refuses it): full precision there is float32.
+    ct = {"auto": "int8", "float16": "float32", "int8_float16": "int8"}.get(config.compute_type, config.compute_type)
     cpu_threads = _cpu_thread_count()
     model = WhisperModel(model_id, device="cpu", compute_type=ct, cpu_threads=cpu_threads)
     logger.info("Transcription model %s loaded on CPU (cpu_threads=%d)", model_id, cpu_threads)
@@ -282,6 +312,7 @@ def transcribe_recording(
         )
 
     try:
+        _preload_rocm_libs()  # before the first ctranslate2 import
         from faster_whisper.audio import decode_audio
 
         try:
