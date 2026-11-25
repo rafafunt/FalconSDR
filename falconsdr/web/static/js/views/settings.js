@@ -87,7 +87,7 @@ export function settingsView(root, hash, scope = 'settings') {
   const timers = [];
   let dead = false;
   const cards = {};
-  const visible = (scope === 'addons' ? ADDON_SECTIONS : SECTIONS).filter(([k]) => k !== 'connect' || S.settings.mode === 'local');
+  const visible = (scope === 'addons' ? ADDON_SECTIONS : SECTIONS).filter(([k]) => (k !== 'connect' || S.settings.mode === 'local') && (k !== 'updates' || !S.settings.capabilities.demo));   // the online demo has nothing to update
   const nav = h('nav', visible.map(([k, label]) => h('a', { href: `#/${scope}/${k}`, onclick: (e) => { e.preventDefault(); cards[k].scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, label())));
   const content = h('div.col', { style: { gap: '16px' } });
   mount(root, h('div.page', h('div.page-head', h('h1', scope === 'addons' ? t('Add-ons') : t('Settings'))),

@@ -895,7 +895,7 @@ function settings() {
     // Like Controller.devices(): the network entry carries the typed address while it is the chosen one, or the UI loses it.
     devices: DEVICES.map((d) => ({ driver: d.driver, args: d.driver === 'rtl_tcp' && st.config.device.driver === 'rtl_tcp' ? st.config.device.device_args || '' : '', label: tr(d.label), rate: d.rate })),
     languages: FX.languages,
-    capabilities: { addon_messages: true, ffmpeg: true, transcription_installed: true, digital: false, platform: 'linux', autostart: null,
+    capabilities: { demo: true, addon_messages: true, ffmpeg: true, transcription_installed: true, digital: false, platform: 'linux', autostart: null,
       soapy: false, usb_seen: [], native: { hackrf: false, airspy: false, sdrplay: { loads: false, version: '', error: '' } } },
     curated: FX.curated, mode: 'local', password_set: false,
   };
